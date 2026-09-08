@@ -1,0 +1,257 @@
+/* ===== ezpdf 全局样式：变量 / 重置 / 通用控件 ===== */
+
+:root {
+  --bg-app: #eef0f4;
+  --bg-panel: #ffffff;
+  --bg-hover: #f0f2f5;
+  --bg-active: #e6e9ee;
+  --bg-workspace: #e4e7ec;
+
+  --border: #e2e4ea;
+  --border-strong: #ccd0d9;
+
+  --text-1: #1f2329;
+  --text-2: #5f6672;
+  --text-3: #9aa0ab;
+
+  --accent: #3b6ef6;
+  --accent-weak: rgba(59, 110, 246, 0.14);
+  --accent-contrast: #ffffff;
+
+  /* 页面内标注色（页面恒为白底，不随主题切换） */
+  --page-annot: #3b6ef6;
+  --page-annot-figure: #2ea44f;
+  --page-annot-formula: #8b5cf6;
+  --page-annot-table: #d97706;
+  --page-annot-weak: rgba(59, 110, 246, 0.12);
+
+  --ok: #2ea44f;
+  --warn: #d97706;
+  --err: #e5484d;
+  --pending: #c3c8d1;
+
+  --page-bg: #ffffff;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.1);
+  --shadow-2: 0 8px 24px rgba(16, 24, 40, 0.18);
+
+  --sidebar-w: 264px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* 黑灰白单色系 */
+    --bg-app: #121212;
+    --bg-panel: #1c1c1c;
+    --bg-hover: #262626;
+    --bg-active: #2d2d2d;
+    --bg-workspace: #0a0a0a;
+
+    --border: #2a2a2a;
+    --border-strong: #3a3a3a;
+
+    --text-1: #f2f2f2;
+    --text-2: #a3a3a3;
+    --text-3: #6e6e6e;
+
+    --accent: #f2f2f2;
+    --accent-weak: rgba(255, 255, 255, 0.09);
+    --accent-contrast: #141414;
+
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --pending: #333333;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.6);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-1);
+  background: var(--bg-app);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: var(--text-1);
+}
+
+/* ---- 通用按钮 ---- */
+.btn {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+.btn:hover {
+  background: var(--bg-hover);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+.btn.primary:hover {
+  filter: brightness(1.07);
+}
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+.btn.ghost:hover {
+  background: var(--bg-hover);
+}
+.btn.sm {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.btn.warn {
+  color: var(--warn);
+}
+
+.icon-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-2);
+  flex: none;
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---- 服务状态（工具栏 / 设置弹窗共用） ---- */
+.svc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.svc-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pending);
+  flex: none;
+}
+.svc.connected .svc-dot {
+  background: var(--ok);
+}
+.svc.starting .svc-dot {
+  background: var(--warn);
+  animation: ez-pulse 1.2s ease-in-out infinite;
+}
+.svc.disconnected .svc-dot {
+  background: var(--err);
+}
+.svc.disconnected {
+  color: var(--err);
+}
+@keyframes ez-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---- 开关 ---- */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-2);
+  user-select: none;
+}
+.switch input {
+  display: none;
+}
+.switch .track {
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--border-strong);
+  position: relative;
+  transition: background 0.15s;
+  flex: none;
+}
+.switch .thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent-contrast);
+  transition: left 0.15s;
+}
+.switch input:checked + .track {
+  background: var(--accent);
+}
+.switch input:checked + .track .thumb {
+  left: 14px;
+}
+
+/* ---- 滚动条 ---- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
