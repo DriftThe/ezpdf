@@ -30,6 +30,9 @@
   --err: #e5484d;
   --pending: #c3c8d1;
 
+  --scrollbar-thumb: #c2c7d0;
+  --scrollbar-thumb-hover: #9aa0ab;
+
   --page-bg: #ffffff;
   --radius: 8px;
   --radius-sm: 6px;
@@ -63,6 +66,9 @@
     --warn: #d29922;
     --err: #f85149;
     --pending: #333333;
+
+    --scrollbar-thumb: #4d4d4d;
+    --scrollbar-thumb-hover: #757575;
 
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
     --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.6);
@@ -242,13 +248,13 @@ textarea {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
+  background: var(--scrollbar-thumb);
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-3);
+  background: var(--scrollbar-thumb-hover);
   border: 2px solid transparent;
   background-clip: content-box;
 }
