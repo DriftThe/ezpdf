@@ -43,6 +43,15 @@ function onRetryPage(): void {
 
 <template>
   <header class="toolbar">
+    <!-- 侧栏开关 -->
+    <button class="icon-btn" :title="lib.sidebarOpen ? '收起侧栏' : '展开侧栏'" @click="lib.toggleSidebar">
+      <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+        <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
+      </svg>
+    </button>
+
+    <span class="divider" />
+
     <!-- 布局切换 -->
     <div class="seg" role="group" aria-label="阅读器布局">
       <button
@@ -59,11 +68,23 @@ function onRetryPage(): void {
 
     <span class="divider" />
 
-    <!-- 缩放 -->
+    <!-- 缩放：百分比显示实际比例；点击在适应宽度与 100% 间切换 -->
     <div class="zoom">
       <button class="icon-btn" title="缩小" @click="reader.zoomOut">−</button>
-      <button class="zoom-val" title="重置缩放" @click="reader.resetZoom">{{ Math.round(reader.zoom * 100) }}%</button>
+      <button
+        class="zoom-val"
+        :title="reader.fitMode === 'width' ? '适应宽度中 · 点击恢复 100%' : '点击适应宽度'"
+        @click="reader.toggleFit"
+      >
+        {{ Math.round(reader.effectiveZoom * 100) }}%
+      </button>
       <button class="icon-btn" title="放大" @click="reader.zoomIn">＋</button>
+      <button class="icon-btn fit-btn" title="适应宽度" :class="{ active: reader.fitMode === 'width' }" @click="reader.fitMode === 'custom' && reader.toggleFit()">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+          <path d="M1.5 5V2.5H4M12 2.5h2.5V5M14.5 11v2.5H12M4 13.5H1.5V11" />
+          <path d="M4.5 8h7" />
+        </svg>
+      </button>
     </div>
 
     <span class="divider" />
@@ -172,6 +193,10 @@ function onRetryPage(): void {
   display: flex;
   align-items: center;
   gap: 2px;
+}
+.fit-btn.active {
+  color: var(--accent);
+  background: var(--accent-weak);
 }
 .zoom-val {
   min-width: 46px;

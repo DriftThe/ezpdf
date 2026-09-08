@@ -11,6 +11,8 @@ export const useLibraryStore = defineStore("library", () => {
   const repoTree = ref<RepoNode[]>([]);
   const offlineBookIds = ref<BookId[]>([]);
   const currentBookId = ref<BookId | null>(null);
+  /** 侧栏展开状态（打开书籍后自动收起为三条杠） */
+  const sidebarOpen = ref(true);
   /** 全部已加载书籍（阶段1起由 Rust 端提供） */
   const books = ref<Record<BookId, Book>>({});
 
@@ -28,11 +30,17 @@ export const useLibraryStore = defineStore("library", () => {
   function selectBook(id: BookId): void {
     if (!books.value[id]) return;
     currentBookId.value = id;
+    sidebarOpen.value = false; // 打开书后自动收起侧栏，把空间留给阅读器
     useReaderStore().restorePageFor(id);
+  }
+
+  function toggleSidebar(): void {
+    sidebarOpen.value = !sidebarOpen.value;
   }
 
   function clearBook(): void {
     currentBookId.value = null;
+    sidebarOpen.value = true;
   }
 
   // ---- 以下动作在阶段1/3/4 接入 Tauri IPC ----
@@ -68,11 +76,13 @@ export const useLibraryStore = defineStore("library", () => {
     repoTree,
     offlineBookIds,
     currentBookId,
+    sidebarOpen,
     books,
     currentBook,
     offlineBooks,
     setMode,
     selectBook,
+    toggleSidebar,
     clearBook,
     chooseRepoRoot,
     importPdf,

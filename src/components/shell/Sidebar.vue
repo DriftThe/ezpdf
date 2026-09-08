@@ -18,7 +18,8 @@ function loadMock(): void {
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar" :class="{ closed: !lib.sidebarOpen }">
+    <div class="side-inner">
     <div class="side-tabs">
       <button class="tab" :class="{ active: lib.mode === 'repo' }" @click="lib.setMode('repo')">仓库</button>
       <button class="tab" :class="{ active: lib.mode === 'offline' }" @click="lib.setMode('offline')">离线</button>
@@ -56,6 +57,7 @@ function loadMock(): void {
       </div>
       <button v-if="isDev" class="btn ghost sm dev-btn" @click="loadMock">加载演示数据</button>
     </div>
+    </div>
   </aside>
 </template>
 
@@ -64,10 +66,20 @@ function loadMock(): void {
   width: var(--sidebar-w);
   flex: none;
   height: 100%;
-  display: flex;
-  flex-direction: column;
+  overflow: hidden; /* 收起时裁剪内容 */
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
+  transition: width 0.18s ease;
+}
+.sidebar.closed {
+  width: 0;
+  border-right-color: transparent;
+}
+.side-inner {
+  width: var(--sidebar-w);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 .side-tabs {
   display: flex;
