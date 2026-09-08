@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useLibraryStore } from "../../stores/library";
 import { useReaderStore } from "../../stores/reader";
 import PageCard from "./PageCard.vue";
@@ -23,6 +23,21 @@ const pages = computed(() => lib.currentBook?.pages ?? []);
 
 const scrollEl = ref<HTMLElement | null>(null);
 let raf = 0;
+
+// 向 store 上报栏宽（供适应宽度实时计算缩放；窗口尺寸/布局切换/侧栏收展时自动重算）。
+// 用 clientWidth（排除滚动条）而非 contentRect，且栏宽由 flex 布局决定、与页面内容无关，避免反馈循环。
+let ro: ResizeObserver | null = null;
+onMounted(() => {
+  if (!scrollEl.value) return;
+  ro = new ResizeObserver(() => {
+    if (scrollEl.value) reader.setPaneWidth(scrollEl.value.clientWidth);
+  });
+  ro.observe(scrollEl.value);
+});
+onBeforeUnmount(() => {
+  ro?.disconnect();
+  ro = null;
+});
 
 function onScroll(e: Event): void {
   const el = e.target as HTMLElement;
@@ -76,7 +91,7 @@ defineExpose({ scrollToRatio, scrollToPage });
     </header>
     <div ref="scrollEl" class="pane-scroll" @scroll="onScroll">
       <div class="page-col">
-        <PageCard v-for="p in pages" :key="p.index" :page="p" :kind="kind" :zoom="reader.zoom" />
+        <PageCard v-for="p in pages" :key="p.index" :page="p" :kind="kind" :zoom="reader.effectiveZoom" />
       </div>
     </div>
   </section>
@@ -84,6 +99,9 @@ defineExpose({ scrollToRatio, scrollToPage });
 
 <style scoped>
 .pane {
+  /* 剩余宽度平均分给两栏（单栏时独占）；宽度只由布局决定，
+     不随页面内容伸缩 —— 否则适应宽度会与内容尺寸形成收缩循环 */
+  flex: 1 1 0;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -111,14 +129,24 @@ defineExpose({ scrollToRatio, scrollToPage });
 }
 .pane-scroll {
   flex: 1;
-  overflow-y: auto;
+  overflow: auto; /* 适应宽度时无水平溢出；手动放大后允许水平滚动 */
   background: var(--bg-workspace);
 }
 .page-col {
   position: relative; /* 页卡 offsetTop 的定位基准 */
+  width: fit-content; /* 内容宽于容器时按内容走，保证水平滚动可达 */
+  min-width: 100%; /* 内容窄于容器时撑满，页面可水平居中 */
+  min-height: 100%;
   padding: 14px 0;
   display: flex;
   flex-direction: column;
   align-items: center;
+}
+/* 内容总高小于容器时垂直居中；超出时 auto margin 归零，不吃掉可滚动区 */
+.page-col > :first-child {
+  margin-top: auto;
+}
+.page-col > :last-child {
+  margin-bottom: auto;
 }
 </style>

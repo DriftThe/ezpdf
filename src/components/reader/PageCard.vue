@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useReaderStore } from "../../stores/reader";
 import type { Block, PageInfo } from "../../types/domain";
 
 /**
  * 单页占位卡（骨架期）。
  * 阶段2起：内部替换为 pdfjs canvas 渲染 + 覆盖层；块矩形坐标已按
  * bboxPt/页面尺寸 百分比定位，与未来渲染几何完全一致。
+ * zoom 语义：pt→px 倍率（100% = 1pt:1px），适应宽度时由 store 实时计算。
  */
 const props = defineProps<{
   page: PageInfo;
@@ -13,9 +15,9 @@ const props = defineProps<{
   zoom: number;
 }>();
 
-const BASE_WIDTH = 740; // zoom=1 时的显示宽度 px
-const width = computed(() => Math.round(BASE_WIDTH * props.zoom));
-const height = computed(() => Math.round(width.value * (props.page.heightPt / props.page.widthPt)));
+const reader = useReaderStore();
+const width = computed(() => Math.round(props.page.widthPt * props.zoom));
+const height = computed(() => Math.round(props.page.heightPt * props.zoom));
 
 interface Rect {
   block: Block;
@@ -69,8 +71,8 @@ function labelClass(label: string): string {
 <template>
   <div class="page-wrap" :data-page-index="page.index">
     <div class="page-card" :style="{ width: width + 'px', height: height + 'px' }">
-      <!-- 原文：OCR 块虚线标注 -->
-      <template v-if="kind === 'original'">
+      <!-- 原文：OCR 块虚线标注（悬浮预览关闭时一并隐藏，悬浮目标随之消失） -->
+      <template v-if="kind === 'original' && reader.hoverPreview">
         <div
           v-for="r in rects"
           :key="r.block.id"
