@@ -29,3 +29,6 @@ Two halves, communicating only through Tauri's IPC:
 - Windows dev machine: the Rust lib is named `ezpdf_lib` (with `_lib` suffix) to avoid a Windows bin/lib name conflict — keep the suffix.
 - TypeScript is strict with `noUnusedLocals`/`noUnusedParameters`; unused imports will fail `pnpm build`.
 - No CSP is set (`"csp": null` in `tauri.conf.json`) — fine for dev, revisit before shipping.
+
+## User Harness
+- After smoke testing, should kill port 1420 task with powershell to ensure user can test.
