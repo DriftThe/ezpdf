@@ -84,7 +84,7 @@ watch(
         @page-visible="(p) => onPageVisible('right', p)"
       />
     </template>
-    <EmptyState v-else title="未打开任何书籍" desc="从左侧选择或导入一本 PDF 开始阅读">
+    <EmptyState v-else title="未打开任何PDF" desc="从左侧选择或导入一份 PDF 开始阅读">
       <button class="btn primary" @click="lib.importPdf">导入 PDF</button>
     </EmptyState>
   </div>
@@ -95,6 +95,7 @@ watch(
   flex: 1;
   min-height: 0;
   display: flex;
+  justify-content: center;
 }
 .pane-divider {
   width: 1px;
