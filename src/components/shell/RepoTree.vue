@@ -39,9 +39,9 @@ function indent(): string {
       <div
         v-else
         class="tree-row book"
-        :class="{ selected: lib.currentBookId === node.path }"
+        :class="{ selected: lib.currentBookId === node.path, unparsed: node.bind === null }"
         :style="{ paddingLeft: `calc(${indent()} + 4px)` }"
-        :title="node.path"
+        :title="node.bind === null ? `${node.name}（未解析）` : node.path"
         @click="lib.selectBook(node.path)"
       >
         <span class="book-glyph" aria-hidden="true">
@@ -110,5 +110,11 @@ function indent(): string {
 }
 .tree-row.selected .book-glyph {
   color: var(--accent);
+}
+.tree-row.unparsed {
+  opacity: 0.55; /* 索引中 bind 为空：尚未解析 */
+}
+.tree-row.unparsed:hover {
+  opacity: 1;
 }
 </style>

@@ -1,9 +1,12 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { Book, BookId, Mode, RepoNode } from "../types/domain";
+import type { Book, BookId, Mode, RepoNode, RepoTree } from "../types/domain";
 import { toast } from "../composables/toast";
 import { useReaderStore } from "./reader";
+import { buildRepoNodes } from "../lib/repoTree";
 import { buildMockLibrary, type MockLibrary } from "../mocks/mockData";
+import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 
 export const useLibraryStore = defineStore("library", () => {
   const mode = ref<Mode>("repo");
@@ -28,7 +31,12 @@ export const useLibraryStore = defineStore("library", () => {
   }
 
   function selectBook(id: BookId): void {
-    if (!books.value[id]) return;
+    const book = books.value[id];
+    if (!book) {
+      // 索引中的书未必已加载（未解析的 bind 为 null，或尚未通过 IPC 拉取实体）
+      toast("该书尚未解析或未加载，点击无效", "warn");
+      return;
+    }
     currentBookId.value = id;
     sidebarOpen.value = false; // 打开书后自动收起侧栏，把空间留给阅读器
     useReaderStore().restorePageFor(id);
@@ -43,9 +51,21 @@ export const useLibraryStore = defineStore("library", () => {
     sidebarOpen.value = true;
   }
 
-  // ---- 以下动作在阶段1/3/4 接入 Tauri IPC ----
-  function chooseRepoRoot(): void {
-    toast("阶段1接入：选择仓库根目录");
+  // ---- 仓库：选择/刷新/加载（阶段1：导入与书目录 CRUD 后续接入） ----
+  async function chooseRepoRoot(): Promise<void> {
+    const repoPath = await open({
+      directory: true,
+      multiple: false,
+      title: "选择仓库根目录",
+    });
+    if (repoPath === null) return;
+    try {
+      const created = await invoke<boolean>("check_and_build_repo", { root: repoPath });
+      toast(created ? "已创建新仓库" : "已打开现有仓库");
+      await loadRepo(repoPath);
+    } catch (error) {
+      toast(String(error), "error");
+    }
   }
   function importPdf(): void {
     toast("阶段1接入：导入 PDF（拷入书目录并开始解析）");
@@ -53,18 +73,33 @@ export const useLibraryStore = defineStore("library", () => {
   function importBookFolder(): void {
     toast("阶段1接入：导入 ezpdf 书文件夹");
   }
-  function refreshRepo(): void {
-    toast("阶段1接入：重新扫描仓库");
+
+  async function refreshRepo(): Promise<void> {
+    if (!repoRoot.value) {
+      toast("尚未选择仓库", "warn");
+      return;
+    }
+    await loadRepo(repoRoot.value);
   }
 
-  /** 骨架期演示数据（仅开发模式从侧栏触发） */
+  /** 拉取仓库树；成功才落地状态，失败保留原状并报错 */
+  async function loadRepo(root: string): Promise<void> {
+    try {
+      const tree = await invoke<RepoTree>("gettree_from_config", { root });
+      repoRoot.value = root;
+      repoTree.value = buildRepoNodes(root, tree);
+    } catch (error) {
+      toast(String(error), "error");
+    }
+  }
+  /** 骨架期演示数据（仅开发模式从侧栏触发）：扁平 RepoTree 走与真实 IPC 相同的转换路径 */
   function loadMock(data: MockLibrary = buildMockLibrary()): void {
     repoRoot.value = data.repoRoot;
-    repoTree.value = data.repoTree;
+    repoTree.value = buildRepoNodes(data.repoRoot, data.repoTree);
     offlineBookIds.value = data.offlineBookIds;
     books.value = data.books;
-    if (!currentBookId.value && data.repoTree.length) {
-      const firstBook = findFirstBook(data.repoTree);
+    if (!currentBookId.value && repoTree.value.length) {
+      const firstBook = findFirstBook(repoTree.value);
       if (firstBook) selectBook(firstBook);
     }
     toast("已加载演示数据");

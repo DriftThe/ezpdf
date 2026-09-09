@@ -27,7 +27,7 @@ function loadMock(): void {
 
     <div class="side-actions">
       <button class="btn primary grow" @click="lib.importPdf">导入 PDF</button>
-      <button class="btn grow" @click="lib.importBookFolder">导入书文件夹</button>
+      <button class="btn grow" @click="lib.refreshRepo">刷新仓库</button>
     </div>
 
     <div class="side-body">
@@ -53,7 +53,7 @@ function loadMock(): void {
           </svg>
         </span>
         <span class="root-path">{{ lib.repoRoot }}</span>
-        <button class="btn ghost sm" @click="lib.refreshRepo">刷新</button>
+        <!-- <button class="btn ghost sm" @click="lib.refreshRepo">刷新</button> -->
       </div>
       <button v-if="isDev" class="btn ghost sm dev-btn" @click="loadMock">加载演示数据</button>
     </div>

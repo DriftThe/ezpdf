@@ -1,15 +1,16 @@
 /**
  * 骨架期演示数据（仅开发模式）。
- * 布局与 bbox 均按真实格式（PDF 点，612×792 页面）构造，方便阶段2/6 直接复用验证。
+ * 仓库树使用与后端 ts-rs 绑定一致的扁平结构（RepoTree），经 buildRepoNodes 转换为 UI 树，
+ * 保证演示数据与真实 IPC 走同一条转换路径；bbox 均按真实格式（PDF 点，612×792 页面）构造。
  */
-import type { Block, Book, BookId, PageInfo, RepoNode } from "../types/domain";
+import type { Block, Book, BookId, PageInfo, RepoTree } from "../types/domain";
 
 const PAGE_W = 612;
 const PAGE_H = 792;
 
 export interface MockLibrary {
   repoRoot: string;
-  repoTree: RepoNode[];
+  repoTree: RepoTree;
   offlineBookIds: BookId[];
   books: Record<BookId, Book>;
 }
@@ -25,26 +26,27 @@ export function buildMockLibrary(): MockLibrary {
   const spec = makeBook(`${offlineRoot}\\Spec 心得`, "Spec 心得", 12, 12);
   const scan = makeBook(`${offlineRoot}\\某扫描件`, "某扫描件", 5, 1);
 
-  const books: Record<BookId, Book> = { [attention.id]: attention, [diffusion.id]: diffusion, [rust.id]: rust, [mixed.id]: mixed, [spec.id]: spec, [scan.id]: scan };
+  const books: Record<BookId, Book> = {
+    [attention.id]: attention,
+    [diffusion.id]: diffusion,
+    [rust.id]: rust,
+    [mixed.id]: mixed,
+    [spec.id]: spec,
+    [scan.id]: scan,
+  };
 
-  const repoTree: RepoNode[] = [
-    {
-      type: "folder",
-      name: "论文",
-      path: `${root}\\论文`,
-      children: [
-        { type: "book", name: attention.name, path: attention.id },
-        { type: "book", name: diffusion.name, path: diffusion.id },
-      ],
-    },
-    {
-      type: "folder",
-      name: "教程",
-      path: `${root}\\教程`,
-      children: [{ type: "book", name: rust.name, path: rust.id }],
-    },
-    { type: "book", name: mixed.name, path: mixed.id },
-  ];
+  // 与后端 RepoTree/PDFStruct 绑定一致的平铺索引结构（v1 无子文件夹）：
+  // folders = 顶层目录名（可含空目录）；name = 书名；bind = 结构 JSON 相对路径（null = 未解析）；belong = 所属顶层目录名（null = 根级）
+  const repoTree: RepoTree = {
+    folders: ["空文件夹演示"],
+    pdfs: [
+      { name: "Attention Is All You Need", bind: "论文/Attention Is All You Need/Attention Is All You Need.json", belong: "论文" },
+      { name: "扩散模型综述", bind: "论文/扩散模型综述/扩散模型综述.json", belong: "论文" },
+      { name: "Rust for Windows", bind: "教程/Rust for Windows/Rust for Windows.json", belong: "教程" },
+      { name: "Mixed Blocks Demo", bind: "Mixed Blocks Demo/Mixed Blocks Demo.json", belong: null },
+      { name: "待解析示例", bind: null, belong: null },
+    ],
+  };
 
   return {
     repoRoot: root,

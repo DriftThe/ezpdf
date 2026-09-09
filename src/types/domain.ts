@@ -70,9 +70,15 @@ export interface Book {
   pages: PageInfo[];
 }
 
+/** 后端 ts-rs 导出的绑定（src-tauri/bindings/；struct 变更后跑 `cargo test` 重新生成，勿手改） */
+export type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
+export type { RepoTree } from "../../src-tauri/bindings/RepoTree";
+
+/** 仓库树的 UI 递归视图模型，由 buildRepoNodes 从后端平铺索引 RepoTree 转换而来（v1 无子文件夹，但保留递归结构以便将来恢复）。
+ *  book.path = 书目录绝对路径，即书的唯一索引（belong 目录 + 书名） */
 export type RepoNode =
   | { type: "folder"; name: string; path: string; children: RepoNode[] }
-  | { type: "book"; name: string; path: BookId };
+  | { type: "book"; name: string; path: BookId; /** 绑定的结构 JSON（仓库相对路径）；null = 未解析 */ bind: string | null };
 
 export type Mode = "repo" | "offline";
 
