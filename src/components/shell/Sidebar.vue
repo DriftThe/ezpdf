@@ -23,13 +23,13 @@ const lib = useLibraryStore();
     <div class="side-body">
       <template v-if="lib.mode === 'repo'">
         <RepoTree v-if="lib.repoRoot" />
-        <EmptyState v-else title="未选择仓库" desc="选择一个文件夹作为书仓库，类似 Obsidian 库">
+        <EmptyState v-else title="未选择仓库" desc="选择一个文件夹作为 PDF 仓库，类似 Obsidian 库">
           <button class="btn primary" @click="lib.chooseRepoRoot">选择仓库目录</button>
         </EmptyState>
       </template>
       <template v-else>
-        <OfflineList v-if="lib.offlineBooks.length" />
-        <EmptyState v-else title="离线书架为空" desc="导入 PDF 解析完成后在此阅读">
+        <OfflineList v-if="lib.offlinePdfs.length" />
+        <EmptyState v-else title="离线列表为空" desc="导入 PDF 解析完成后在此阅读">
           <button class="btn primary" @click="lib.importPdf">导入 PDF</button>
         </EmptyState>
       </template>

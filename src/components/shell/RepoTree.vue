@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { PDFStruct } from "../../../src-tauri/bindings/PDFStruct";
-import { bookIndexKey } from "../../types/domain";
+import { pdfIndexKey } from "../../types/domain";
 import { useLibraryStore } from "../../stores/library";
 
 defineOptions({ name: "RepoTree" });
@@ -9,18 +9,18 @@ defineOptions({ name: "RepoTree" });
 const lib = useLibraryStore();
 const collapsed = ref<Set<string>>(new Set());
 
-type Row = { kind: "folder"; name: string } | { kind: "book"; pdf: PDFStruct; inFolder: boolean };
+type Row = { kind: "folder"; name: string } | { kind: "pdf"; pdf: PDFStruct; inFolder: boolean };
 
-/** 由分组索引派生可见行序列：目录行 + 其书行（可折叠）+ 根级书行（belong 为空，与目录平齐） */
+/** 由分组索引派生可见行序列：目录行 + 其 PDF 行（可折叠）+ 根级 PDF 行（belong 为空，与目录平齐） */
 const rows = computed<Row[]>(() => {
   const out: Row[] = [];
   for (const group of lib.repoGroups ?? []) {
     if (group.folder === null) {
-      for (const pdf of group.books) out.push({ kind: "book", pdf, inFolder: false });
+      for (const pdf of group.pdfs) out.push({ kind: "pdf", pdf, inFolder: false });
     } else {
       out.push({ kind: "folder", name: group.folder });
       if (!collapsed.value.has(group.folder)) {
-        for (const pdf of group.books) out.push({ kind: "book", pdf, inFolder: true });
+        for (const pdf of group.pdfs) out.push({ kind: "pdf", pdf, inFolder: true });
       }
     }
   }
@@ -37,7 +37,7 @@ function toggle(folder: string): void {
 
 <template>
   <ul class="tree">
-    <li v-for="row in rows" :key="row.kind === 'folder' ? `f:${row.name}` : bookIndexKey(row.pdf)">
+    <li v-for="row in rows" :key="row.kind === 'folder' ? `f:${row.name}` : pdfIndexKey(row.pdf)">
       <!-- 目录行（belong 分组） -->
       <div v-if="row.kind === 'folder'" class="tree-row folder" @click="toggle(row.name)">
         <span class="chev" :class="{ open: !collapsed.has(row.name) }" aria-hidden="true">
@@ -45,25 +45,25 @@ function toggle(folder: string): void {
         </span>
         <span class="row-name folder-name">{{ row.name }}</span>
       </div>
-      <!-- 书行：组内缩进；bind 为 null（未解析）半透明 -->
+      <!-- PDF 行：组内缩进；bind 为 null（未解析）半透明 -->
       <div
         v-else
-        class="tree-row book"
+        class="tree-row pdf"
         :class="{
-          selected: lib.currentBookId === bookIndexKey(row.pdf),
+          selected: lib.currentPdfId === pdfIndexKey(row.pdf),
           unparsed: row.pdf.bind === null,
           nested: row.inFolder,
         }"
-        :title="row.pdf.bind === null ? `${row.pdf.name}（未解析）` : bookIndexKey(row.pdf)"
-        @click="lib.selectBook(row.pdf)"
+        :title="row.pdf.bind === null ? `${row.pdf.name}（未解析）` : pdfIndexKey(row.pdf)"
+        @click="lib.selectPdf(row.pdf)"
       >
-        <span class="book-glyph" aria-hidden="true">
+        <span class="pdf-glyph" aria-hidden="true">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3">
             <path d="M4 2h6l2 2v10H4z" />
             <path d="M6 6.5h4M6 9h4M6 11.5h2.5" />
           </svg>
         </span>
-        <span class="row-name book-name">{{ row.pdf.name }}</span>
+        <span class="row-name pdf-name">{{ row.pdf.name }}</span>
       </div>
     </li>
   </ul>
@@ -97,10 +97,10 @@ function toggle(folder: string): void {
 .tree-row.folder {
   padding-left: 4px;
 }
-.tree-row.book {
+.tree-row.pdf {
   padding-left: 8px;
 }
-.tree-row.book.nested {
+.tree-row.pdf.nested {
   padding-left: 20px;
 }
 .chev {
@@ -124,12 +124,12 @@ function toggle(folder: string): void {
   font-weight: 600;
   color: var(--text-1);
 }
-.book-glyph {
+.pdf-glyph {
   display: inline-flex;
   color: var(--text-3);
   flex: none;
 }
-.tree-row.selected .book-glyph {
+.tree-row.selected .pdf-glyph {
   color: var(--accent);
 }
 .tree-row.unparsed {

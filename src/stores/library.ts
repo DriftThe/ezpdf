@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { Book, BookId, Mode, RepoGroup, RepoTree } from "../types/domain";
-import { bookIndexKey } from "../types/domain";
+import type { Mode, PDF, PDFId, RepoGroup, RepoTree } from "../types/domain";
+import { pdfIndexKey } from "../types/domain";
 import type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
 import { toast } from "../composables/toast";
 import { useReaderStore } from "./reader";
@@ -13,23 +13,23 @@ export const useLibraryStore = defineStore("library", () => {
   const repoRoot = ref<string | null>(null);
   /** .ezrepo 平铺索引（真相源）；树形呈现由 repoGroups 按 belong 派生，不做物理路径拼接 */
   const repoIndex = ref<RepoTree | null>(null);
-  const offlineBookIds = ref<BookId[]>([]);
-  const currentBookId = ref<BookId | null>(null);
-  /** 侧栏展开状态（打开书籍后自动收起为三条杠） */
+  const offlinePdfIds = ref<PDFId[]>([]);
+  const currentPdfId = ref<PDFId | null>(null);
+  /** 侧栏展开状态（打开 PDF 后自动收起为三条杠） */
   const sidebarOpen = ref(true);
-  /** 全部已加载书籍，键 = bookIndexKey（阶段1起由 Rust 端提供） */
-  const books = ref<Record<BookId, Book>>({});
+  /** 全部已加载 PDF 实体，键 = pdfIndexKey（由后端 load_pdf 提供） */
+  const pdfs = ref<Record<PDFId, PDF>>({});
 
-  const currentBook = computed<Book | null>(() =>
-    currentBookId.value ? (books.value[currentBookId.value] ?? null) : null,
+  const currentPdf = computed<PDF | null>(() =>
+    currentPdfId.value ? (pdfs.value[currentPdfId.value] ?? null) : null,
   );
-  const offlineBooks = computed<Book[]>(() =>
-    offlineBookIds.value.map((id) => books.value[id]).filter((b): b is Book => !!b),
+  const offlinePdfs = computed<PDF[]>(() =>
+    offlinePdfIds.value.map((id) => pdfs.value[id]).filter((p): p is PDF => !!p),
   );
 
   /**
    * 索引 → UI 分组视图：按 belong 归组（null = 根级），folders 里的空目录也占位；
-   * 文件夹组按名排序，组内书按名排序。
+   * 文件夹组按名排序，组内 PDF 按名排序。
    */
   const repoGroups = computed<RepoGroup[] | null>(() => {
     const idx = repoIndex.value;
@@ -48,12 +48,12 @@ export const useLibraryStore = defineStore("library", () => {
     const byName = (a: PDFStruct, b: PDFStruct) => a.name.localeCompare(b.name, "zh");
     const groups: RepoGroup[] = [];
     const root = map.get(null);
-    if (root?.length) groups.push({ folder: null, books: [...root].sort(byName) });
+    if (root?.length) groups.push({ folder: null, pdfs: [...root].sort(byName) });
     const folderNames = [...map.keys()]
       .filter((k): k is string => k !== null)
       .sort((a, b) => a.localeCompare(b, "zh"));
     for (const folder of folderNames) {
-      groups.push({ folder, books: (map.get(folder) ?? []).sort(byName) });
+      groups.push({ folder, pdfs: (map.get(folder) ?? []).sort(byName) });
     }
     return groups;
   });
@@ -63,50 +63,50 @@ export const useLibraryStore = defineStore("library", () => {
   }
 
   /**
-   * 打开一本书（两条入口合一，无嵌套）：
+   * 打开一份 PDF（两条入口合一，无嵌套）：
    * - 仓库树传索引项 PDFStruct（name/belong/bind）：未加载时凭索引 invoke 向后端查询；
-   * - 离线书架/内部传索引键 BookId（belong/name，根级为 name）：书始终已加载。
-   * 缓存策略：即用即丢——只保留当前书与离线书架，切书即释放旧实体。
+   * - 离线列表/内部传索引键 PDFId（belong/name，根级为 name）：PDF 始终已加载。
+   * 缓存策略：即用即丢——只保留当前 PDF 与离线列表，切换即释放旧实体。
    */
-  async function selectBook(target: PDFStruct | BookId): Promise<void> {
+  async function selectPdf(target: PDFStruct | PDFId): Promise<void> {
     const isEntry = typeof target !== "string";
-    const key = isEntry ? bookIndexKey(target) : target;
+    const key = isEntry ? pdfIndexKey(target) : target;
 
-    if (!books.value[key]) {
+    if (!pdfs.value[key]) {
       if (!isEntry) {
-        // 传了索引键却未加载：异常状态（离线书架的书始终在 books 里）
-        toast("该书尚未解析或未加载，点击无效", "warn");
+        // 传了索引键却未加载：异常状态（离线列表的 PDF 始终在 pdfs 里）
+        toast("该 PDF 尚未解析或未加载，点击无效", "warn");
         return;
       }
       if (!repoRoot.value) {
-        toast("尚未选择仓库，无法查询书籍", "warn");
+        toast("尚未选择仓库，无法查询 PDF", "warn");
         return;
       }
-      // ---- 阶段1 IPC：凭索引项向后端查询书实体（Rust 端实现 load_book 时对齐）----
-      // 参数（JS camelCase / Rust snake_case）：root: 仓库根绝对路径；name: 书名；belong: string | null（null = 根级）
-      // 返回：Book（domain.ts 形状；前端忽略其 id，归一化为索引键 belong/name）
-      // 约定：书不在索引/PDF 读取失败 → throw（此处 toast）；bind 为 null 的未解析书建议返回空白页实体（可看原文，译文栏显示未解析）
+      // ---- 阶段1 IPC：凭索引项向后端查询 PDF 实体（Rust 端实现 load_pdf 时对齐）----
+      // 参数（JS camelCase / Rust snake_case）：root: 仓库根绝对路径；name: PDF 名；belong: string | null（null = 根级）
+      // 返回：PDF（domain.ts 形状；前端忽略其 id，归一化为索引键 belong/name）
+      // 约定：PDF 不在索引/读取失败 → throw（此处 toast）；bind 为 null 的未解析 PDF 建议返回空白页实体（可看原文，译文栏显示未解析）
       try {
-        const book = await invoke<Book>("load_book", {
+        const pdf = await invoke<PDF>("load_pdf", {
           root: repoRoot.value,
           name: target.name,
           belong: target.belong,
         });
-        books.value[key] = { ...book, id: key };
+        pdfs.value[key] = { ...pdf, id: key };
       } catch (error) {
         toast(String(error), "error");
         return;
       }
     }
 
-    currentBookId.value = key;
-    sidebarOpen.value = false; // 打开书后自动收起侧栏，把空间留给阅读器
+    currentPdfId.value = key;
+    sidebarOpen.value = false; // 打开 PDF 后自动收起侧栏，把空间留给阅读器
     useReaderStore().restorePageFor(key);
 
-    // 即用即丢：开新书后只保留当前书 + 离线书架（结构 JSON 重读便宜；真正的内存大头在阶段2 pdfjs 层释放）
-    for (const id of Object.keys(books.value)) {
-      if (id !== key && !offlineBookIds.value.includes(id)) {
-        delete books.value[id];
+    // 即用即丢：打开新 PDF 后只保留当前 PDF + 离线列表（结构 JSON 重读便宜；真正的内存大头在阶段2 pdfjs 层释放）
+    for (const id of Object.keys(pdfs.value)) {
+      if (id !== key && !offlinePdfIds.value.includes(id)) {
+        delete pdfs.value[id];
       }
     }
   }
@@ -115,12 +115,12 @@ export const useLibraryStore = defineStore("library", () => {
     sidebarOpen.value = !sidebarOpen.value;
   }
 
-  function clearBook(): void {
-    currentBookId.value = null;
+  function clearPdf(): void {
+    currentPdfId.value = null;
     sidebarOpen.value = true;
   }
 
-  // ---- 仓库：选择/刷新/加载（阶段1：导入与书目录 CRUD 后续接入） ----
+  // ---- 仓库：选择/刷新/加载（阶段1：导入与 PDF 目录 CRUD 后续接入） ----
   async function chooseRepoRoot(): Promise<void> {
     const repoPath = await open({
       directory: true,
@@ -137,10 +137,10 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
   function importPdf(): void {
-    toast("阶段1接入：导入 PDF（拷入书目录并开始解析）");
+    toast("阶段1接入：导入 PDF（拷入 PDF 目录并开始解析）");
   }
-  function importBookFolder(): void {
-    toast("阶段1接入：导入 ezpdf 书文件夹");
+  function importPdfFolder(): void {
+    toast("阶段1接入：导入 ezpdf PDF 文件夹");
   }
 
   async function refreshRepo(): Promise<void> {
@@ -165,19 +165,19 @@ export const useLibraryStore = defineStore("library", () => {
     mode,
     repoRoot,
     repoGroups,
-    offlineBookIds,
-    currentBookId,
+    offlinePdfIds,
+    currentPdfId,
     sidebarOpen,
-    books,
-    currentBook,
-    offlineBooks,
+    pdfs,
+    currentPdf,
+    offlinePdfs,
     setMode,
-    selectBook,
+    selectPdf,
     toggleSidebar,
-    clearBook,
+    clearPdf,
     chooseRepoRoot,
     importPdf,
-    importBookFolder,
+    importPdfFolder,
     refreshRepo,
   };
 });

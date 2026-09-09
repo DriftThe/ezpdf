@@ -7,7 +7,7 @@ import { useReaderStore } from "../../stores/reader";
 const lib = useLibraryStore();
 const reader = useReaderStore();
 
-const pages = computed(() => lib.currentBook?.pages ?? []);
+const pages = computed(() => lib.currentPdf?.pages ?? []);
 const doneCount = computed(() => pages.value.filter((p) => p.status === "done").length);
 const failedCount = computed(() => pages.value.filter((p) => p.status === "failed").length);
 
@@ -24,7 +24,7 @@ const statusText: Record<string, string> = {
 </script>
 
 <template>
-  <footer v-if="lib.currentBook" class="strip">
+  <footer v-if="lib.currentPdf" class="strip">
     <span class="strip-label">页面</span>
     <div class="strip-dots">
       <button

@@ -12,7 +12,7 @@ const parse = useParseStore();
 const reader = useReaderStore();
 const settings = useSettingsStore();
 
-const hasBook = computed(() => !!lib.currentBook);
+const hasPdf = computed(() => !!lib.currentPdf);
 
 const layoutOptions: Array<{ value: LayoutMode; label: string; title: string }> = [
   { value: "ot", label: "原│译", title: "左原文 · 右译文" },
@@ -91,7 +91,7 @@ function onRetryPage(): void {
 
     <!-- 页码导航 -->
     <div class="pagenav">
-      <button class="icon-btn" title="上一页" :disabled="!hasBook || reader.currentPage <= 1" @click="reader.stepPage(-1)">‹</button>
+      <button class="icon-btn" title="上一页" :disabled="!hasPdf || reader.currentPage <= 1" @click="reader.stepPage(-1)">‹</button>
       <span class="page-ind">
         <input
           class="page-input"
@@ -103,7 +103,7 @@ function onRetryPage(): void {
         />
         <span class="page-total">/ {{ reader.pageCount || "–" }}</span>
       </span>
-      <button class="icon-btn" title="下一页" :disabled="!hasBook || reader.currentPage >= reader.pageCount" @click="reader.stepPage(1)">›</button>
+      <button class="icon-btn" title="下一页" :disabled="!hasPdf || reader.currentPage >= reader.pageCount" @click="reader.stepPage(1)">›</button>
     </div>
 
     <span class="divider" />
@@ -116,7 +116,7 @@ function onRetryPage(): void {
     </label>
 
     <!-- 本页重解析 -->
-    <button class="btn ghost" :disabled="!hasBook" title="把当前页重新入队解析" @click="onRetryPage">本页重解析</button>
+    <button class="btn ghost" :disabled="!hasPdf" title="把当前页重新入队解析" @click="onRetryPage">本页重解析</button>
 
     <span class="spacer" />
 

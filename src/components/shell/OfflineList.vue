@@ -7,15 +7,15 @@ const lib = useLibraryStore();
 <template>
   <ul class="offline-list">
     <li
-      v-for="b in lib.offlineBooks"
-      :key="b.id"
+      v-for="p in lib.offlinePdfs"
+      :key="p.id"
       class="offline-item"
-      :class="{ selected: lib.currentBookId === b.id }"
-      :title="b.id"
-      @click="lib.selectBook(b.id)"
+      :class="{ selected: lib.currentPdfId === p.id }"
+      :title="p.id"
+      @click="lib.selectPdf(p.id)"
     >
-      <div class="item-name">{{ b.name }}</div>
-      <div class="item-sub">{{ b.meta.pageCount }} 页 · {{ b.meta.llmModel }}</div>
+      <div class="item-name">{{ p.name }}</div>
+      <div class="item-sub">{{ p.meta.pageCount }} 页 · {{ p.meta.llmModel }}</div>
     </li>
   </ul>
 </template>

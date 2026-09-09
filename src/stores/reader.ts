@@ -20,17 +20,17 @@ export const useReaderStore = defineStore("reader", () => {
   const currentPage = ref(1);
   /** 原文块悬浮译文开关（关闭时原文指示框一并隐藏） */
   const hoverPreview = ref(true);
-  /** 每本书记住的阅读位置 */
-  const pageByBook = ref<Record<string, number>>({});
-  /** 待执行的跳页目标（由 gotoPage/切书设置；ReaderArea 消费后清空。手动滚动不设置，避免打架） */
+  /** 每份 PDF 记住的阅读位置 */
+  const pageByPdf = ref<Record<string, number>>({});
+  /** 待执行的跳页目标（由 gotoPage/切换 PDF 设置；ReaderArea 消费后清空。手动滚动不设置，避免打架） */
   const jumpTarget = ref<number | null>(null);
 
-  const pageCount = computed(() => useLibraryStore().currentBook?.meta.pageCount ?? 0);
+  const pageCount = computed(() => useLibraryStore().currentPdf?.meta.pageCount ?? 0);
 
   /** 实际渲染缩放：适应宽度模式按「当前页宽 + 窗宽」实时计算，其余用 zoom */
   const effectiveZoom = computed(() => {
     if (fitMode.value !== "width" || paneWidth.value <= 0) return zoom.value;
-    const pages = useLibraryStore().currentBook?.pages ?? [];
+    const pages = useLibraryStore().currentPdf?.pages ?? [];
     const page = pages.length ? pages[Math.min(currentPage.value, pages.length) - 1] : undefined;
     const pw = page?.widthPt ?? 0;
     if (pw <= 0) return zoom.value;
@@ -85,15 +85,15 @@ export const useReaderStore = defineStore("reader", () => {
       rememberCurrent();
     }
   }
-  /** 切换书籍时恢复上次阅读位置 */
-  function restorePageFor(bookId: string): void {
-    currentPage.value = pageByBook.value[bookId] ?? 1;
+  /** 切换 PDF 时恢复上次阅读位置 */
+  function restorePageFor(pdfId: string): void {
+    currentPage.value = pageByPdf.value[pdfId] ?? 1;
     jumpTarget.value = currentPage.value;
   }
   function rememberCurrent(): void {
     const lib = useLibraryStore();
-    if (lib.currentBookId) {
-      pageByBook.value[lib.currentBookId] = currentPage.value;
+    if (lib.currentPdfId) {
+      pageByPdf.value[lib.currentPdfId] = currentPage.value;
     }
   }
 

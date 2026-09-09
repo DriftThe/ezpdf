@@ -19,7 +19,7 @@ const emit = defineEmits<{
 
 const lib = useLibraryStore();
 const reader = useReaderStore();
-const pages = computed(() => lib.currentBook?.pages ?? []);
+const pages = computed(() => lib.currentPdf?.pages ?? []);
 
 const scrollEl = ref<HTMLElement | null>(null);
 let raf = 0;

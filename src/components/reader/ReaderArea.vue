@@ -53,12 +53,12 @@ function onPageVisible(_side: Side, page: number): void {
   reader.setVisiblePage(page);
 }
 
-/** 未解析的书（结构 JSON 未生成，bind 为 null）：译文视窗用 EmptyState 提示，原文视窗仍显示空白页 */
+/** 未解析的 PDF（结构 JSON 未生成，bind 为 null）：译文视窗用 EmptyState 提示，原文视窗仍显示空白页 */
 function isTranslationPending(kind: PaneKind): boolean {
-  return kind === "translation" && lib.currentBook?.bind === null;
+  return kind === "translation" && lib.currentPdf?.bind === null;
 }
 
-/** 工具栏/状态条跳页、切书恢复位置 → 两栏同步滚动（手动滚动不触发） */
+/** 工具栏/状态条跳页、切换 PDF 恢复位置 → 两栏同步滚动（手动滚动不触发） */
 watch(
   () => reader.jumpTarget,
   (p) => {
@@ -72,7 +72,7 @@ watch(
 
 <template>
   <div class="reader-area">
-    <template v-if="lib.currentBook">
+    <template v-if="lib.currentPdf">
       <!-- 左栏 -->
       <div v-if="left && isTranslationPending(left)" class="pane-slot">
         <EmptyState title="该文件还未解析" desc="结构 JSON 尚未生成，解析完成后此处将渲染译文" />

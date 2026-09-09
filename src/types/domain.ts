@@ -1,12 +1,12 @@
 /**
  * ezpdf 域模型 — 真相源在 Rust 端（src-tauri/src/lib.rs），经 ts-rs 导出到 src-tauri/bindings/；
  * struct 变更后跑 `cargo test` 重新生成绑定，勿手改绑定文件。
- * 本文件只保留：前端内部标识（BookId/bookIndexKey）、UI 视图模型（RepoGroup）与 UI 常量（BLOCK_LABELS 等）。
+ * 本文件只保留：前端内部标识（PDFId/pdfIndexKey）、UI 视图模型（RepoGroup）与 UI 常量（BLOCK_LABELS 等）。
  */
 
-/** 书 id = 索引键（bookIndexKey：belong/name，根级为 name）——由 .ezrepo 托管，不是物理路径；
+/** PDF id = 索引键（pdfIndexKey：belong/name，根级为 name）——由 .ezrepo 托管，不是物理路径；
  *  物理路径由后端凭 (root, belong, name) 解析后下发 */
-export type BookId = string;
+export type PDFId = string;
 
 /** PP-DocLayoutV3 版面标签集合；Rust 端 Block.label 为 string（保留通道兼容后续新增标签），此处仅约束 UI 已知集合 */
 export const BLOCK_LABELS = [
@@ -28,21 +28,21 @@ export type { PageStatus } from "../../src-tauri/bindings/PageStatus";
 export type { BboxPt } from "../../src-tauri/bindings/BboxPt";
 export type { Block } from "../../src-tauri/bindings/Block";
 export type { PageInfo } from "../../src-tauri/bindings/PageInfo";
-export type { BookMeta } from "../../src-tauri/bindings/BookMeta";
-export type { Book } from "../../src-tauri/bindings/Book";
+export type { PDFMeta } from "../../src-tauri/bindings/PDFMeta";
+export type { PDF } from "../../src-tauri/bindings/PDF";
 export type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
 export type { RepoTree } from "../../src-tauri/bindings/RepoTree";
 
 /** 仓库索引的 UI 分组视图：按 belong 平铺分组（v1 无子文件夹），由 library store 的 repoGroups 从平铺索引派生 */
 export interface RepoGroup {
-  /** 所属目录名；null = 根级（belong 为空的书直接挂在仓库根部） */
+  /** 所属目录名；null = 根级（belong 为空的 PDF 直接挂在仓库根部） */
   folder: string | null;
-  books: PDFStruct[];
+  pdfs: PDFStruct[];
 }
 
-/** 书在索引中的唯一键：belong/name；根级（belong 为空）为 name。
- *  仅作前端内部标识与 books 映射键；向后端查询时始终携带完整索引项（name/belong/bind）。 */
-export function bookIndexKey(pdf: Pick<PDFStruct, "name" | "belong">): string {
+/** PDF 在索引中的唯一键：belong/name；根级（belong 为空）为 name。
+ *  仅作前端内部标识与 pdfs 映射键；向后端查询时始终携带完整索引项（name/belong/bind）。 */
+export function pdfIndexKey(pdf: Pick<PDFStruct, "name" | "belong">): string {
   const belong = pdf.belong?.trim();
   return belong ? `${belong}/${pdf.name}` : pdf.name;
 }

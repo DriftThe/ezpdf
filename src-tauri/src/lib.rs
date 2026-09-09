@@ -20,7 +20,7 @@ pub struct PDFStruct {
     pub belong: Option<String>,
 }
 
-// ---- ezpdf 书实体域模型（load_book 传输载荷；ts-rs 导出到 bindings/，前端 domain.ts re-export）----
+// ---- ezpdf PDF 实体域模型（load_pdf 传输载荷；ts-rs 导出到 bindings/，前端 domain.ts re-export）----
 
 /// 页解析状态机：pending → ocr_queued → ocr_done → translating → done / failed
 #[derive(Deserialize, Serialize, TS)]
@@ -71,7 +71,7 @@ pub struct PageInfo {
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct BookMeta {
+pub struct PDFMeta {
     pub name: String,
     pub page_count: u32,
     pub created_at: String, // ISO 8601
@@ -81,18 +81,18 @@ pub struct BookMeta {
     pub llm_model: String,
 }
 
-/// 一本书的完整实体（= 书目录里 <书名>.json 的形状）。
+/// 一份 PDF 的完整实体（= PDF 目录里 <PDF 名>.json 的形状）。
 /// id 前端会归一化为索引键 belong/name；bind = 结构 JSON 的仓库相对路径，None = 未解析。
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct Book {
+pub struct PDF {
     pub id: String,
     pub name: String,
     pub pdf_path: String,
     pub json_path: String,
     pub bind: Option<String>,
-    pub meta: BookMeta,
+    pub meta: PDFMeta,
     pub pages: Vec<PageInfo>,
 }
 // Check repo path input availablity
