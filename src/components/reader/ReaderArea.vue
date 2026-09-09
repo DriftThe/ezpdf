@@ -53,6 +53,11 @@ function onPageVisible(_side: Side, page: number): void {
   reader.setVisiblePage(page);
 }
 
+/** 未解析的书（结构 JSON 未生成，bind 为 null）：译文视窗用 EmptyState 提示，原文视窗仍显示空白页 */
+function isTranslationPending(kind: PaneKind): boolean {
+  return kind === "translation" && lib.currentBook?.bind === null;
+}
+
 /** 工具栏/状态条跳页、切书恢复位置 → 两栏同步滚动（手动滚动不触发） */
 watch(
   () => reader.jumpTarget,
@@ -68,16 +73,24 @@ watch(
 <template>
   <div class="reader-area">
     <template v-if="lib.currentBook">
+      <!-- 左栏 -->
+      <div v-if="left && isTranslationPending(left)" class="pane-slot">
+        <EmptyState title="该文件还未解析" desc="结构 JSON 尚未生成，解析完成后此处将渲染译文" />
+      </div>
       <ReaderPane
-        v-if="left"
+        v-else-if="left"
         ref="leftPane"
         :kind="left"
         @scroll-ratio="(r) => onScrollRatio('left', r)"
         @page-visible="(p) => onPageVisible('left', p)"
       />
       <div v-if="right" class="pane-divider" />
+      <!-- 右栏 -->
+      <div v-if="right && isTranslationPending(right)" class="pane-slot">
+        <EmptyState title="该文件还未解析" desc="结构 JSON 尚未生成，解析完成后此处将渲染译文" />
+      </div>
       <ReaderPane
-        v-if="right"
+        v-else-if="right"
         ref="rightPane"
         :kind="right"
         @scroll-ratio="(r) => onScrollRatio('right', r)"
@@ -96,6 +109,13 @@ watch(
   min-height: 0;
   display: flex;
   justify-content: center;
+}
+.pane-slot {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-workspace);
 }
 .pane-divider {
   width: 1px;

@@ -1,21 +1,14 @@
 /**
- * ezpdf 域模型 — 与 PLAN.md 的 ezpdf 格式规范对齐。
- * 前端侧镜像定义，后续与 Rust serde 结构一一对应（阶段1）。
+ * ezpdf 域模型 — 真相源在 Rust 端（src-tauri/src/lib.rs），经 ts-rs 导出到 src-tauri/bindings/；
+ * struct 变更后跑 `cargo test` 重新生成绑定，勿手改绑定文件。
+ * 本文件只保留：前端内部标识（BookId/bookIndexKey）、UI 视图模型（RepoGroup）与 UI 常量（BLOCK_LABELS 等）。
  */
 
-/** 书 id = 书文件夹绝对路径（与 Rust 端约定一致） */
+/** 书 id = 索引键（bookIndexKey：belong/name，根级为 name）——由 .ezrepo 托管，不是物理路径；
+ *  物理路径由后端凭 (root, belong, name) 解析后下发 */
 export type BookId = string;
 
-/** 页解析状态机：pending → ocr_queued → ocr_done → translating → done / failed */
-export type PageStatus =
-  | "pending"
-  | "ocr_queued"
-  | "ocr_done"
-  | "translating"
-  | "done"
-  | "failed";
-
-/** PP-DocLayoutV3 版面标签；保留 string 通道以兼容后续新增标签 */
+/** PP-DocLayoutV3 版面标签集合；Rust 端 Block.label 为 string（保留通道兼容后续新增标签），此处仅约束 UI 已知集合 */
 export const BLOCK_LABELS = [
   "text",
   "title",
@@ -29,56 +22,30 @@ export const BLOCK_LABELS = [
 ] as const;
 export type BlockLabel = (typeof BLOCK_LABELS)[number] | (string & {});
 
-/** [x, y, w, h]，单位 PDF 点（1pt = 1/72in），左上原点，scale=1 视口（与缩放无关） */
-export type BboxPt = [number, number, number, number];
-
-export interface Block {
-  id: string; // 如 "p3-b12"
-  label: BlockLabel;
-  bboxPt: BboxPt;
-  score: number;
-  /** markdown 原文：正文纯文本 / 公式 $$..$$ / 表格 markdown；figure 块为 null */
-  source: string | null;
-  /** markdown 译文；figure/formula 块为 null（formula 原样渲染） */
-  translation: string | null;
-}
-
-export interface PageInfo {
-  index: number; // 0-based
-  status: PageStatus;
-  widthPt: number;
-  heightPt: number;
-  blocks: Block[];
-}
-
-export interface BookMeta {
-  name: string;
-  pageCount: number;
-  createdAt: string;
-  updatedAt: string;
-  targetLang: string;
-  ocrEngine: string;
-  llmModel: string;
-}
-
-export interface Book {
-  id: BookId;
-  name: string;
-  pdfPath: string;
-  jsonPath: string;
-  meta: BookMeta;
-  pages: PageInfo[];
-}
-
-/** 后端 ts-rs 导出的绑定（src-tauri/bindings/；struct 变更后跑 `cargo test` 重新生成，勿手改） */
+/** 后端 ts-rs 导出的绑定（src-tauri/bindings/） */
+import type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
+export type { PageStatus } from "../../src-tauri/bindings/PageStatus";
+export type { BboxPt } from "../../src-tauri/bindings/BboxPt";
+export type { Block } from "../../src-tauri/bindings/Block";
+export type { PageInfo } from "../../src-tauri/bindings/PageInfo";
+export type { BookMeta } from "../../src-tauri/bindings/BookMeta";
+export type { Book } from "../../src-tauri/bindings/Book";
 export type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
 export type { RepoTree } from "../../src-tauri/bindings/RepoTree";
 
-/** 仓库树的 UI 递归视图模型，由 buildRepoNodes 从后端平铺索引 RepoTree 转换而来（v1 无子文件夹，但保留递归结构以便将来恢复）。
- *  book.path = 书目录绝对路径，即书的唯一索引（belong 目录 + 书名） */
-export type RepoNode =
-  | { type: "folder"; name: string; path: string; children: RepoNode[] }
-  | { type: "book"; name: string; path: BookId; /** 绑定的结构 JSON（仓库相对路径）；null = 未解析 */ bind: string | null };
+/** 仓库索引的 UI 分组视图：按 belong 平铺分组（v1 无子文件夹），由 library store 的 repoGroups 从平铺索引派生 */
+export interface RepoGroup {
+  /** 所属目录名；null = 根级（belong 为空的书直接挂在仓库根部） */
+  folder: string | null;
+  books: PDFStruct[];
+}
+
+/** 书在索引中的唯一键：belong/name；根级（belong 为空）为 name。
+ *  仅作前端内部标识与 books 映射键；向后端查询时始终携带完整索引项（name/belong/bind）。 */
+export function bookIndexKey(pdf: Pick<PDFStruct, "name" | "belong">): string {
+  const belong = pdf.belong?.trim();
+  return belong ? `${belong}/${pdf.name}` : pdf.name;
+}
 
 export type Mode = "repo" | "offline";
 

@@ -1,48 +1,61 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import type { RepoNode } from "../../types/domain";
+import { computed, ref } from "vue";
+import type { PDFStruct } from "../../../src-tauri/bindings/PDFStruct";
+import { bookIndexKey } from "../../types/domain";
 import { useLibraryStore } from "../../stores/library";
 
 defineOptions({ name: "RepoTree" });
 
-const props = defineProps<{
-  nodes: RepoNode[];
-  depth?: number;
-}>();
-
 const lib = useLibraryStore();
 const collapsed = ref<Set<string>>(new Set());
 
-function toggle(path: string): void {
-  const s = new Set(collapsed.value);
-  if (s.has(path)) s.delete(path);
-  else s.add(path);
-  collapsed.value = s;
-}
+type Row = { kind: "folder"; name: string } | { kind: "book"; pdf: PDFStruct; inFolder: boolean };
 
-function indent(): string {
-  return `${(props.depth ?? 0) * 12}px`;
+/** 由分组索引派生可见行序列：目录行 + 其书行（可折叠）+ 根级书行（belong 为空，与目录平齐） */
+const rows = computed<Row[]>(() => {
+  const out: Row[] = [];
+  for (const group of lib.repoGroups ?? []) {
+    if (group.folder === null) {
+      for (const pdf of group.books) out.push({ kind: "book", pdf, inFolder: false });
+    } else {
+      out.push({ kind: "folder", name: group.folder });
+      if (!collapsed.value.has(group.folder)) {
+        for (const pdf of group.books) out.push({ kind: "book", pdf, inFolder: true });
+      }
+    }
+  }
+  return out;
+});
+
+function toggle(folder: string): void {
+  const s = new Set(collapsed.value);
+  if (s.has(folder)) s.delete(folder);
+  else s.add(folder);
+  collapsed.value = s;
 }
 </script>
 
 <template>
   <ul class="tree">
-    <li v-for="node in nodes" :key="node.path">
-      <!-- 文件夹 -->
-      <div v-if="node.type === 'folder'" class="tree-row folder" :style="{ paddingLeft: indent() }" @click="toggle(node.path)">
-        <span class="chev" :class="{ open: !collapsed.has(node.path) }" aria-hidden="true">
+    <li v-for="row in rows" :key="row.kind === 'folder' ? `f:${row.name}` : bookIndexKey(row.pdf)">
+      <!-- 目录行（belong 分组） -->
+      <div v-if="row.kind === 'folder'" class="tree-row folder" @click="toggle(row.name)">
+        <span class="chev" :class="{ open: !collapsed.has(row.name) }" aria-hidden="true">
           <svg viewBox="0 0 8 8" width="8" height="8"><path d="M2 1l4 3-4 3z" fill="currentColor" /></svg>
         </span>
-        <span class="row-name folder-name">{{ node.name }}</span>
+        <span class="row-name folder-name">{{ row.name }}</span>
       </div>
-      <!-- 书 -->
+      <!-- 书行：组内缩进；bind 为 null（未解析）半透明 -->
       <div
         v-else
         class="tree-row book"
-        :class="{ selected: lib.currentBookId === node.path, unparsed: node.bind === null }"
-        :style="{ paddingLeft: `calc(${indent()} + 4px)` }"
-        :title="node.bind === null ? `${node.name}（未解析）` : node.path"
-        @click="lib.selectBook(node.path)"
+        :class="{
+          selected: lib.currentBookId === bookIndexKey(row.pdf),
+          unparsed: row.pdf.bind === null,
+          nested: row.inFolder,
+        }"
+        :title="row.pdf.bind === null ? `${row.pdf.name}（未解析）` : bookIndexKey(row.pdf)"
+        @click="lib.selectBook(row.pdf)"
       >
         <span class="book-glyph" aria-hidden="true">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3">
@@ -50,9 +63,8 @@ function indent(): string {
             <path d="M6 6.5h4M6 9h4M6 11.5h2.5" />
           </svg>
         </span>
-        <span class="row-name book-name">{{ node.name }}</span>
+        <span class="row-name book-name">{{ row.pdf.name }}</span>
       </div>
-      <RepoTree v-if="node.type === 'folder' && !collapsed.has(node.path)" :nodes="node.children" :depth="(props.depth ?? 0) + 1" />
     </li>
   </ul>
 </template>
@@ -81,6 +93,15 @@ function indent(): string {
 .tree-row.selected {
   background: var(--accent-weak);
   color: var(--accent);
+}
+.tree-row.folder {
+  padding-left: 4px;
+}
+.tree-row.book {
+  padding-left: 8px;
+}
+.tree-row.book.nested {
+  padding-left: 20px;
 }
 .chev {
   width: 12px;

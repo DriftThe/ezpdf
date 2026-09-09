@@ -1,20 +1,10 @@
 <script setup lang="ts">
 import { useLibraryStore } from "../../stores/library";
-import { useParseStore } from "../../stores/parse";
 import RepoTree from "./RepoTree.vue";
 import OfflineList from "./OfflineList.vue";
 import EmptyState from "../common/EmptyState.vue";
-import { buildMockLibrary } from "../../mocks/mockData";
 
 const lib = useLibraryStore();
-const parse = useParseStore();
-
-const isDev = import.meta.env.DEV;
-
-function loadMock(): void {
-  lib.loadMock(buildMockLibrary());
-  parse.setServiceStatus("connected");
-}
 </script>
 
 <template>
@@ -32,7 +22,7 @@ function loadMock(): void {
 
     <div class="side-body">
       <template v-if="lib.mode === 'repo'">
-        <RepoTree v-if="lib.repoRoot" :nodes="lib.repoTree" />
+        <RepoTree v-if="lib.repoRoot" />
         <EmptyState v-else title="未选择仓库" desc="选择一个文件夹作为书仓库，类似 Obsidian 库">
           <button class="btn primary" @click="lib.chooseRepoRoot">选择仓库目录</button>
         </EmptyState>
@@ -55,7 +45,6 @@ function loadMock(): void {
         <span class="root-path">{{ lib.repoRoot }}</span>
         <!-- <button class="btn ghost sm" @click="lib.refreshRepo">刷新</button> -->
       </div>
-      <button v-if="isDev" class="btn ghost sm dev-btn" @click="loadMock">加载演示数据</button>
     </div>
     </div>
   </aside>

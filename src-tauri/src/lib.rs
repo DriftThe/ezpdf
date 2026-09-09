@@ -20,11 +20,80 @@ pub struct PDFStruct {
     pub belong: Option<String>,
 }
 
-#[derive(Deserialize)]
+// ---- ezpdf 书实体域模型（load_book 传输载荷；ts-rs 导出到 bindings/，前端 domain.ts re-export）----
+
+/// 页解析状态机：pending → ocr_queued → ocr_done → translating → done / failed
+#[derive(Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum PageStatus {
+    Pending,
+    OcrQueued,
+    OcrDone,
+    Translating,
+    Done,
+    Failed,
+}
+
+/// [x, y, w, h]，单位 PDF 点（1pt = 1/72in），左上原点，scale=1 视口（与缩放无关）
+#[derive(Deserialize, Serialize, TS)]
+#[ts(export)]
+pub struct BboxPt(pub [f64; 4]);
+
+/// 版面块：OCR 检出的一个区域及其原文/译文。
+/// label 为 PP-DocLayoutV3 标签（text/title/list/figure/figure_caption/table/formula/header/footer），
+/// 保留 string 通道以兼容后续新增标签，故不用 enum。
+#[derive(Deserialize, Serialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct EZrepoConfig {
-    pub folder: Option<Vec<String>>,
-    pub pdfs: Option<Vec<PDFStruct>>,
+pub struct Block {
+    pub id: String, // 如 "p3-b12"
+    pub label: String,
+    pub bbox_pt: BboxPt,
+    pub score: f32,
+    /// markdown 原文：正文纯文本 / 公式 $$..$$ / 表格 markdown；figure 块为 None
+    pub source: Option<String>,
+    /// markdown 译文；figure/formula 块为 None（formula 原样渲染），未译为 None
+    pub translation: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PageInfo {
+    pub index: u32, // 0-based
+    pub status: PageStatus,
+    pub width_pt: f64,
+    pub height_pt: f64,
+    pub blocks: Vec<Block>,
+}
+
+#[derive(Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct BookMeta {
+    pub name: String,
+    pub page_count: u32,
+    pub created_at: String, // ISO 8601
+    pub updated_at: String,
+    pub target_lang: String,
+    pub ocr_engine: String,
+    pub llm_model: String,
+}
+
+/// 一本书的完整实体（= 书目录里 <书名>.json 的形状）。
+/// id 前端会归一化为索引键 belong/name；bind = 结构 JSON 的仓库相对路径，None = 未解析。
+#[derive(Deserialize, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct Book {
+    pub id: String,
+    pub name: String,
+    pub pdf_path: String,
+    pub json_path: String,
+    pub bind: Option<String>,
+    pub meta: BookMeta,
+    pub pages: Vec<PageInfo>,
 }
 // Check repo path input availablity
 fn is_dir_empty<P: AsRef<Path>>(path: P) -> io::Result<bool> {
