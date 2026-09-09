@@ -1,6 +1,6 @@
 # AGENTS.md
 
-ezpdf — a Tauri 2 desktop **real-time PDF translation reader** for Windows, built with Vue 3 + TypeScript + Vite. See `PLAN.md` for the approved architecture and phased plan (OCR via an in-repo Python FastAPI service, LLM translation, Rust-side scheduling; both reader panes are self-drawn with `pdfjs-dist` — do not reintroduce pdf-vue3). Current state: UI skeleton (shell/sidebar/toolbar/dual-pane reader/status strip/settings) with mock data; later phases wire real IPC.
+ezpdf — a Tauri 2 desktop **real-time PDF translation reader** for Windows, built with Vue 3 + TypeScript + Vite. See `PLAN.md` for the approved architecture and phased plan (OCR via an in-repo Python FastAPI service, LLM translation, Rust-side scheduling; both reader panes are self-drawn with `pdfjs-dist` — do not reintroduce pdf-vue3). Current state: UI skeleton (shell/sidebar/toolbar/dual-pane reader/status strip/settings) wired to real repo IPC (`.ezrepo` flat index via `gettree_from_config`; `load_book` for opening books); no mock data — everything runs on real repos.
 
 ## Commands
 
@@ -24,7 +24,7 @@ Two halves, communicating only through Tauri's IPC:
 ## Gotchas
 
 - **Port 1420 is strict** (`vite.config.ts`): Vite fails if it's taken, and `tauri.conf.json` points `devUrl` at it. HMR uses 1421 when `TAURI_DEV_HOST` is set.
-- **`testfiles/` is gitignored** and reserved for manual-test PDFs (text+table+formula+image). It is no longer referenced by code; the reader renders books from the library store (mock data via the dev-only “加载演示数据” button in the sidebar until IPC lands).
+- **`testfiles/` is gitignored** and reserved for manual-test PDFs (text+table+formula+image). It is no longer referenced by code; the reader renders books from the library store (real repo data via IPC only — mock data was removed).
 - Vite is configured to not watch `**/src-tauri/**` — Rust changes require restarting `pnpm tauri dev`.
 - Windows dev machine: the Rust lib is named `ezpdf_lib` (with `_lib` suffix) to avoid a Windows bin/lib name conflict — keep the suffix.
 - TypeScript is strict with `noUnusedLocals`/`noUnusedParameters`; unused imports will fail `pnpm build`.
