@@ -25,3 +25,5 @@ dist-ssr
 
 # Private ignore
 testfiles
+# pdfjs 运行时资源（copy-pdfjs-assets.mjs 产物）
+public/pdfjs/

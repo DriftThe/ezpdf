@@ -1,15 +1,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useLibraryStore } from "../../stores/library";
 import { useReaderStore } from "../../stores/reader";
+import type { Block } from "../../types/domain";
 import PageCard from "./PageCard.vue";
 
 /**
  * 单侧阅读栏：滚动容器 + 页面列。
- * 阶段2起 PageCard 内部换为 pdfjs canvas；本组件的滚动/同步协议保持不变。
+ * 页列表真相源 = pdfjs 实测页数（reader.pageCount）；绑定 JSON 只供 OCR 块数据。
+ * 虚拟化由 PdfPageCanvas 自管（IntersectionObserver），本组件滚动/同步协议不变。
  */
 const props = defineProps<{
   kind: "original" | "translation";
+  doc: PDFDocumentProxy | null;
+  widthPt: number;
+  heightPt: number;
 }>();
 
 const emit = defineEmits<{
@@ -19,7 +25,19 @@ const emit = defineEmits<{
 
 const lib = useLibraryStore();
 const reader = useReaderStore();
-const pages = computed(() => lib.currentPdf?.pages ?? []);
+
+/** 渲染页列表：1..numPages（Pending 书也有全部页卡，块覆盖层为空） */
+const pageNumbers = computed(() =>
+  Array.from({ length: reader.pageCount }, (_, i) => i + 1),
+);
+
+/** 绑定 JSON 的 OCR 块按 1-based 页号查表；查不到的页（未解析）空覆盖层 */
+const blocksByIndex = computed(() => {
+  const map = new Map<number, Block[]>();
+  for (const p of lib.currentPdf?.pages ?? []) map.set(p.index, p.blocks);
+  return map;
+});
+const EMPTY_BLOCKS: Block[] = [];
 
 const scrollEl = ref<HTMLElement | null>(null);
 let raf = 0;
@@ -91,7 +109,17 @@ defineExpose({ scrollToRatio, scrollToPage });
     </header>
     <div ref="scrollEl" class="pane-scroll" @scroll="onScroll">
       <div class="page-col">
-        <PageCard v-for="p in pages" :key="p.index" :page="p" :kind="kind" :zoom="reader.effectiveZoom" />
+        <PageCard
+          v-for="n in pageNumbers"
+          :key="n"
+          :page-number="n"
+          :blocks="blocksByIndex.get(n) ?? EMPTY_BLOCKS"
+          :kind="kind"
+          :doc="doc"
+          :zoom="reader.effectiveZoom"
+          :width-pt="widthPt"
+          :height-pt="heightPt"
+        />
       </div>
     </div>
   </section>

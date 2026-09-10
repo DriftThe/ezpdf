@@ -3,12 +3,19 @@ import { computed } from "vue";
 import { useLibraryStore } from "../../stores/library";
 import { useReaderStore } from "../../stores/reader";
 
-/** 页级状态点阵：完成/待解析一眼可见，点击跳页 */
+/** 页级状态点阵：pdfjs 实测页数为总量，完成态按 1-based 页号从绑定 JSON 查表 */
 const lib = useLibraryStore();
 const reader = useReaderStore();
 
-const pages = computed(() => lib.currentPdf?.pages ?? []);
-const doneCount = computed(() => pages.value.filter((p) => p.finished).length);
+const total = computed(() => reader.pageCount);
+const finishedSet = computed(() => {
+  const s = new Set<number>();
+  for (const p of lib.currentPdf?.pages ?? []) {
+    if (p.finished) s.add(p.index);
+  }
+  return s;
+});
+const doneCount = computed(() => finishedSet.value.size);
 
 const emit = defineEmits<{ jump: [page: number] }>();
 </script>
@@ -18,15 +25,15 @@ const emit = defineEmits<{ jump: [page: number] }>();
     <span class="strip-label">页面</span>
     <div class="strip-dots">
       <button
-        v-for="p in pages"
-        :key="p.index"
+        v-for="n in total"
+        :key="n"
         class="dot"
-        :class="[p.finished ? 'done' : '', { current: reader.currentPage === p.index }]"
-        :title="`第 ${p.index} 页 · ${p.finished ? '完成' : '待解析'}`"
-        @click="emit('jump', p.index)"
+        :class="[finishedSet.has(n) ? 'done' : '', { current: reader.currentPage === n }]"
+        :title="`第 ${n} 页 · ${finishedSet.has(n) ? '完成' : '待解析'}`"
+        @click="emit('jump', n)"
       />
     </div>
-    <span class="strip-summary">完成 {{ doneCount }}/{{ pages.length }}</span>
+    <span class="strip-summary">完成 {{ doneCount }}/{{ total }}</span>
   </footer>
 </template>
 

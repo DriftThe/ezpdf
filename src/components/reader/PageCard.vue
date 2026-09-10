@@ -1,27 +1,30 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useReaderStore } from "../../stores/reader";
-import type { Block, PageInfo } from "../../types/domain";
+import type { Block } from "../../types/domain";
+import PdfPageCanvas from "./PdfPageCanvas.vue";
 
 /**
- * 单页占位卡（骨架期）。
- * 阶段2起：内部替换为 pdfjs canvas 渲染 + 覆盖层；块矩形按 loc 角点
- * 换算百分比定位。绑定 JSON 无页面尺寸，暂以 A4 点数（595×842pt）作占位几何，
- * 阶段2 由 pdfjs getViewport 实测替换。
- * zoom 语义：pt→px 倍率（100% = 1pt:1px），适应宽度时由 store 实时计算。
+ * 单页卡：pdfjs canvas（PdfPageCanvas 自虚拟化）+ 块覆盖层。
+ * 卡片几何 = widthPt/heightPt × zoom（来自 pdfjs 第 1 页实测；各页尺寸不同的
+ * PDF 会有轻微拉伸——v1 按"各页同尺寸"假设处理）。
+ * 覆盖层体系不变：块 loc 角点 → 百分比定位，原文虚线框 / 译文白底覆盖。
  */
 const props = defineProps<{
-  page: PageInfo;
+  doc: PDFDocumentProxy | null;
+  pageNumber: number;
+  blocks: Block[];
   kind: "original" | "translation";
   zoom: number;
+  widthPt: number;
+  heightPt: number;
 }>();
 
 const reader = useReaderStore();
-/** 占位页面几何：A4 @72dpi；阶段2 由 pdfjs 实测替换 */
-const PAGE_W_PT = 595;
-const PAGE_H_PT = 842;
-const width = computed(() => Math.round(PAGE_W_PT * props.zoom));
-const height = computed(() => Math.round(PAGE_H_PT * props.zoom));
+
+const width = computed(() => Math.round(props.widthPt * props.zoom));
+const height = computed(() => Math.round(props.heightPt * props.zoom));
 
 interface Rect {
   block: Block;
@@ -33,12 +36,12 @@ interface Rect {
 
 /** loc = [x1, y1, x2, y2] 左上→右下角点 → 页面百分比矩形 */
 const rects = computed<Rect[]>(() =>
-  props.page.blocks.map((b) => ({
+  props.blocks.map((b) => ({
     block: b,
-    left: (b.loc[0] / PAGE_W_PT) * 100,
-    top: (b.loc[1] / PAGE_H_PT) * 100,
-    width: ((b.loc[2] - b.loc[0]) / PAGE_W_PT) * 100,
-    height: ((b.loc[3] - b.loc[1]) / PAGE_H_PT) * 100,
+    left: (b.loc[0] / props.widthPt) * 100,
+    top: (b.loc[1] / props.heightPt) * 100,
+    width: ((b.loc[2] - b.loc[0]) / props.widthPt) * 100,
+    height: ((b.loc[3] - b.loc[1]) / props.heightPt) * 100,
   })),
 );
 
@@ -60,8 +63,11 @@ function typeClass(type: string): string {
 </script>
 
 <template>
-  <div class="page-wrap" :data-page-index="page.index - 1">
+  <div class="page-wrap" :data-page-index="pageNumber - 1">
     <div class="page-card" :style="{ width: width + 'px', height: height + 'px' }">
+      <!-- pdfjs canvas：原/译两栏同一渲染，差异全在覆盖层 -->
+      <PdfPageCanvas :doc="doc" :page-number="pageNumber" :zoom="zoom" />
+
       <!-- 原文：OCR 块虚线标注（悬浮预览关闭时一并隐藏，悬浮目标随之消失） -->
       <template v-if="kind === 'original' && reader.hoverPreview">
         <div
@@ -74,7 +80,7 @@ function typeClass(type: string): string {
         />
       </template>
 
-      <!-- 译文：仅对有内容的块做白底覆盖 + 译文占位（figure 等不覆盖） -->
+      <!-- 译文：仅对有内容的块做白底覆盖（figure 等不覆盖） -->
       <template v-else>
         <div
           v-for="(r, ri) in rects"
@@ -88,7 +94,7 @@ function typeClass(type: string): string {
         </div>
       </template>
     </div>
-    <div class="page-num">{{ page.index }}</div>
+    <div class="page-num">{{ pageNumber }}</div>
   </div>
 </template>
 

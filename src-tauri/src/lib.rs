@@ -5,6 +5,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::Path;
+use tauri::Manager;
 use ts_rs::TS;
 
 #[derive(Deserialize, Serialize, TS)]
@@ -164,7 +165,13 @@ fn write_index(root: &str, index: &RepoTree) -> Result<(), String> {
 
 //Get repoTree from config
 #[tauri::command]
-async fn gettree_from_config(root: &str) -> Result<RepoTree, String> {
+async fn gettree_from_config(app: tauri::AppHandle, root: &str) -> Result<RepoTree, String> {
+    // 渲染取数闸门（阶段2）：前端凭 asset protocol 读取仓库内 PDF 二进制。
+    // 静态 scope 留空，此处按仓库根运行时放行（最小权限）——选仓库/刷新必经本命令；
+    // AppHandle 由 Tauri 注入，前端 invoke 参数不变
+    app.asset_protocol_scope()
+        .allow_directory(root, true)
+        .map_err(|e| format!("Failed when allowing asset scope: {e}"))?;
     read_index(root)
 }
 

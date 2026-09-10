@@ -5,6 +5,8 @@ import { useLibraryStore } from "./library";
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
+/** 适应宽度模式下页面左右留白合计 px */
+const PAGE_FIT_PADDING = 32;
 
 export const useReaderStore = defineStore("reader", () => {
   const layout = ref<LayoutMode>("ot");
@@ -23,12 +25,28 @@ export const useReaderStore = defineStore("reader", () => {
   /** 待执行的跳页目标（由 gotoPage/切换 PDF 设置；ReaderArea 消费后清空。手动滚动不设置，避免打架） */
   const jumpTarget = ref<number | null>(null);
 
-  /** 页数：页列表长度（绑定 JSON 无独立 meta） */
-  const pageCount = computed(() => useLibraryStore().currentPdf?.pages.length ?? 0);
+  /** pdfjs 实测几何（渲染真相源）：真实页数 + 页面尺寸（pt，取第 1 页；绝大多数 PDF 各页同尺寸）。
+   *  doc 未就绪/加载失败时为 0——pageCount 回退到绑定 JSON 的 pages.length */
+  const numPages = ref(0);
+  const pageSizePt = ref({ w: 0, h: 0 });
 
-  /** 实际渲染缩放：适应宽度需页面几何（pt 宽度），绑定 JSON 无页面尺寸——
-   *  阶段2 由 pdfjs getViewport 实测后接入；现在无几何可算，适应宽度模式退化为手动缩放 */
-  const effectiveZoom = computed(() => zoom.value);
+  /** 渲染层加载完成后上报几何；切书时由调用方先归零 */
+  function setPdfGeometry(pages: number, w: number, h: number): void {
+    numPages.value = pages;
+    pageSizePt.value = { w, h };
+  }
+
+  /** 页数：pdfjs 实测优先，doc 未就绪时回退绑定 JSON 页列表长度 */
+  const pageCount = computed(() =>
+    numPages.value > 0 ? numPages.value : (useLibraryStore().currentPdf?.pages.length ?? 0),
+  );
+  /** 实际渲染缩放：适应宽度 = (栏宽 − 留白) / 页宽(pt)，随栏宽/几何实时重算 */
+  const effectiveZoom = computed(() => {
+    if (fitMode.value !== "width" || paneWidth.value <= 0) return zoom.value;
+    const pw = pageSizePt.value.w;
+    if (pw <= 0) return zoom.value;
+    return clampZoom((paneWidth.value - PAGE_FIT_PADDING) / pw);
+  });
 
   function setLayout(l: LayoutMode): void {
     layout.value = l;
@@ -99,9 +117,11 @@ export const useReaderStore = defineStore("reader", () => {
     hoverPreview,
     pageCount,
     jumpTarget,
+    pageSizePt,
     effectiveZoom,
     setLayout,
     setPaneWidth,
+    setPdfGeometry,
     zoomIn,
     zoomOut,
     toggleFit,
