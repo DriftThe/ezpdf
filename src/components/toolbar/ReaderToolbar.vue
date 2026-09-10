@@ -44,7 +44,7 @@ function onRetryPage(): void {
 <template>
   <header class="toolbar">
     <!-- 侧栏开关 -->
-    <button class="icon-btn" :title="lib.sidebarOpen ? '收起侧栏' : '展开侧栏'" @click="lib.toggleSidebar">
+    <button class="icon-btn" :disabled="settings.pageOpen" :title="lib.sidebarOpen ? '收起侧栏' : '展开侧栏'" @click="lib.toggleSidebar">
       <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
         <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
       </svg>
