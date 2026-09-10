@@ -8,6 +8,8 @@ use std::path::Path;
 use tauri::Manager;
 use ts_rs::TS;
 
+pub mod pyenv;
+
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
 pub struct RepoTree {
@@ -301,6 +303,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let paths = pyenv::PyPaths::resolve(app.handle())?;
+            app.manage(paths);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             check_and_build_repo,
             gettree_from_config,

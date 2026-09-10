@@ -27,5 +27,6 @@ dist-ssr
 testfiles
 PLAN.md
 PLAN-pyserver.md
+/pyserver/.venv/
 # pdfjs 运行时资源（copy-pdfjs-assets.mjs 产物）
 public/pdfjs/
