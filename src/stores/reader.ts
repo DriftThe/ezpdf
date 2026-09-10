@@ -5,8 +5,6 @@ import { useLibraryStore } from "./library";
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
-/** 适应宽度模式下页面左右留白合计 px */
-const PAGE_FIT_PADDING = 32;
 
 export const useReaderStore = defineStore("reader", () => {
   const layout = ref<LayoutMode>("ot");
@@ -25,17 +23,12 @@ export const useReaderStore = defineStore("reader", () => {
   /** 待执行的跳页目标（由 gotoPage/切换 PDF 设置；ReaderArea 消费后清空。手动滚动不设置，避免打架） */
   const jumpTarget = ref<number | null>(null);
 
-  const pageCount = computed(() => useLibraryStore().currentPdf?.meta.pageCount ?? 0);
+  /** 页数：页列表长度（绑定 JSON 无独立 meta） */
+  const pageCount = computed(() => useLibraryStore().currentPdf?.pages.length ?? 0);
 
-  /** 实际渲染缩放：适应宽度模式按「当前页宽 + 窗宽」实时计算，其余用 zoom */
-  const effectiveZoom = computed(() => {
-    if (fitMode.value !== "width" || paneWidth.value <= 0) return zoom.value;
-    const pages = useLibraryStore().currentPdf?.pages ?? [];
-    const page = pages.length ? pages[Math.min(currentPage.value, pages.length) - 1] : undefined;
-    const pw = page?.widthPt ?? 0;
-    if (pw <= 0) return zoom.value;
-    return clampZoom((paneWidth.value - PAGE_FIT_PADDING) / pw);
-  });
+  /** 实际渲染缩放：适应宽度需页面几何（pt 宽度），绑定 JSON 无页面尺寸——
+   *  阶段2 由 pdfjs getViewport 实测后接入；现在无几何可算，适应宽度模式退化为手动缩放 */
+  const effectiveZoom = computed(() => zoom.value);
 
   function setLayout(l: LayoutMode): void {
     layout.value = l;

@@ -53,9 +53,9 @@ function onPageVisible(_side: Side, page: number): void {
   reader.setVisiblePage(page);
 }
 
-/** 未解析的 PDF（结构 JSON 未生成，bind 为 null）：译文视窗用 EmptyState 提示，原文视窗仍显示空白页 */
+/** 未开始解析的 PDF（绑定 JSON 缺失或 status 为 Pending）：译文视窗用 EmptyState 提示，原文视窗仍显示空白页 */
 function isTranslationPending(kind: PaneKind): boolean {
-  return kind === "translation" && lib.currentPdf?.bind === null;
+  return kind === "translation" && (lib.currentPdf?.bind === null || lib.currentPdf?.status === "Pending");
 }
 
 /** 工具栏/状态条跳页、切换 PDF 恢复位置 → 两栏同步滚动（手动滚动不触发） */
@@ -98,7 +98,7 @@ watch(
       />
     </template>
     <EmptyState v-else title="未打开任何PDF" desc="从左侧选择或导入一份 PDF 开始阅读">
-      <button class="btn primary" @click="lib.importPdf">导入 PDF</button>
+      <button class="btn primary" :disabled="lib.importing" @click="lib.importPdf()">{{ lib.importing ? "导入中" : "导入 PDF" }}</button>
     </EmptyState>
   </div>
 </template>

@@ -3,24 +3,14 @@ import { computed } from "vue";
 import { useLibraryStore } from "../../stores/library";
 import { useReaderStore } from "../../stores/reader";
 
-/** 页级状态点阵：pending/处理中/done/failed 一眼可见，点击跳页 */
+/** 页级状态点阵：完成/待解析一眼可见，点击跳页 */
 const lib = useLibraryStore();
 const reader = useReaderStore();
 
 const pages = computed(() => lib.currentPdf?.pages ?? []);
-const doneCount = computed(() => pages.value.filter((p) => p.status === "done").length);
-const failedCount = computed(() => pages.value.filter((p) => p.status === "failed").length);
+const doneCount = computed(() => pages.value.filter((p) => p.finished).length);
 
 const emit = defineEmits<{ jump: [page: number] }>();
-
-const statusText: Record<string, string> = {
-  pending: "待解析",
-  ocr_queued: "OCR 排队中",
-  ocr_done: "OCR 完成",
-  translating: "翻译中",
-  done: "完成",
-  failed: "失败",
-};
 </script>
 
 <template>
@@ -31,14 +21,12 @@ const statusText: Record<string, string> = {
         v-for="p in pages"
         :key="p.index"
         class="dot"
-        :class="[p.status, { current: reader.currentPage === p.index + 1 }]"
-        :title="`第 ${p.index + 1} 页 · ${statusText[p.status] ?? p.status}`"
-        @click="emit('jump', p.index + 1)"
+        :class="[p.finished ? 'done' : '', { current: reader.currentPage === p.index }]"
+        :title="`第 ${p.index} 页 · ${p.finished ? '完成' : '待解析'}`"
+        @click="emit('jump', p.index)"
       />
     </div>
-    <span class="strip-summary">
-      完成 {{ doneCount }}/{{ pages.length }}<template v-if="failedCount"> · <b class="fail">失败 {{ failedCount }}</b></template>
-    </span>
+    <span class="strip-summary">完成 {{ doneCount }}/{{ pages.length }}</span>
   </footer>
 </template>
 
@@ -88,27 +76,9 @@ const statusText: Record<string, string> = {
 .dot.done {
   background: var(--ok);
 }
-.dot.translating,
-.dot.ocr_queued,
-.dot.ocr_done {
-  background: var(--accent);
-  animation: dot-pulse 1.4s ease-in-out infinite;
-}
-.dot.failed {
-  background: var(--err);
-}
-@keyframes dot-pulse {
-  50% {
-    opacity: 0.45;
-  }
-}
 .strip-summary {
   font-size: 11px;
   color: var(--text-3);
   flex: none;
-}
-.fail {
-  color: var(--err);
-  font-weight: 600;
 }
 </style>

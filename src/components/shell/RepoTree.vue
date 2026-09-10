@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { PDFStruct } from "../../../src-tauri/bindings/PDFStruct";
-import { pdfIndexKey } from "../../types/domain";
 import { useLibraryStore } from "../../stores/library";
 
 defineOptions({ name: "RepoTree" });
@@ -37,24 +36,29 @@ function toggle(folder: string): void {
 
 <template>
   <ul class="tree">
-    <li v-for="row in rows" :key="row.kind === 'folder' ? `f:${row.name}` : pdfIndexKey(row.pdf)">
-      <!-- 目录行（belong 分组） -->
+    <li v-for="row in rows" :key="row.kind === 'folder' ? `f:${row.name}` : row.pdf.id">
+      <!-- 目录行（belong 分组）；悬浮时最右侧出现导入加号 -->
       <div v-if="row.kind === 'folder'" class="tree-row folder" @click="toggle(row.name)">
         <span class="chev" :class="{ open: !collapsed.has(row.name) }" aria-hidden="true">
           <svg viewBox="0 0 8 8" width="8" height="8"><path d="M2 1l4 3-4 3z" fill="currentColor" /></svg>
         </span>
         <span class="row-name folder-name">{{ row.name }}</span>
+        <button class="row-add" title="导入 PDF 到此文件夹" :disabled="lib.importing" @click.stop="lib.importPdf(row.name)">
+          <svg viewBox="0 0 10 10" width="15" height="15" aria-hidden="true">
+            <path d="M5 1.2v7.6M1.2 5h7.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+          </svg>
+        </button>
       </div>
       <!-- PDF 行：组内缩进；bind 为 null（未解析）半透明 -->
       <div
         v-else
         class="tree-row pdf"
         :class="{
-          selected: lib.currentPdfId === pdfIndexKey(row.pdf),
+          selected: lib.currentPdfId === row.pdf.id,
           unparsed: row.pdf.bind === null,
           nested: row.inFolder,
         }"
-        :title="row.pdf.bind === null ? `${row.pdf.name}（未解析）` : pdfIndexKey(row.pdf)"
+        :title="row.pdf.bind === null ? `${row.pdf.name}（未解析）` : row.pdf.id"
         @click="lib.selectPdf(row.pdf)"
       >
         <span class="pdf-glyph" aria-hidden="true">
@@ -117,6 +121,7 @@ function toggle(folder: string): void {
   transform: rotate(90deg);
 }
 .row-name {
+  min-width: 0; /* 长名截断而非把右侧加号挤出行 */
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -137,5 +142,37 @@ function toggle(folder: string): void {
 }
 .tree-row.unparsed:hover {
   opacity: 1;
+}
+.row-add {
+  margin-left: auto; /* 推到条目最右端 */
+  width: 18px;
+  height: 18px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0; /* 默认隐藏，悬浮文件夹行时出现 */
+}
+.tree-row.folder:hover .row-add,
+.row-add:focus-visible {
+  opacity: 1;
+}
+.row-add:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+/* 导入进行中：加号置灰失能，悬浮也不再高亮（需压过上面的 hover/浮现规则，故放最后） */
+.row-add:disabled,
+.tree-row.folder:hover .row-add:disabled {
+  opacity: 0.45;
+  background: transparent;
+  color: var(--text-3);
+  cursor: not-allowed;
 }
 </style>
