@@ -96,11 +96,6 @@ export const useLibraryStore = defineStore("library", () => {
     sidebarOpen.value = !sidebarOpen.value;
   }
 
-  function clearPdf(): void {
-    currentPdfId.value = null;
-    sidebarOpen.value = true;
-  }
-
   // ---- 仓库：选择/刷新/加载（阶段1：导入与 PDF 目录 CRUD 后续接入） ----
   async function chooseRepoRoot(): Promise<void> {
     const repoPath = await open({
@@ -166,16 +161,9 @@ export const useLibraryStore = defineStore("library", () => {
       importing.value = false;
     }
   }
+
   function importPdfFolder(): void {
     toast("阶段1接入：导入 ezpdf PDF 文件夹");
-  }
-
-  async function refreshRepo(): Promise<void> {
-    // if (!repoRoot.value) {
-    //   toast("尚未选择仓库", "warn");
-    //   return;
-    // }
-    // await loadRepo(repoRoot.value);
   }
 
   /** 拉取仓库索引；成功才落地状态，失败保留原状并报错 */
@@ -188,6 +176,17 @@ export const useLibraryStore = defineStore("library", () => {
       toast(String(error), "error");
     }
   }
+
+  /** 刷新仓库索引（侧栏「刷新仓库」按钮）：无参包装，内部走 loadRepo；
+   *  模板 @click 会把 PointerEvent 当首参传入，带参的 loadRepo 不能直接绑定 */
+  async function refreshRepo(): Promise<void> {
+    if (!repoRoot.value) {
+      toast("尚未选择仓库", "warn");
+      return;
+    }
+    await loadRepo(repoRoot.value);
+  }
+
   return {
     repoRoot,
     repoGroups,
@@ -197,7 +196,6 @@ export const useLibraryStore = defineStore("library", () => {
     currentPdf,
     selectPdf,
     toggleSidebar,
-    clearPdf,
     chooseRepoRoot,
     importing,
     importPdf,
