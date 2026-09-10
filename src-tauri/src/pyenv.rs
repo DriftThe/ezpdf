@@ -1,3 +1,4 @@
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 #[cfg(not(dev))]
@@ -53,6 +54,20 @@ fn server_root(app: &AppHandle) -> Result<PathBuf, String> {
         let home = app.path().home_dir().map_err(|e| e.to_string())?;
         Ok(home.join(".ezpdf").join("toolkit").join("server"))
     }
+}
+
+#[cfg(windows)]
+pub fn _is_python(executable: &Path) -> bool {
+    let mut cmd = std::process::Command::new(executable);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    let out = match cmd.output() {
+        // spawn 失败（解释器不存在/无权限）= 不可用
+        Ok(out) => out,
+        Err(_) => return false,
+    };
+    out.status.success()
 }
 
 /// venv 解释器位置：Windows 与 Unix 目录布局不同

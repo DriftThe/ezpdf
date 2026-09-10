@@ -225,7 +225,12 @@ fn content_id(bytes: &[u8]) -> String {
 }
 
 /// 单文件导入：校验 → 内容哈希生成 id → copy 入库（name-id 命名）→ 写绑定 JSON 骨架 → 返回索引条目
-fn import_one(dir: &Path, belong: Option<&str>, src_path: &str, index: &RepoTree) -> Result<PDFStruct, String> {
+fn import_one(
+    dir: &Path,
+    belong: Option<&str>,
+    src_path: &str,
+    index: &RepoTree,
+) -> Result<PDFStruct, String> {
     let src = Path::new(src_path);
     if !src.is_file() {
         return Err("文件不存在".into());
@@ -274,7 +279,11 @@ fn import_one(dir: &Path, belong: Option<&str>, src_path: &str, index: &RepoTree
 // Import PDFs (multi-file, best-effort): copy into the repo, create bound JSON
 // skeletons, append .ezrepo entries; report successes and per-file failures.
 #[tauri::command]
-async fn import_pdf(root: &str, belong: Option<String>, paths: Vec<String>) -> Result<ImportOutcome, String> {
+async fn import_pdf(
+    root: &str,
+    belong: Option<String>,
+    paths: Vec<String>,
+) -> Result<ImportOutcome, String> {
     let dir = Path::new(root);
     let mut index = read_index(root)?;
     let mut imported: Vec<PDFStruct> = Vec::new();
@@ -291,11 +300,19 @@ async fn import_pdf(root: &str, belong: Option<String>, paths: Vec<String>) -> R
                 index.pdfs.push(entry.clone());
                 imported.push(entry);
             }
-            Err(reason) => failed.push(ImportFailure { path: src.clone(), reason }),
+            Err(reason) => failed.push(ImportFailure {
+                path: src.clone(),
+                reason,
+            }),
         }
     }
     write_index(root, &index)?;
     Ok(ImportOutcome { imported, failed })
+}
+
+#[tauri::command]
+fn check_python(paths: tauri::State<pyenv::PyPaths>) -> bool {
+    pyenv::_is_python(&paths.venv_python)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -312,7 +329,8 @@ pub fn run() {
             check_and_build_repo,
             gettree_from_config,
             load_pdf,
-            import_pdf
+            import_pdf,
+            check_python,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

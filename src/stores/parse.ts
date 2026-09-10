@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { toast } from "../composables/toast";
 import type { ServiceStatus } from "../types/domain";
-
+import {invoke} from "@tauri-apps/api/core"
 export const useParseStore = defineStore("parse", () => {
   /** 全局暂停/恢复（阶段4由 Rust 调度器驱动） */
   const paused = ref(false);
@@ -18,10 +18,16 @@ export const useParseStore = defineStore("parse", () => {
     serviceStatus.value = s;
   }
 
-  /** 阶段3：invoke Rust → /health */
-  function testOcrConnection(): void {
-    toast("阶段3接入：OCR 服务健康检查");
+  const pythonReady = ref<boolean | null>(null);
+  /** 检查本地服务：探测 venv 解释器可用性，结果写入 pythonReady（阶段2.5 换 bootstrap 全量探测） */
+  async function serve_check(): Promise<void> {
+    try {
+      pythonReady.value = await invoke<boolean>("check_python");
+    } catch (e) {
+      toast(String(e), "error");
+      pythonReady.value = false;
+    }
   }
 
-  return { paused, serviceStatus, togglePaused, setServiceStatus, testOcrConnection };
+  return { paused, serviceStatus, pythonReady, togglePaused, setServiceStatus, serve_check };
 });

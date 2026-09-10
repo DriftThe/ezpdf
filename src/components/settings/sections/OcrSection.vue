@@ -1,18 +1,29 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useParseStore } from "../../../stores/parse";
 
 const parse = useParseStore();
 
-/** 四项本地服务检查的占位状态（阶段2.5 由 Rust 探测结果驱动，届时迁入 parse store） */
+/** 四项本地服务检查状态：python 来自 store（真实探测），其余仍为本地占位（阶段2.5 迁 store） */
 type ReadyState = "notready" | "ready";
 type EnvState = "notready" | "cpu" | "gpu";
 type SvcState = "stopped" | "idle" | "busy";
 
-const python = ref<ReadyState>("notready");
+const python = computed<ReadyState>(() => (parse.pythonReady ? "ready" : "notready"));
 const cuda = ref<ReadyState>("notready");
 const env = ref<EnvState>("notready");
 const svc = ref<SvcState>("stopped");
+
+const checking = ref(false);
+
+async function onCheck(): Promise<void> {
+  checking.value = true;
+  try {
+    await parse.serve_check();
+  } finally {
+    checking.value = false;
+  }
+}
 
 /** 状态位 → 文案 / 状态灯修饰类（"" = 灰色未就绪态） */
 const READY_LABEL: Record<ReadyState, string> = { notready: "未就绪", ready: "已就绪" };
@@ -29,7 +40,9 @@ const SVC_CLASS: Record<SvcState, string> = { stopped: "", idle: "ok", busy: "wa
     <!-- 注意：含 button 的行不能用 label 包裹（label 会把整行点击转发给按钮） -->
     <div class="set-field">
       <span>本地服务</span>
-      <button class="set-button" @click="parse.testOcrConnection">检查本地服务</button>
+      <button class="set-button" :disabled="checking" @click="onCheck">
+        {{ checking ? "检查中…" : "检查本地服务" }}
+      </button>
     </div>
     <div class="set-field">
       <span>服务检查</span>
