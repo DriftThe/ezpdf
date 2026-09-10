@@ -25,5 +25,7 @@ dist-ssr
 
 # Private ignore
 testfiles
+PLAN.md
+PLAN-pyserver.md
 # pdfjs 运行时资源（copy-pdfjs-assets.mjs 产物）
 public/pdfjs/
