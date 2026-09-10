@@ -40,11 +40,11 @@ function toggle(folder: string): void {
       <!-- 目录行（belong 分组）；悬浮时最右侧出现导入加号 -->
       <div v-if="row.kind === 'folder'" class="tree-row folder" @click="toggle(row.name)">
         <span class="chev" :class="{ open: !collapsed.has(row.name) }" aria-hidden="true">
-          <svg viewBox="0 0 8 8" width="8" height="8"><path d="M2 1l4 3-4 3z" fill="currentColor" /></svg>
+          <svg viewBox="0 0 8 8" width="10" height="10"><path d="M2 1l4 3-4 3z" fill="currentColor" /></svg>
         </span>
         <span class="row-name folder-name">{{ row.name }}</span>
         <button class="row-add" title="导入 PDF 到此文件夹" :disabled="lib.importing" @click.stop="lib.importPdf(row.name)">
-          <svg viewBox="0 0 10 10" width="15" height="15" aria-hidden="true">
+          <svg viewBox="0 0 10 10" width="20" height="20" aria-hidden="true">
             <path d="M5 1.2v7.6M1.2 5h7.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
           </svg>
         </button>
@@ -62,7 +62,7 @@ function toggle(folder: string): void {
         @click="lib.selectPdf(row.pdf)"
       >
         <span class="pdf-glyph" aria-hidden="true">
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3">
+          <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3">
             <path d="M4 2h6l2 2v10H4z" />
             <path d="M6 6.5h4M6 9h4M6 11.5h2.5" />
           </svg>
@@ -82,9 +82,10 @@ function toggle(folder: string): void {
 .tree-row {
   display: flex;
   align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding-right: 8px;
+  gap: 7px;
+  height: 34px;
+  font-size: 17px;
+  padding-right: 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--text-2);
@@ -99,17 +100,17 @@ function toggle(folder: string): void {
   color: var(--accent);
 }
 .tree-row.folder {
-  padding-left: 4px;
+  padding-left: 6px;
 }
 .tree-row.pdf {
-  padding-left: 8px;
+  padding-left: 10px;
 }
 .tree-row.pdf.nested {
-  padding-left: 20px;
+  padding-left: 26px;
 }
 .chev {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -145,8 +146,8 @@ function toggle(folder: string): void {
 }
 .row-add {
   margin-left: auto; /* 推到条目最右端 */
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   flex: none;
   display: inline-flex;
   align-items: center;
