@@ -1,6 +1,6 @@
 # AGENTS.md
 
-ezpdf — a Tauri 2 desktop **real-time PDF translation reader** for Windows, built with Vue 3 + TypeScript + Vite. See `PLAN.md` for the approved architecture and phased plan (OCR via an in-repo Python FastAPI service, LLM translation, Rust-side scheduling; both reader panes are self-drawn with `pdfjs-dist` — do not reintroduce pdf-vue3). Current state: UI skeleton (shell/sidebar/toolbar/dual-pane reader/status strip/settings) wired to real repo IPC (`.ezrepo` flat index via `gettree_from_config`; `load_pdf` for opening PDFs); no mock data — everything runs on real repos.
+ezpdf — a Tauri 2 desktop **real-time PDF translation reader** for Windows, built with Vue 3 + TypeScript + Vite. See `PLAN.md` for the approved architecture and phased plan (OCR via an in-repo Python FastAPI service, LLM translation, Rust-side scheduling; both reader panes are self-drawn with `pdfjs-dist` — do not reintroduce pdf-vue3). Current state: UI skeleton (shell/sidebar/toolbar/dual-pane reader/status strip/settings) wired to real repo IPC (`.ezrepo` flat index via `gettree_from_config` — each PDF entry carries a stable unique `id` generated at import time, the key for all frontend lookups; `load_pdf` opens a PDF by `id`); no mock data — everything runs on real repos.
 
 ## Commands
 
