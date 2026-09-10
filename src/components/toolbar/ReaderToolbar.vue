@@ -130,7 +130,7 @@ function onRetryPage(): void {
       <span class="svc-dot" />{{ svcText }}
     </span>
 
-    <button class="icon-btn" title="设置" @click="settings.openModal">
+    <button class="icon-btn" title="设置" @click="settings.openPage">
       <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3">
         <circle cx="8" cy="8" r="2.2" />
         <path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4" />
@@ -141,7 +141,7 @@ function onRetryPage(): void {
 
 <style scoped>
 .toolbar {
-  height: 46px;
+  height: var(--toolbar-h);
   flex: none;
   display: flex;
   align-items: center;
@@ -149,6 +149,8 @@ function onRetryPage(): void {
   padding: 0 12px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 20; /* 压在设置整页（z-10）之上：设置打开时工具栏保持可见可点 */
 }
 .divider {
   width: 1px;

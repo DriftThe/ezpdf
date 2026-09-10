@@ -21,8 +21,20 @@ export interface ParseSettings {
   resumeOnStart: boolean;
 }
 
+/**
+ * 设置页左侧导航子项。
+ * 新增设置块三步：① 此处扩展 union（如 "theme"）
+ * ② 新建 src/components/settings/sections/ThemeSection.vue（抄现有 section 当模板，
+ *    根元素 class="set-pane"；表单状态在本 store 加 ref）
+ * ③ 在 SettingsPage.vue 的 SECTIONS 注册表加一行 —— union 扩了不注册会编译报错
+ */
+export type SettingsSection = "llm" | "ocr" | "parse";
+
 export const useSettingsStore = defineStore("settings", () => {
-  const modalOpen = ref(false);
+  /** 设置整页是否打开（覆盖 sidebar + reader 视窗，保留顶部工具栏；不卸载原视窗） */
+  const pageOpen = ref(false);
+  /** 当前选中的设置子项 */
+  const section = ref<SettingsSection>("llm");
 
   const llm = ref<LlmSettings>({
     baseUrl: "https://api.deepseek.com/v1",
@@ -43,17 +55,17 @@ export const useSettingsStore = defineStore("settings", () => {
     resumeOnStart: true,
   });
 
-  function openModal(): void {
-    modalOpen.value = true;
+  function openPage(): void {
+    pageOpen.value = true;
   }
-  function closeModal(): void {
-    modalOpen.value = false;
+  function closePage(): void {
+    pageOpen.value = false;
   }
-  /** 阶段1：写入 appDataDir/settings.json + keyring 存 key */
+  /** 保存并退出：现绑在设置页返回按钮上；阶段1起改为写入 appDataDir/settings.json + keyring 存 key */
   function save(): void {
     toast("设置已保存（持久化将在阶段1接入）");
-    modalOpen.value = false;
+    pageOpen.value = false;
   }
 
-  return { modalOpen, llm, ocr, parse, openModal, closeModal, save };
+  return { pageOpen, section, llm, ocr, parse, openPage, closePage, save };
 });

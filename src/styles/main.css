@@ -40,6 +40,7 @@
   --shadow-2: 0 8px 24px rgba(16, 24, 40, 0.18);
 
   --sidebar-w: 264px;
+  --toolbar-h: 46px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -240,6 +241,105 @@ textarea {
 }
 .switch input:checked + .track .thumb {
   left: 14px;
+}
+
+/* ---- 设置页子项面板（settings/sections/ 共用） ---- */
+.set-pane {
+  padding: 24px 32px;
+}
+.set-pane-fill {
+  flex: 1; /* 撑满滚动容器（空态面板居中用） */
+  min-height: 360px;
+  display: flex;
+}
+.set-title {
+  margin: 0 0 16px;
+  font-size: 17px;
+  font-weight: 600;
+}
+.set-field {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  align-items: center;
+  gap: 10px;
+  margin: 9px 0;
+}
+.set-field > span {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.set-field input {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  padding: 6px 10px;
+  font-size: 13px;
+  min-width: 0;
+}
+.set-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.set-field-row {
+  display: flex;
+  gap: 12px;
+}
+.set-field-row .set-field {
+  flex: 1;
+}
+.set-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--text-2);
+  margin: 10px 0;
+  cursor: pointer;
+}
+.set-check input {
+  accent-color: var(--accent);
+}
+
+/*
+ * 设置页按钮：与 set-field input 同规格（同高同框同字号），
+ * 独立使用 class="set-button"，强调动作用 class="set-button primary"，
+ * 次要动作用 class="set-button ghost"；不支持与 .btn 叠加。
+ */
+.set-button {
+  justify-self: start; /* 在 set-field 的 1fr 格子里保持自然宽度，不拉满整行 */
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--text-1);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+.set-button:hover {
+  background: var(--bg-hover);
+}
+.set-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.set-button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+.set-button.primary:hover {
+  filter: brightness(1.07);
+}
+.set-button.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-2);
+}
+.set-button.ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 /* ---- 滚动条 ---- */
