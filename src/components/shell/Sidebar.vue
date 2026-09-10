@@ -26,7 +26,7 @@ function onOfflineTab(): void {
 
     <div class="side-body">
       <RepoTree v-if="lib.repoRoot" />
-      <EmptyState v-else title="未选择仓库" desc="选择一个文件夹作为 PDF 仓库，类似 Obsidian 库">
+      <EmptyState v-else title="未选择仓库" desc="选择一个文件夹作为 PDF 仓库">
         <button class="btn primary" @click="lib.chooseRepoRoot">选择仓库目录</button>
       </EmptyState>
     </div>
