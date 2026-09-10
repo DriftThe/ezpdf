@@ -198,6 +198,16 @@ textarea {
 .svc.disconnected {
   color: var(--err);
 }
+/* 通用修饰（设置页 OCR 服务面板复用）：ok=就绪/空闲 warn=繁忙 info=信息态(CPU) */
+.svc.ok .svc-dot {
+  background: var(--ok);
+}
+.svc.warn .svc-dot {
+  background: var(--warn);
+}
+.svc.info .svc-dot {
+  background: var(--accent);
+}
 @keyframes ez-pulse {
   50% {
     opacity: 0.35;
@@ -282,7 +292,8 @@ textarea {
 }
 .set-field-row {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap; /* 行内项目多时（如 OCR 四项检查）窄窗自动换行 */
+  gap: 40px;
 }
 .set-field-row .set-field {
   flex: 1;
