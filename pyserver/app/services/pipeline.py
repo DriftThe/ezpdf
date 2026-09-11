@@ -381,7 +381,7 @@ class VLPredictor:
             device: torch.device,
             prompts: Optional[dict[str, str]] = None,
             dtype: torch.dtype = torch.bfloat16,
-            max_new_tokens: int = 256,
+            max_new_tokens: int = 512,
             max_pixels: int = 1280 * 28 * 28,  # 官方默认 1MP（longest_edge）
             min_pixels: int = 112896,  # 官方默认 shortest_edge
             max_forward_batch: int = 10,  # 单次 VL forward 最多 image 数（显存上限）
@@ -556,7 +556,9 @@ class OCRPipeline:
             box_unclip_ratio: float = 0.0,
             box_expand_pixels: float = 2.0,
             # ---- VLPredictor ----
-            max_new_tokens: int = 256,
+            # 256 会把长段落截断（layout.jpg 最长 text 块实测 1087 字断句 vs 512 完整 1157 字）；
+            # 短块 EOS 提前结束，代价只在长块的多余 decode
+            max_new_tokens: int = 512,
             vl_min_pixels: int = 112896,
             vl_max_pixels: int = 1280 * 28 * 28,
             vl_max_forward_batch: int = 4,
