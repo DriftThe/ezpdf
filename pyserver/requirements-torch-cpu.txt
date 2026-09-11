@@ -1,0 +1,3 @@
+# CPU 变体：PyPI Windows 默认构建（~200MB）。无 N 卡或驱动过旧时由 Rust 选择本文件
+torch==2.13.0
+torchvision==0.28.0

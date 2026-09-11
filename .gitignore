@@ -28,5 +28,9 @@ testfiles
 PLAN.md
 PLAN-pyserver.md
 /pyserver/.venv/
+/pyserver/models/
+/pyserver/app/__pycache__
+/pyserver/app/services/__pycache__
+/pyserver/app/routers/__pycache__
 # pdfjs 运行时资源（copy-pdfjs-assets.mjs 产物）
 public/pdfjs/
