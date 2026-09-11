@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { toast } from "../composables/toast";
+import { useLibraryStore } from "./library";
 
 export interface LlmSettings {
   baseUrl: string;
@@ -54,6 +55,8 @@ export const useSettingsStore = defineStore("settings", () => {
 
   function openPage(): void {
     pageOpen.value = true;
+    // sidebar 收起时工具栏满宽，会盖住设置页左列顶部的返回键——打开设置先复位展开
+    useLibraryStore().sidebarOpen = true;
   }
   function closePage(): void {
     pageOpen.value = false;
