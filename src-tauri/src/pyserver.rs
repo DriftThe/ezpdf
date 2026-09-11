@@ -85,6 +85,13 @@ impl PyService {
         *self.0.token.lock().unwrap() = token;
     }
 
+    /// OCR 调用取用点（阶段4）：握手成功后的 (base, token)；未连接 → None
+    pub fn ocr_target(&self) -> Option<(String, String)> {
+        let base = self.0.endpoint.lock().unwrap().clone()?;
+        let token = self.0.token.lock().unwrap().clone();
+        Some((base, token))
+    }
+
     /// 停止（同步）：置标记 + 通知 supervisor + 关 stdin（Python 优雅退出）。
     /// 供 RunEvent::Exit（同步上下文）与 ocr_stop 命令共用。
     pub fn stop(&self) {

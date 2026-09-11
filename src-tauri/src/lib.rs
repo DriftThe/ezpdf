@@ -8,6 +8,7 @@ use std::path::Path;
 use tauri::Manager;
 use ts_rs::TS;
 
+pub mod parse;
 pub mod pyenv;
 pub mod pyserver;
 
@@ -46,7 +47,7 @@ pub enum PDFStatus {
 /// 版面块：OCR 检出的一个区域及其原文/译文。
 /// kind 为 PP-DocLayoutV3 标签（text/title/list/figure/figure_caption/table/formula/header/footer），
 /// 保留 string 通道以兼容后续新增标签，故不用 enum。
-#[derive(Deserialize, Serialize, TS)]
+#[derive(Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct Block {
@@ -61,7 +62,7 @@ pub struct Block {
 }
 
 /// 页：index 从 1 起（与绑定 JSON 一致）；finished 标记该页是否完成处理
-#[derive(Deserialize, Serialize, TS)]
+#[derive(Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct PageInfo {
@@ -394,6 +395,28 @@ async fn ocr_stop(svc: tauri::State<'_, pyserver::PyService>) -> Result<(), Stri
     Ok(())
 }
 
+// ---- OCR 解析回路（阶段4）：批量 OCR + 骨架补齐；映射/写回细节在 parse.rs ----
+
+/// parse_append 的后端落点：一批（≤4 页、同书）页图 → 整批推理 → 一次原子写回
+#[tauri::command]
+async fn parse_pdf(
+    root: &str,
+    id: &str,
+    pages: Vec<parse::ParsePageInput>,
+    svc: tauri::State<'_, pyserver::PyService>,
+) -> Result<parse::ParseOutcome, String> {
+    let (base, token) = svc
+        .ocr_target()
+        .ok_or_else(|| "OCR 服务未连接".to_string())?;
+    parse::parse_batch(root, id, pages, &base, &token).await
+}
+
+/// 打开书补骨架：pdfjs 实测页数回填 pages 为空的绑定 JSON（lopdf 解析失败书）
+#[tauri::command]
+async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
+    parse::prefill_pages(root, id, total).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -416,6 +439,8 @@ pub fn run() {
             ocr_download_models,
             ocr_start,
             ocr_stop,
+            parse_pdf,
+            prefill_pages,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
