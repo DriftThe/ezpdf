@@ -78,8 +78,16 @@ const coverRects = computed<Rect[]>(() =>
 );
 
 // ---- v-fit：白底框字号自适应（框尺寸 × 文字量 → 填满、不溢出） ----
+// 性能约束（2026-09-11 实测）：大书（200 页 × 十余块）缩放时全部覆盖框同时变尺寸，
+// 若逐框立即二分量算（强制同步布局），单次 zoom 阻塞主线程 ~3s。故只对视口附近的框
+// 量算：离屏框仅标脏（WeakSet，零布局），进入视口（IntersectionObserver，上下扩一屏）
+// 时才真正适配；updated / ResizeObserver 对离屏框同样退化为标脏。
 
 const roMap = new WeakMap<HTMLElement, ResizeObserver>();
+const visibleBoxes = new WeakSet<HTMLElement>();
+const dirtyBoxes = new WeakSet<HTMLElement>();
+const pendingFits = new Set<HTMLElement>();
+let flushRaf = 0;
 
 function fitCoverText(box: HTMLElement): void {
   const span = box.querySelector<HTMLElement>(".cover-text");
@@ -106,19 +114,60 @@ function fitCoverText(box: HTMLElement): void {
   span.style.fontSize = `${lo}px`;
 }
 
+/** 请求适配：离屏框只标脏等 IO；视口内框入批，帧末统一量算（updated/RO 同帧去重） */
+function requestFit(box: HTMLElement): void {
+  if (!visibleBoxes.has(box)) {
+    dirtyBoxes.add(box);
+    return;
+  }
+  pendingFits.add(box);
+  if (!flushRaf) flushRaf = requestAnimationFrame(flushFits);
+}
+
+function flushFits(): void {
+  flushRaf = 0;
+  for (const box of pendingFits) {
+    if (visibleBoxes.has(box)) fitCoverText(box);
+  }
+  pendingFits.clear();
+}
+
+const fitIO = new IntersectionObserver(
+  (entries) => {
+    for (const e of entries) {
+      const box = e.target as HTMLElement;
+      if (!e.isIntersecting) {
+        visibleBoxes.delete(box);
+        continue;
+      }
+      visibleBoxes.add(box);
+      if (dirtyBoxes.has(box)) {
+        dirtyBoxes.delete(box);
+        fitCoverText(box); // 初始/滚入上报：绘制前完成适配，避免默认字号闪现
+      }
+    }
+  },
+  { rootMargin: "50% 0px" }, // 进入前约半屏即适配（画布虚拟化仍是上下各一屏）
+);
+
 const vFit: Directive<HTMLElement> = {
   mounted(box) {
-    fitCoverText(box);
-    const ro = new ResizeObserver(() => fitCoverText(box)); // zoom/窗口变化 → 重适配
+    dirtyBoxes.add(box); // 不立即量算：等 IO 初报，离屏框不付布局代价
+    fitIO.observe(box);
+    const ro = new ResizeObserver(() => requestFit(box)); // zoom/窗口变化 → 重适配
     ro.observe(box);
     roMap.set(box, ro);
   },
   updated(box) {
-    fitCoverText(box); // 文本/几何更新后重新适配
+    requestFit(box); // 文本/几何更新后重新适配
   },
   unmounted(box) {
+    fitIO.unobserve(box);
     roMap.get(box)?.disconnect();
     roMap.delete(box);
+    pendingFits.delete(box);
+    visibleBoxes.delete(box);
+    dirtyBoxes.delete(box);
   },
 };
 </script>
