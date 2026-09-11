@@ -328,6 +328,14 @@ async fn ocr_install_env(
 }
 
 #[tauri::command]
+async fn ocr_download_models(
+    app: tauri::AppHandle,
+    paths: tauri::State<'_, pyenv::PyPaths>,
+) -> Result<(), String> {
+    pyenv::download_models(&app, &paths).await
+}
+
+#[tauri::command]
 async fn ocr_start(
     app: tauri::AppHandle,
     paths: tauri::State<'_, pyenv::PyPaths>,
@@ -369,6 +377,7 @@ pub fn run() {
             import_pdf,
             ocr_env_report,
             ocr_install_env,
+            ocr_download_models,
             ocr_start,
             ocr_stop,
         ])

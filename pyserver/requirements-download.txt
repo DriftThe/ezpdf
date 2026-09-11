@@ -1,0 +1,2 @@
+# 模型下载专用依赖（ocr_download_models 按需安装；基础环境不需要）
+huggingface_hub>=0.30,<2.0

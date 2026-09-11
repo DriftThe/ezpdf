@@ -17,6 +17,7 @@ export const useParseStore = defineStore("parse", () => {
 
   const checking = ref(false);
   const installing = ref(false);
+  const modelsBusy = ref(false);
 
   function togglePaused(): void {
     paused.value = !paused.value;
@@ -65,6 +66,21 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
+  /** 模型下载：huggingface_hub 按需补装 → python -m app.fetch（hf-mirror 镜像，缺哪补哪） */
+  async function downloadModels(): Promise<void> {
+    if (modelsBusy.value) return;
+    modelsBusy.value = true;
+    try {
+      await invoke("ocr_download_models");
+      await checkEnv();
+      toast("模型下载完成", "info");
+    } catch (e) {
+      toast(String(e), "error");
+    } finally {
+      modelsBusy.value = false;
+    }
+  }
+
   async function startService(): Promise<void> {
     try {
       await invoke("ocr_start");
@@ -89,8 +105,10 @@ export const useParseStore = defineStore("parse", () => {
     envLogs,
     checking,
     installing,
+    modelsBusy,
     checkEnv,
     installEnv,
+    downloadModels,
     startService,
     stopService,
   };

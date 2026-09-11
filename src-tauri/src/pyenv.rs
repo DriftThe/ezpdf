@@ -350,3 +350,16 @@ pub async fn install_env(app: &AppHandle, paths: &PyPaths) -> Result<(), String>
     emit_log(app, "[ezpdf] OCR 环境安装完成".into()).await;
     Ok(())
 }
+
+/// 模型下载：huggingface_hub（requirements-download.txt 按需补装，已装则 pip 秒过）
+/// → python -m app.fetch（快照下载到 models/，走 hf-mirror 镜像；断点续传由 hub 库内置）。
+pub async fn download_models(app: &AppHandle, paths: &PyPaths) -> Result<(), String> {
+    if !paths.venv_python.is_file() {
+        return Err("venv 解释器不存在，请先安装环境".into());
+    }
+    emit_log(app, "[ezpdf] 模型下载开始（约 1.9GB，缺哪补哪）".into()).await;
+    pip_install(app, paths, "requirements-download.txt").await?;
+    run_streamed(app, &paths.venv_python, &["-m", "app.fetch"], &paths.root).await?;
+    emit_log(app, "[ezpdf] 模型下载完成".into()).await;
+    Ok(())
+}

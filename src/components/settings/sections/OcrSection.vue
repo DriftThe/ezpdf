@@ -107,6 +107,14 @@ const SVC_CLASS: Record<SvcState, string> = { stopped: "", starting: "starting",
         >
           {{ parse.installing ? "安装中…" : "一键安装" }}
         </button>
+        <button
+          v-if="pythonReady && !modelsReady"
+          class="set-button"
+          :disabled="parse.modelsBusy || parse.installing"
+          @click="parse.downloadModels()"
+        >
+          {{ parse.modelsBusy ? "下载中…" : "下载模型（约1.9GB）" }}
+        </button>
         <button v-if="!serviceBusy" class="set-button" :disabled="parse.serviceStatus === 'starting'" @click="parse.startService()">
           启动服务
         </button>
