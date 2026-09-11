@@ -72,6 +72,7 @@ watch(
     pdfDoc.value = null;
     docError.value = "";
     reader.setPdfGeometry(0, 0, 0); // 切书：旧几何失效（pageCount 回退绑定 JSON）
+    reader.setPageSizes([]); // 逐页尺寸一并失效
     const path = lib.currentPdf?.pdfPath;
     if (!id || !path) {
       docState.value = "idle";
@@ -79,7 +80,8 @@ watch(
     }
     docState.value = "loading";
     try {
-      const doc = await loadPdfDoc(id, path);
+      // pin：焦点书 doc 不参与 LRU 淘汰（调度桥后台书最多再占 1 本）
+      const doc = await loadPdfDoc(id, path, true);
       if (lib.currentPdfId !== id) {
         void destroyPdfDoc(id); // 竞态：加载完成时书已切走 → 丢弃
         return;
@@ -97,6 +99,7 @@ watch(
       reader.jumpTarget = reader.currentPage;
       pdfDoc.value = doc;
       docState.value = "ready";
+      void measurePageSizes(id, doc); // 后台逐页实测（渐进生效，先按第 1 页尺寸顶住）
     } catch (error) {
       if (lib.currentPdfId !== id) return; // 已切书，错误不再相关
       docError.value = String(error);
@@ -104,6 +107,32 @@ watch(
     }
   },
 );
+
+/**
+ * 逐页实测尺寸（后台，分批并发）：页尺寸不一的 PDF（扫描版每页裁剪不同，
+ * 还有横页）覆盖层定位必须按每页真实几何——OCR 的 loc 也是按每页真实
+ * viewport 换算的，两端必须同源。getPage 为纯元数据解析，无渲染开销。
+ */
+async function measurePageSizes(id: string, doc: PDFDocumentProxy): Promise<void> {
+  const sizes: Array<{ w: number; h: number }> = new Array(doc.numPages);
+  const CHUNK = 32;
+  for (let i = 0; i < doc.numPages; i += CHUNK) {
+    const end = Math.min(i + CHUNK, doc.numPages);
+    const chunk = await Promise.all(
+      Array.from({ length: end - i }, (_, k) =>
+        doc.getPage(i + 1 + k).then((pg) => {
+          const vp = pg.getViewport({ scale: 1 });
+          return { w: vp.width, h: vp.height };
+        }),
+      ),
+    );
+    if (lib.currentPdfId !== id) return; // 已切书：旧测量作废
+    chunk.forEach((s, k) => {
+      sizes[i + k] = s;
+    });
+    reader.setPageSizes([...sizes]); // 渐进生效：已量出的页立刻用真实尺寸
+  }
+}
 
 onBeforeUnmount(() => {
   const id = lib.currentPdfId;
@@ -144,8 +173,6 @@ watch(
           ref="leftPane"
           :kind="left"
           :doc="pdfDoc"
-          :width-pt="reader.pageSizePt.w"
-          :height-pt="reader.pageSizePt.h"
           @scroll-ratio="(r) => onScrollRatio('left', r)"
           @page-visible="(p) => onPageVisible('left', p)"
         />
@@ -159,8 +186,6 @@ watch(
           ref="rightPane"
           :kind="right"
           :doc="pdfDoc"
-          :width-pt="reader.pageSizePt.w"
-          :height-pt="reader.pageSizePt.h"
           @scroll-ratio="(r) => onScrollRatio('right', r)"
           @page-visible="(p) => onPageVisible('right', p)"
         />

@@ -25,15 +25,28 @@ export const useReaderStore = defineStore("reader", () => {
   /** 待执行的跳页目标（由 gotoPage/切换 PDF 设置；ReaderArea 消费后清空。手动滚动不设置，避免打架） */
   const jumpTarget = ref<number | null>(null);
 
-  /** pdfjs 实测几何（渲染真相源）：真实页数 + 页面尺寸（pt，取第 1 页；绝大多数 PDF 各页同尺寸）。
+  /** pdfjs 实测几何（渲染真相源）：真实页数 + 第 1 页尺寸（pt）。
    *  doc 未就绪/加载失败时为 0——pageCount 回退到绑定 JSON 的 pages.length */
   const numPages = ref(0);
   const pageSizePt = ref({ w: 0, h: 0 });
+  /** 逐页实测尺寸（pt）：页尺寸不一的 PDF（扫描版每页裁剪不同）的覆盖层定位前提；
+   *  未就绪/未量完的页回退第 1 页尺寸（各页同尺寸退化） */
+  const pageSizesPt = ref<Array<{ w: number; h: number }>>([]);
 
   /** 渲染层加载完成后上报几何；切书时由调用方先归零 */
   function setPdfGeometry(pages: number, w: number, h: number): void {
     numPages.value = pages;
     pageSizePt.value = { w, h };
+  }
+
+  /** 逐页尺寸批量上报（ReaderArea 文档就绪后渐进量取；切书时归零） */
+  function setPageSizes(sizes: Array<{ w: number; h: number }>): void {
+    pageSizesPt.value = sizes;
+  }
+
+  /** 第 n 页（1-based）真实尺寸：逐页实测优先，缺失回退第 1 页尺寸 */
+  function pageSizeFor(n: number): { w: number; h: number } {
+    return pageSizesPt.value[n - 1] ?? pageSizePt.value;
   }
 
   /** 页数：pdfjs 实测优先，doc 未就绪时回退绑定 JSON 页列表长度 */
@@ -117,11 +130,15 @@ export const useReaderStore = defineStore("reader", () => {
     hoverPreview,
     pageCount,
     jumpTarget,
+    numPages,
     pageSizePt,
+    pageSizesPt,
     effectiveZoom,
     setLayout,
     setPaneWidth,
     setPdfGeometry,
+    setPageSizes,
+    pageSizeFor,
     zoomIn,
     zoomOut,
     toggleFit,

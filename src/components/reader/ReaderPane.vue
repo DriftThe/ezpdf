@@ -14,8 +14,6 @@ import PageCard from "./PageCard.vue";
 const props = defineProps<{
   kind: "original" | "translation";
   doc: PDFDocumentProxy | null;
-  widthPt: number;
-  heightPt: number;
 }>();
 
 const emit = defineEmits<{
@@ -117,8 +115,8 @@ defineExpose({ scrollToRatio, scrollToPage });
           :kind="kind"
           :doc="doc"
           :zoom="reader.effectiveZoom"
-          :width-pt="widthPt"
-          :height-pt="heightPt"
+          :width-pt="reader.pageSizeFor(n).w"
+          :height-pt="reader.pageSizeFor(n).h"
         />
       </div>
     </div>
