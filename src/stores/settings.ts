@@ -27,7 +27,7 @@ export interface ParseSettings {
  *    根元素 class="set-pane"；表单状态在本 store 加 ref）
  * ③ 在 SettingsPage.vue 的 SECTIONS 注册表加一行 —— union 扩了不注册会编译报错
  */
-export type SettingsSection = "llm" | "ocr" | "parse";
+export type SettingsSection = "llm" | "ocr" | "parse" | "common";
 
 export const useSettingsStore = defineStore("settings", () => {
   /** 设置整页是否打开（覆盖 sidebar + reader 视窗，保留顶部工具栏；不卸载原视窗） */

@@ -4,6 +4,7 @@ import { useSettingsStore, type SettingsSection } from "../../stores/settings";
 import LlmSection from "./sections/LlmSection.vue";
 import OcrSection from "./sections/OcrSection.vue";
 import ParseSection from "./sections/ParseSection.vue";
+import CommonSection from "./sections/CommonSection.vue";
 
 const settings = useSettingsStore();
 
@@ -16,6 +17,7 @@ const SECTIONS: Record<SettingsSection, SectionDef> = {
   llm: { label: "LLM 翻译", comp: LlmSection },
   ocr: { label: "OCR 服务", comp: OcrSection },
   parse: { label: "解析", comp: ParseSection },
+  common: {label:"常规",comp:CommonSection}
 };
 /** Object.entries 的键是 string，收窄回 SettingsSection 供导航绑定 */
 const navList = Object.entries(SECTIONS) as Array<[SettingsSection, SectionDef]>;
