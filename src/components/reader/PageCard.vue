@@ -5,6 +5,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useReaderStore } from "../../stores/reader";
 import type { Block } from "../../types/domain";
 import { isTranslatedType } from "../../lib/blocks";
+import { renderRichText } from "../../lib/richText";
 import PdfPageCanvas from "./PdfPageCanvas.vue";
 
 /**
@@ -70,11 +71,18 @@ function typeClass(type: string): string {
   }
 }
 
-/** 译文栏覆盖块：仅送翻类型且文本非空（figure 空串等不渲染白框，透出原 PDF） */
-const coverRects = computed<Rect[]>(() =>
-  rects.value.filter(
-    (r) => isTranslatedType(r.block.type) && (r.block.translation ?? r.block.content).trim(),
-  ),
+interface CoverRect extends Rect {
+  /** 内容 HTML：正文转义 + 公式 KaTeX（lib/richText.ts） */
+  html: string;
+}
+
+/** 译文栏覆盖块：仅送翻类型且文本非空；内容渲染成富文本（figure 空串等不渲染白框） */
+const coverRects = computed<CoverRect[]>(() =>
+  rects.value
+    .filter(
+      (r) => isTranslatedType(r.block.type) && (r.block.translation ?? r.block.content).trim(),
+    )
+    .map((r) => ({ ...r, html: renderRichText(r.block.translation ?? r.block.content) })),
 );
 
 // ---- v-fit：白底框字号自适应（框尺寸 × 文字量 → 填满、不溢出） ----
@@ -84,10 +92,17 @@ const coverRects = computed<Rect[]>(() =>
 // 时才真正适配；updated / ResizeObserver 对离屏框同样退化为标脏。
 
 const roMap = new WeakMap<HTMLElement, ResizeObserver>();
-const visibleBoxes = new WeakSet<HTMLElement>();
+const visibleBoxes = new Set<HTMLElement>();
 const dirtyBoxes = new WeakSet<HTMLElement>();
 const pendingFits = new Set<HTMLElement>();
 let flushRaf = 0;
+
+// KaTeX 字体异步加载完成 = 字宽/行高变化：对当前可见框重适配一次（数量小，代价可忽略）
+if (typeof document !== "undefined" && "fonts" in document) {
+  document.fonts.addEventListener("loadingdone", () => {
+    for (const box of visibleBoxes) fitCoverText(box);
+  });
+}
 
 function fitCoverText(box: HTMLElement): void {
   const span = box.querySelector<HTMLElement>(".cover-text");
@@ -201,7 +216,7 @@ const vFit: Directive<HTMLElement> = {
           :style="{ left: r.left + '%', top: r.top + '%', width: r.width + '%', height: r.height + '%' }"
           :title="r.block.type"
         >
-          <span class="cover-text">{{ r.block.translation ?? r.block.content }}</span>
+          <span class="cover-text" v-html="r.html"></span>
         </div>
       </template>
     </div>
