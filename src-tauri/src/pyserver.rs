@@ -124,6 +124,10 @@ pub async fn supervise(app: AppHandle, paths: PyPaths, svc: PyService) {
     let mut backoff = Duration::from_secs(1);
     let mut crashes: u32 = 0;
     loop {
+        if svc.0.stopping.load(Ordering::SeqCst) {
+            svc.set_status(&app, ServiceStatus::Unknown);
+            break; // 停止请求（可能发生在退避等待期间）：复位为未启动再收尾
+        }
         svc.set_status(&app, ServiceStatus::Starting);
         match start_once(&app, &paths, &svc).await {
             Ok(mut child) => {
@@ -145,7 +149,8 @@ pub async fn supervise(app: AppHandle, paths: PyPaths, svc: PyService) {
                     }
                 };
                 if svc.0.stopping.load(Ordering::SeqCst) {
-                    break; // 主动停止 / 应用退出：正常收尾
+                    svc.set_status(&app, ServiceStatus::Unknown);
+                    break; // 主动停止 / 应用退出：状态复位为未启动，允许再次拉起
                 }
                 crashes += 1;
                 if crashes >= MAX_CRASHES {
