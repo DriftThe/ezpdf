@@ -151,7 +151,10 @@ export const useLibraryStore = defineStore("library", () => {
       await loadRepo(repoRoot.value);
       if (outcome.failed.length > 0) {
         const reasons = outcome.failed.map((f) => f.reason).join("；");
-        toast(`已导入 ${outcome.imported.length} 份，失败 ${outcome.failed.length} 份：${reasons}`, "warn");
+        const warn = outcome.warnings.length > 0 ? `；${outcome.warnings.length} 份页数未知（pages 为空骨架）` : "";
+        toast(`已导入 ${outcome.imported.length} 份，失败 ${outcome.failed.length} 份：${reasons}${warn}`, "warn");
+      } else if (outcome.warnings.length > 0) {
+        toast(`已导入 ${outcome.imported.length} 份，${outcome.warnings.length} 份页数未知：${outcome.warnings.map((f) => f.reason).join("；")}`, "warn");
       } else {
         toast(`已导入 ${outcome.imported.length} 份 PDF`);
       }

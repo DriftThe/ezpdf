@@ -111,6 +111,8 @@ pub struct ImportFailure {
 pub struct ImportOutcome {
     pub imported: Vec<PDFStruct>,
     pub failed: Vec<ImportFailure>,
+    /// 导入成功但页数解析失败（加密/损坏 PDF）：pages 为空骨架，通知前端
+    pub warnings: Vec<ImportFailure>,
 }
 // Check repo path input availablity
 fn is_dir_empty<P: AsRef<Path>>(path: P) -> io::Result<bool> {
@@ -225,13 +227,20 @@ fn content_id(bytes: &[u8]) -> String {
     format!("{:016x}", hasher.finish())[..12].to_string()
 }
 
-/// 单文件导入：校验 → 内容哈希生成 id → copy 入库（name-id 命名）→ 写绑定 JSON 骨架 → 返回索引条目
+/// 实测 PDF 页数（lopdf 解析页树，含 xref/对象流）；加密或损坏 → None（调用方回退空骨架）
+fn pdf_page_count(bytes: &[u8]) -> Option<u32> {
+    let doc = lopdf::Document::load_mem(bytes).ok()?;
+    u32::try_from(doc.get_pages().len()).ok()
+}
+
+/// 单文件导入：校验 → 内容哈希生成 id → copy 入库（name-id 命名）→ 写绑定 JSON
+/// （pages 按实测页数预填充骨架，解析失败回退空数组并给出原因）→ 返回 (索引条目, 页数警告)
 fn import_one(
     dir: &Path,
     belong: Option<&str>,
     src_path: &str,
     index: &RepoTree,
-) -> Result<PDFStruct, String> {
+) -> Result<(PDFStruct, Option<String>), String> {
     let src = Path::new(src_path);
     if !src.is_file() {
         return Err("文件不存在".into());
@@ -261,20 +270,36 @@ fn import_one(
     let pdf_name = format!("{name}-{id}.pdf");
     let json_name = format!("{name}-{id}.json");
     fs::write(dir.join(&pdf_name), &bytes).map_err(|e| format!("入库失败: {e}"))?;
+    let page_count = pdf_page_count(&bytes);
+    let pages: Vec<PageInfo> = match page_count {
+        Some(n) => (1..=n)
+            .map(|i| PageInfo {
+                index: i,
+                finished: false,
+                blocks: Vec::new(),
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     let doc = BindDoc {
         status: PDFStatus::Pending,
-        pages: Vec::new(),
+        pages,
     };
     let json_text = serde_json::to_string_pretty(&doc)
         .map_err(|e| format!("Failed when serializing bound JSON: {e}"))?;
     fs::write(dir.join(&json_name), json_text).map_err(|e| format!("写入绑定 JSON 失败: {e}"))?;
 
-    Ok(PDFStruct {
-        id,
-        name,
-        bind: Some(json_name),
-        belong: belong.map(|b| b.to_string()),
-    })
+    let warning =
+        page_count.is_none().then(|| "无法解析页数（可能加密或非标准 PDF），pages 预填充跳过".into());
+    Ok((
+        PDFStruct {
+            id,
+            name,
+            bind: Some(json_name),
+            belong: belong.map(|b| b.to_string()),
+        },
+        warning,
+    ))
 }
 
 // Import PDFs (multi-file, best-effort): copy into the repo, create bound JSON
@@ -289,10 +314,11 @@ async fn import_pdf(
     let mut index = read_index(root)?;
     let mut imported: Vec<PDFStruct> = Vec::new();
     let mut failed: Vec<ImportFailure> = Vec::new();
+    let mut warnings: Vec<ImportFailure> = Vec::new();
 
     for src in &paths {
         match import_one(dir, belong.as_deref(), src, &index) {
-            Ok(entry) => {
+            Ok((entry, page_warning)) => {
                 if let Some(b) = &entry.belong {
                     if !index.folders.iter().any(|f| f == b) {
                         index.folders.push(b.clone());
@@ -300,6 +326,12 @@ async fn import_pdf(
                 }
                 index.pdfs.push(entry.clone());
                 imported.push(entry);
+                if let Some(reason) = page_warning {
+                    warnings.push(ImportFailure {
+                        path: src.clone(),
+                        reason,
+                    });
+                }
             }
             Err(reason) => failed.push(ImportFailure {
                 path: src.clone(),
@@ -308,7 +340,11 @@ async fn import_pdf(
         }
     }
     write_index(root, &index)?;
-    Ok(ImportOutcome { imported, failed })
+    Ok(ImportOutcome {
+        imported,
+        failed,
+        warnings,
+    })
 }
 
 // ---- OCR 服务（阶段2.5）：环境报告 / 环境安装 / 生命周期。探测与安装细节在 pyenv.rs，

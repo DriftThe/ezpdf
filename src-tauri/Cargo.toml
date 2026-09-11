@@ -28,6 +28,8 @@ ts-rs = "12.0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # pyserver 生命周期：子进程管道读写 / watch 停止信号 / 超时（与 tauri 共用同版本 tokio）
 tokio = { version = "1", features = ["process", "io-util", "macros", "sync", "time"] }
+# 导入时预填充绑定 JSON 的 pages 骨架：从内存字节解析页树取页数（纯 Rust）
+lopdf = "0.36"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

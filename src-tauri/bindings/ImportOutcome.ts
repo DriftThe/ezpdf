@@ -2,4 +2,8 @@
 import type { ImportFailure } from "./ImportFailure";
 import type { PDFStruct } from "./PDFStruct";
 
-export type ImportOutcome = { imported: Array<PDFStruct>, failed: Array<ImportFailure>, };
+export type ImportOutcome = { imported: Array<PDFStruct>, failed: Array<ImportFailure>, 
+/**
+ * 导入成功但页数解析失败（加密/损坏 PDF）：pages 为空骨架，通知前端
+ */
+warnings: Array<ImportFailure>, };
