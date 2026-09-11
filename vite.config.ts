@@ -25,8 +25,9 @@ export default defineConfig(() => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore watching `src-tauri` and `pyserver`（pyserver 含
+      //    .venv 数万文件 + models 1.9GB，监视会拖慢 dev 启动并干扰 HMR）
+      ignored: ["**/src-tauri/**", "**/pyserver/**"],
     },
   },
 }));
