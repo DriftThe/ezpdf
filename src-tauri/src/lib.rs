@@ -7,9 +7,9 @@ use std::io;
 use std::path::Path;
 use tauri::Manager;
 use ts_rs::TS;
-use std::process::Command;
 
 pub mod pyenv;
+pub mod pyserver;
 
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
@@ -311,27 +311,43 @@ async fn import_pdf(
     Ok(ImportOutcome { imported, failed })
 }
 
+// ---- OCR 服务（阶段2.5）：环境报告 / 环境安装 / 生命周期。探测与安装细节在 pyenv.rs，
+//      进程状态机在 pyserver.rs；check_python/check_cuda 已被 ocr_env_report 取代 ----
+
 #[tauri::command]
-fn check_python(paths: tauri::State<pyenv::PyPaths>) -> bool {
-    pyenv::_is_python(&paths.venv_python)
+async fn ocr_env_report(paths: tauri::State<'_, pyenv::PyPaths>) -> Result<pyenv::OcrEnvReport, String> {
+    Ok(pyenv::probe(&paths).await)
 }
 
 #[tauri::command]
-#[cfg(windows)]
-fn check_cuda() -> bool {
-    // nvidia-smi 不存在/调用失败（无 N 卡是常态）一律视为不可用，不得 panic
-    Command::new("nvidia-smi")
-        .args(["--query-gpu=name,driver_version", "--format=csv,noheader"])
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+async fn ocr_install_env(
+    app: tauri::AppHandle,
+    paths: tauri::State<'_, pyenv::PyPaths>,
+) -> Result<(), String> {
+    pyenv::install_env(&app, &paths).await
 }
 
-/// 非 Windows 目标无 CUDA 探测；generate_handler![] 无条件注册本命令，需此桩保证可编译
 #[tauri::command]
-#[cfg(not(windows))]
-fn check_cuda() -> bool {
-    false
+async fn ocr_start(
+    app: tauri::AppHandle,
+    paths: tauri::State<'_, pyenv::PyPaths>,
+    svc: tauri::State<'_, pyserver::PyService>,
+) -> Result<(), String> {
+    if !svc.startable() {
+        return Ok(()); // Starting/Connected 期间忽略重复拉起
+    }
+    svc.reset_for_start();
+    let app2 = app.clone();
+    let paths2 = paths.inner().clone();
+    let svc2 = svc.inner().clone();
+    tauri::async_runtime::spawn(pyserver::supervise(app2, paths2, svc2));
+    Ok(())
+}
+
+#[tauri::command]
+async fn ocr_stop(svc: tauri::State<'_, pyserver::PyService>) -> Result<(), String> {
+    svc.stop(); // 关 stdin → Python stdin-EOF 自灭；状态经 ocr://status 事件回报
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -341,7 +357,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let paths = pyenv::PyPaths::resolve(app.handle())?;
+            println!("[ezpdf] PyPaths = {paths:?}");
             app.manage(paths);
+            app.manage(pyserver::PyService::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -349,9 +367,19 @@ pub fn run() {
             gettree_from_config,
             load_pdf,
             import_pdf,
-            check_python,
-            check_cuda,
+            ocr_env_report,
+            ocr_install_env,
+            ocr_start,
+            ocr_stop,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // 退出收尾：关 stdin → Python stdin-EOF 自灭（防孤儿）
+                if let Some(svc) = app.try_state::<pyserver::PyService>() {
+                    svc.stop();
+                }
+            }
+        });
 }
