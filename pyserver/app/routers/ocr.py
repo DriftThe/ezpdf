@@ -21,6 +21,7 @@ from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
 from ..services.engine import engine
+from ..services.pipeline import RegionResult
 
 router = APIRouter()
 
@@ -46,6 +47,16 @@ def _decode_image(payload: str) -> Image.Image:
         raise HTTPException(status_code=400, detail=f"无法解码图片: {exc}") from exc
 
 
+def _region_json(r: RegionResult) -> dict:
+    """RegionResult → 响应块 dict（/ocr/page 与 /ocr/pages 共用同一契约）。"""
+    return {
+        "label": r.label,
+        "score": round(r.score, 4),
+        "bbox_px": [r.rect[0], r.rect[1], r.rect[2], r.rect[3]],
+        "markdown": r.markdown,
+    }
+
+
 @router.post("/ocr/page")
 async def ocr_page(req: PageRequest) -> dict:
     image = _decode_image(req.image_b64)
@@ -57,15 +68,7 @@ async def ocr_page(req: PageRequest) -> dict:
         "width": result.width,
         "height": result.height,
         "elapsed": round(result.elapsed_seconds, 3),
-        "blocks": [
-            {
-                "label": r.label,
-                "score": round(r.score, 4),
-                "bbox_px": [r.rect[0], r.rect[1], r.rect[2], r.rect[3]],
-                "markdown": r.markdown,
-            }
-            for r in result.regions
-        ],
+        "blocks": [_region_json(r) for r in result.regions],
     }
 
 
@@ -83,15 +86,7 @@ async def ocr_pages(req: PagesBatchRequest) -> dict:
                 "width": r.width,
                 "height": r.height,
                 "elapsed": round(r.elapsed_seconds, 3),
-                "blocks": [
-                    {
-                        "label": b.label,
-                        "score": round(b.score, 4),
-                        "bbox_px": [b.rect[0], b.rect[1], b.rect[2], b.rect[3]],
-                        "markdown": b.markdown,
-                    }
-                    for b in r.regions
-                ],
+                "blocks": [_region_json(b) for b in r.regions],
             }
             for r in results
         ],

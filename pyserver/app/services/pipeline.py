@@ -637,10 +637,10 @@ class OCRPipeline:
 
         各页 ``elapsed_seconds`` 均为整批耗时（layout 是联合 forward，不可按页拆分）。
         """
-        st = time.perf_counter()
-        images = [im.convert("RGB") for im in images]
         if not images:
             return []
+        st = time.perf_counter()
+        images = [im.convert("RGB") for im in images]
 
         # 1) layout detection：整批一次 stacked forward（内部自动 resize）
         layouts_per_page = self.layout.detect(images)

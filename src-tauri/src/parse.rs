@@ -6,7 +6,7 @@
 //! （≤4 页），JSON 恒为完整一致快照，永不半写。
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -82,12 +82,7 @@ fn map_blocks(blocks: &[OcrBlockResponse], scale: f64) -> Vec<Block> {
             } else {
                 b.markdown.clone()
             },
-            loc: [
-                px_to_pt(b.bbox_px[0], scale),
-                px_to_pt(b.bbox_px[1], scale),
-                px_to_pt(b.bbox_px[2], scale),
-                px_to_pt(b.bbox_px[3], scale),
-            ],
+            loc: b.bbox_px.map(|v| px_to_pt(v, scale)),
             translation: None,
         })
         .collect()
@@ -112,13 +107,11 @@ fn patch_pages(doc: &mut BindDoc, updates: Vec<(u32, Vec<Block>)>) -> Vec<PageIn
 /// - 尚未开始（Pending）→ Processing（批间残留状态；崩溃后重启据此续跑）
 /// - 已是 Processing/Finished → 保持
 fn finalize_status(doc: &mut BindDoc) {
-    doc.status = if !doc.pages.is_empty() && doc.pages.iter().all(|p| p.finished) {
-        PDFStatus::Finished
+    if !doc.pages.is_empty() && doc.pages.iter().all(|p| p.finished) {
+        doc.status = PDFStatus::Finished;
     } else if matches!(doc.status, PDFStatus::Pending) {
-        PDFStatus::Processing
-    } else {
-        return;
-    };
+        doc.status = PDFStatus::Processing;
+    }
 }
 
 /// 原子写绑定 JSON：tmp + rename（Windows fs::rename = MOVEFILE_REPLACE_EXISTING，
@@ -129,6 +122,25 @@ fn write_bind_atomic(json_path: &Path, doc: &BindDoc) -> Result<(), String> {
     let tmp = json_path.with_extension("json.tmp");
     fs::write(&tmp, text).map_err(|e| format!("写入临时文件失败: {e}"))?;
     fs::rename(&tmp, json_path).map_err(|e| format!("原子替换绑定 JSON 失败: {e}"))
+}
+
+/// 读索引定位绑定 JSON 并解析为 BindDoc（parse_batch / prefill_pages 共用入口）
+fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
+    let entry = read_index(root)?
+        .pdfs
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("PDF id not found in repo: {id}"))?;
+    let bind = entry
+        .bind
+        .as_ref()
+        .ok_or_else(|| format!("PDF 未绑定结构 JSON: {id}"))?;
+    let json_path = Path::new(root).join(bind);
+    let text = fs::read_to_string(&json_path)
+        .map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
+    let doc: BindDoc = serde_json::from_str(&text)
+        .map_err(|e| format!("Failed when parsing bound JSON: {e}"))?;
+    Ok((json_path, doc))
 }
 
 /// 解析一批页：读索引定位绑定 JSON → 读 BindDoc → POST /ocr/pages（token 头）→
@@ -147,24 +159,7 @@ pub async fn parse_batch(
         return Err(format!("单批页数超上限: {} > 32", pages.len()));
     }
 
-    let dir = Path::new(root);
-    let entry = {
-        let index = read_index(root)?;
-        index
-            .pdfs
-            .into_iter()
-            .find(|p| p.id == id)
-            .ok_or_else(|| format!("PDF id not found in repo: {id}"))?
-    };
-    let bind = entry
-        .bind
-        .as_ref()
-        .ok_or_else(|| format!("PDF 未绑定结构 JSON: {id}"))?;
-    let json_path = dir.join(bind);
-    let text = fs::read_to_string(&json_path)
-        .map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
-    let mut doc: BindDoc = serde_json::from_str(&text)
-        .map_err(|e| format!("Failed when parsing bound JSON: {e}"))?;
+    let (json_path, mut doc) = load_bind(root, id)?;
 
     // 批量推理：reqwest 默认无总超时——引擎懒加载时首个请求以分钟计
     let client = reqwest::Client::new();
@@ -221,23 +216,7 @@ pub async fn parse_batch(
 /// 打开书补骨架：pages 为空（lopdf 解析失败的书）时按实测页数重建 1..=N 骨架；
 /// 已有页一律 no-op（绝不覆盖既有 OCR 数据）。返回当前书状态。
 pub async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
-    let entry = {
-        let index = read_index(root)?;
-        index
-            .pdfs
-            .into_iter()
-            .find(|p| p.id == id)
-            .ok_or_else(|| format!("PDF id not found in repo: {id}"))?
-    };
-    let bind = entry
-        .bind
-        .as_ref()
-        .ok_or_else(|| format!("PDF 未绑定结构 JSON: {id}"))?;
-    let json_path = Path::new(root).join(bind);
-    let text = fs::read_to_string(&json_path)
-        .map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
-    let mut doc: BindDoc = serde_json::from_str(&text)
-        .map_err(|e| format!("Failed when parsing bound JSON: {e}"))?;
+    let (json_path, mut doc) = load_bind(root, id)?;
     if !doc.pages.is_empty() || total == 0 {
         return Ok(doc.status);
     }
