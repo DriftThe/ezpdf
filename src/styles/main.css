@@ -198,7 +198,7 @@ textarea {
 .svc.disconnected {
   color: var(--err);
 }
-/* 通用修饰（设置页 OCR 服务面板复用）：ok=就绪/空闲 warn=繁忙 info=信息态(CPU) */
+/* 通用修饰（设置页 OCR 服务面板复用）：ok=就绪/空闲 warn=繁忙 info=信息态(CPU) err=失败 */
 .svc.ok .svc-dot {
   background: var(--ok);
 }
@@ -207,6 +207,30 @@ textarea {
 }
 .svc.info .svc-dot {
   background: var(--accent);
+}
+.svc.err .svc-dot,
+.svc.failed .svc-dot {
+  background: var(--err);
+}
+.svc.err,
+.svc.failed {
+  color: var(--err);
+}
+/* OCR 设置页：服务日志区（stderr/pip 流式输出） */
+.ocr-log {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-hover);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-2);
 }
 @keyframes ez-pulse {
   50% {

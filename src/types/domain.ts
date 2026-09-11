@@ -18,6 +18,10 @@ export type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
 export type { RepoTree } from "../../src-tauri/bindings/RepoTree";
 export type { ImportOutcome } from "../../src-tauri/bindings/ImportOutcome";
 export type { ImportFailure } from "../../src-tauri/bindings/ImportFailure";
+export type { ServiceStatus } from "../../src-tauri/bindings/ServiceStatus";
+export type { OcrEnvReport } from "../../src-tauri/bindings/OcrEnvReport";
+export type { GpuInfo } from "../../src-tauri/bindings/GpuInfo";
+export type { OcrModels } from "../../src-tauri/bindings/OcrModels";
 
 /** 仓库索引的 UI 分组视图：按 belong 平铺分组（v1 无子文件夹），由 library store 的 repoGroups 从平铺索引派生 */
 export interface RepoGroup {
@@ -28,5 +32,3 @@ export interface RepoGroup {
 
 /** 阅读器布局 4 态：原│译 / 译│原 / 仅原 / 仅译 */
 export type LayoutMode = "ot" | "to" | "o" | "t";
-
-export type ServiceStatus = "unknown" | "starting" | "connected" | "disconnected";

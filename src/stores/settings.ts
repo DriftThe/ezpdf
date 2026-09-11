@@ -10,8 +10,7 @@ export interface LlmSettings {
 }
 
 export interface OcrSettings {
-  serverUrl: string;
-  launchCommand: string;
+  /** 随应用启动拉起 pyserver（端口/命令由 Rust 固定拼装，不暴露给用户） */
   autoLaunch: boolean;
 }
 
@@ -44,8 +43,6 @@ export const useSettingsStore = defineStore("settings", () => {
   });
 
   const ocr = ref<OcrSettings>({
-    serverUrl: "http://127.0.0.1:8790",
-    launchCommand: "uv run --project ocr-server uvicorn app:app --port 8790",
     autoLaunch: true,
   });
 

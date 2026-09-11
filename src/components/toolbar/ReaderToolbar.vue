@@ -28,6 +28,7 @@ const svcText = computed(
       starting: "启动中",
       connected: "已连接",
       disconnected: "已断开",
+      failed: "启动失败",
     })[parse.serviceStatus],
 );
 
