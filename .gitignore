@@ -27,6 +27,7 @@ dist-ssr
 testfiles
 PLAN.md
 PLAN-pyserver.md
+PLAN-OCR.md
 /pyserver/.venv/
 /pyserver/models/
 /pyserver/app/__pycache__
