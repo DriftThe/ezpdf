@@ -16,8 +16,6 @@ const finishedSet = computed(() => {
   return s;
 });
 const doneCount = computed(() => finishedSet.value.size);
-
-const emit = defineEmits<{ jump: [page: number] }>();
 </script>
 
 <template>
@@ -30,7 +28,7 @@ const emit = defineEmits<{ jump: [page: number] }>();
         class="dot"
         :class="[finishedSet.has(n) ? 'done' : '', { current: reader.currentPage === n }]"
         :title="`第 ${n} 页 · ${finishedSet.has(n) ? '完成' : '待解析'}`"
-        @click="emit('jump', n)"
+        @click="reader.gotoPage(n)"
       />
     </div>
     <span class="strip-summary">完成 {{ doneCount }}/{{ total }}</span>

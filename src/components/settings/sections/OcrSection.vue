@@ -10,7 +10,7 @@ type EnvState = "notready" | "cpu" | "gpu";
 type SvcState = "stopped" | "idle" | "busy";
 
 const python = computed<ReadyState>(() => (parse.pythonReady ? "ready" : "notready"));
-const cuda = ref<ReadyState>("notready");
+const cuda = computed<ReadyState>(() => (parse.cudaReady ? "ready" : "notready"));
 const env = ref<EnvState>("notready");
 const svc = ref<SvcState>("stopped");
 

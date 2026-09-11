@@ -80,11 +80,11 @@ function typeClass(type: string): string {
         />
       </template>
 
-      <!-- 译文：仅对有内容的块做白底覆盖（figure 等不覆盖） -->
-      <template v-else>
+      <!-- 译文：仅覆盖已有译文的块（figure/formula 及未译块保持原样，阶段6接 KaTeX 后 formula 覆盖渲染） -->
+      <template v-if="kind === 'translation'">
         <div
           v-for="(r, ri) in rects"
-          v-show="r.block.content"
+          v-show="r.block.translation"
           :key="ri"
           class="blk-cover"
           :style="{ left: r.left + '%', top: r.top + '%', width: r.width + '%', height: r.height + '%' }"

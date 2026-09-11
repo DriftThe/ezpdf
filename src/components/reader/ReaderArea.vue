@@ -92,6 +92,9 @@ watch(
       }
       const vp = page1.getViewport({ scale: 1 });
       reader.setPdfGeometry(doc.numPages, vp.width, vp.height);
+      // 几何就绪后重新装填待跳页：restorePageFor 设置的 jumpTarget 会在几何就绪前
+      // 被提前消费（当时页卡尚未渲染），在此重置才能恢复到记住的阅读位置
+      reader.jumpTarget = reader.currentPage;
       pdfDoc.value = doc;
       docState.value = "ready";
     } catch (error) {
@@ -107,7 +110,8 @@ onBeforeUnmount(() => {
   if (id) void destroyPdfDoc(id);
 });
 
-/** 工具栏/状态条跳页、切换 PDF 恢复位置 → 两栏同步滚动（手动滚动不触发） */
+/** 工具栏/状态条跳页、切换 PDF 恢复位置 → 两栏同步滚动（手动滚动不触发）。
+ *  flush post：DOM 更新后再滚动，切书/几何就绪时页卡才真实存在 */
 watch(
   () => reader.jumpTarget,
   (p) => {
@@ -116,6 +120,7 @@ watch(
     rightPane.value?.scrollToPage(p);
     reader.jumpTarget = null;
   },
+  { flush: "post" },
 );
 </script>
 

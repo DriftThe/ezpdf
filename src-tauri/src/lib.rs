@@ -7,6 +7,7 @@ use std::io;
 use std::path::Path;
 use tauri::Manager;
 use ts_rs::TS;
+use std::process::Command;
 
 pub mod pyenv;
 
@@ -315,6 +316,24 @@ fn check_python(paths: tauri::State<pyenv::PyPaths>) -> bool {
     pyenv::_is_python(&paths.venv_python)
 }
 
+#[tauri::command]
+#[cfg(windows)]
+fn check_cuda() -> bool {
+    // nvidia-smi 不存在/调用失败（无 N 卡是常态）一律视为不可用，不得 panic
+    Command::new("nvidia-smi")
+        .args(["--query-gpu=name,driver_version", "--format=csv,noheader"])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// 非 Windows 目标无 CUDA 探测；generate_handler![] 无条件注册本命令，需此桩保证可编译
+#[tauri::command]
+#[cfg(not(windows))]
+fn check_cuda() -> bool {
+    false
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -331,6 +350,7 @@ pub fn run() {
             load_pdf,
             import_pdf,
             check_python,
+            check_cuda,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
