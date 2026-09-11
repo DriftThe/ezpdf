@@ -12,6 +12,7 @@ Rust 侧（唯一正常调用方）：
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -37,7 +38,9 @@ def create_app() -> FastAPI:
     if TOKEN:
         @app.middleware("http")
         async def _token_guard(request, call_next):
-            if request.headers.get("x-ezpdf-token") != TOKEN:
+            # 常量时间比较（非常量时间比较可被本机进程按响应时间逐字节爆破）
+            supplied = (request.headers.get("x-ezpdf-token") or "").encode("utf-8", "ignore")
+            if not hmac.compare_digest(supplied, TOKEN.encode()):
                 return JSONResponse(status_code=403, content={"detail": "forbidden"})
             return await call_next(request)
 

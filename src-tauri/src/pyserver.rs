@@ -111,18 +111,20 @@ impl PyService {
     }
 }
 
-/// 随机会话 token（防本地误连即可，非密码学用途）
+/// 随机会话 token（防本地误连即可，非密码学用途）。
+/// RandomState 的密钥取自 OS 熵（sys::hashmap_random_keys），比"时间+pid"可预测种子强。
 fn fresh_token() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hash, Hasher};
+    let mut seed = RandomState::new().build_hasher();
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
-        .hash(&mut hasher);
-    std::process::id().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+        .hash(&mut seed);
+    std::process::id().hash(&mut seed);
+    let extra = RandomState::new().build_hasher().finish();
+    format!("{:016x}{:016x}", seed.finish(), extra)
 }
 
 /// supervisor 主循环：spawn → READY → /health → connected → 等退出；

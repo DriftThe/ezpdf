@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{read_index, BindDoc, Block, PageInfo, PDFStatus};
+use crate::{read_index, resolve_bind_path, BindDoc, Block, PageInfo, PDFStatus};
 
 /// parse_pdf 批次输入页（前端离屏渲染产物；index 1-based，与绑定 JSON 对齐）
 #[derive(Deserialize, TS)]
@@ -135,7 +135,7 @@ fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
         .bind
         .as_ref()
         .ok_or_else(|| format!("PDF 未绑定结构 JSON: {id}"))?;
-    let json_path = Path::new(root).join(bind);
+    let json_path = resolve_bind_path(root, bind)?;
     let text = fs::read_to_string(&json_path)
         .map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
     let doc: BindDoc = serde_json::from_str(&text)

@@ -4,7 +4,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use tauri::Manager;
 use ts_rs::TS;
 
@@ -169,16 +169,44 @@ fn write_index(root: &str, index: &RepoTree) -> Result<(), String> {
         .map_err(|e| format!("Failed when writing .ezrepo: {e}"))
 }
 
+/// 仓库相对路径词法校验：非空、无绝对路径/盘符前缀/`..`（允许 `./`）。
+/// 防手写 `.ezrepo` 的 name/bind 逃逸仓库根。
+fn check_relative(rel: &str) -> Result<(), String> {
+    let ok = !rel.is_empty()
+        && Path::new(rel)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("拒绝越界的仓库相对路径: {rel}"))
+    }
+}
+
+/// 解析绑定 JSON 路径：词法校验 + canonicalize 后必须仍在仓库根内
+/// （词法拦截 `../`；canonicalize 再拦截仓库内符号链接逃逸）
+fn resolve_bind_path(root: &str, rel: &str) -> Result<PathBuf, String> {
+    check_relative(rel)?;
+    let root_canon = fs::canonicalize(root).map_err(|e| format!("仓库根路径无效: {e}"))?;
+    let resolved = fs::canonicalize(root_canon.join(rel))
+        .map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
+    if !resolved.starts_with(&root_canon) {
+        return Err(format!("拒绝越界的仓库相对路径: {rel}"));
+    }
+    Ok(resolved)
+}
+
 //Get repoTree from config
 #[tauri::command]
 async fn gettree_from_config(app: tauri::AppHandle, root: &str) -> Result<RepoTree, String> {
-    // 渲染取数闸门（阶段2）：前端凭 asset protocol 读取仓库内 PDF 二进制。
+    // 先确认是仓库（读得到 .ezrepo）再授权，避免对任意目录递归放行 asset 协议；
     // 静态 scope 留空，此处按仓库根运行时放行（最小权限）——选仓库/刷新必经本命令；
     // AppHandle 由 Tauri 注入，前端 invoke 参数不变
+    let index = read_index(root)?;
     app.asset_protocol_scope()
         .allow_directory(root, true)
         .map_err(|e| format!("Failed when allowing asset scope: {e}"))?;
-    read_index(root)
+    Ok(index)
 }
 
 // Open a PDF by its stable id: look up the .ezrepo entry, resolve paths, read the bound JSON.
@@ -193,18 +221,17 @@ async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
 
     // 物理命名（导入时生成）：name-id.pdf / name-id.json，天然免重名
     let name = entry.name.clone();
-    let pdf_path = dir
-        .join(format!("{name}-{}.pdf", entry.id))
-        .to_string_lossy()
-        .to_string();
+    let pdf_name = format!("{name}-{}.pdf", entry.id);
+    check_relative(&pdf_name)?; // 手写 .ezrepo 可带 ../ 的 name/id，拼装后同样拒绝
+    let pdf_path = dir.join(&pdf_name).to_string_lossy().to_string();
     let (json_path, status, pages) = match &entry.bind {
         Some(rel) => {
-            let json_abs = dir.join(rel).to_string_lossy().to_string();
+            let json_abs = resolve_bind_path(_root, rel)?;
             let text = fs::read_to_string(&json_abs)
                 .map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
             let doc: BindDoc = serde_json::from_str(&text)
                 .map_err(|e| format!("Failed when parsing bound JSON: {e}"))?;
-            (Some(json_abs), doc.status, doc.pages)
+            (Some(json_abs.to_string_lossy().to_string()), doc.status, doc.pages)
         }
         None => (None, PDFStatus::Pending, Vec::new()),
     };
@@ -452,4 +479,51 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_relative_accepts_contained_paths() {
+        assert!(check_relative("foo.json").is_ok());
+        assert!(check_relative("sub/foo.json").is_ok());
+        assert!(check_relative(r"sub\foo.json").is_ok());
+        assert!(check_relative("./foo.json").is_ok());
+    }
+
+    #[test]
+    fn check_relative_rejects_escapes() {
+        assert!(check_relative("").is_err());
+        assert!(check_relative("..").is_err());
+        assert!(check_relative("../foo.json").is_err());
+        assert!(check_relative("sub/../../foo.json").is_err());
+        assert!(check_relative("/abs/foo.json").is_err());
+        assert!(check_relative(r"C:\evil\foo.json").is_err());
+        assert!(check_relative(r"a-..\..\evil.pdf").is_err());
+    }
+
+    #[test]
+    fn resolve_bind_path_keeps_reads_inside_root() {
+        let root = std::env::temp_dir().join(format!("ezpdf-sec-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("ok.json"), "{}").unwrap();
+        let root_s = root.to_string_lossy().to_string();
+
+        assert!(resolve_bind_path(&root_s, "ok.json").is_ok());
+        assert!(resolve_bind_path(&root_s, "../ok.json").is_err());
+        assert!(resolve_bind_path(&root_s, "missing.json").is_err());
+
+        let outside = root
+            .parent()
+            .unwrap()
+            .join(format!("ezpdf-sec-out-{}.json", std::process::id()));
+        fs::write(&outside, "{}").unwrap();
+        assert!(resolve_bind_path(&root_s, outside.to_string_lossy().as_ref()).is_err());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(&outside);
+    }
 }
