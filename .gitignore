@@ -30,6 +30,7 @@ PLAN-pyserver.md
 PLAN-OCR.md
 /pyserver/.venv/
 /pyserver/models/
+/pyserver/backup/
 /pyserver/app/__pycache__
 /pyserver/app/services/__pycache__
 /pyserver/app/routers/__pycache__
