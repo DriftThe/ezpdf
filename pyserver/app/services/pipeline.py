@@ -551,8 +551,10 @@ class OCRPipeline:
             box_iou_threshold: float = 0.5,
             box_min_area: float = 16 * 16,
             box_min_score: float = 0.5,
-            box_unclip_ratio: float = 0.05,  # 每边向外扩 5%，提精度
-            box_expand_pixels: float = 4.0,  # 额外每边扩 N 像素
+            # 只做固定小外扩：比例外扩随框增大，大 text 框会扩进框内的小标题框，
+            # 渲染白底覆盖时两框互叠（layout.jpg 实测重叠对 11 -> 0，13 框不变）
+            box_unclip_ratio: float = 0.0,
+            box_expand_pixels: float = 2.0,
             # ---- VLPredictor ----
             max_new_tokens: int = 256,
             vl_min_pixels: int = 112896,

@@ -262,7 +262,7 @@ const vFit: Directive<HTMLElement> = {
   border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: 2px;
   overflow: hidden;
-  padding: 3px 5px;
+  padding: 4px 6px;
 }
 .cover-text {
   display: block;
