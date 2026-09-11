@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Sequence
 
 from ..config import LAYOUT_MODEL_DIR_NAME, MODELS_DIR, VL_MODEL_DIR_NAME
 from .pipeline import OCRPipeline, PageResult
@@ -38,6 +39,12 @@ class Engine:
         pipe = self.load()
         with self._lock:  # 单实例推理串行
             return pipe.process_page(image)
+
+    def recognize_batch(self, images: Sequence) -> list[PageResult]:
+        """多页批量推理：layout 跨页堆叠 + VL 跨页 label 分桶（同锁串行整批）。"""
+        pipe = self.load()
+        with self._lock:
+            return pipe.process_pages(images)
 
 
 engine = Engine()
