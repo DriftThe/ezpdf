@@ -1,9 +1,17 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { toast } from "../composables/toast";
 import type { OcrEnvReport, ServiceStatus } from "../types/domain";
+import type { PageInfo, ParsePageInput, PDF, ParseOutcome, PDFStruct } from "../types/domain";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { loadPdfDoc } from "../composables/usePdfDoc";
+import { renderPageToDataUrl, RENDER_SCALE } from "../lib/pageCapture";
+import { useLibraryStore } from "./library";
+import { useReaderStore } from "./reader";
+
+/** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，调度整体静默（同 listen().catch 哲学） */
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export const useParseStore = defineStore("parse", () => {
   /** 全局暂停/恢复（阶段4由 Rust 调度器驱动） */
@@ -22,6 +30,7 @@ export const useParseStore = defineStore("parse", () => {
   function togglePaused(): void {
     paused.value = !paused.value;
     toast(paused.value ? "解析已暂停" : "解析已恢复", paused.value ? "warn" : "info");
+    if (!paused.value) wake(); // 恢复 → 续链
   }
 
   function pushLog(line: string): void {
@@ -97,6 +106,190 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
+  // ---- OCR 页级调度回路（阶段4 批3，PLAN-OCR.md §4）：parse_append 桥 ----
+  // 前端是调度者：单 tick = 一批（≤4 页、同书）→ Rust parse_pdf 整批推理 + 一次原子写。
+  // 事件驱动链：本批完成 → 链式续跑；一轮扫描无可处理书 → standing 挂起，等事件唤醒。
+
+  /** 一批在途（幂等门闩：重入 tick 直接返回） */
+  const parsing = ref(false);
+  /** 挂起标记（无可处理书）；wake 事件（开书/导入/连上/恢复）解除 */
+  const standing = ref(false);
+  /** 批大小（用户拍板：一次 ≤4 页、同书，不足传剩余页） */
+  const BATCH_SIZE = 4;
+  /** 首次 + 重试 2 次 = 3 连败 → 本轮跳过该书 */
+  const MAX_ATTEMPTS = 3;
+  /** 书级连败计数；wake 时清零 */
+  const strikes = new Map<string, number>();
+
+  function isRunnable(): boolean {
+    return (
+      isTauri &&
+      !paused.value &&
+      !standing.value &&
+      serviceStatus.value === "connected" &&
+      !!useLibraryStore().repoRoot
+    );
+  }
+
+  /** 踢循环：standing=false 时链条自会续跑（重复踢无副作用）；
+   *  服务中途断线杀掉的链条也靠它复活（不要求 standing=true） */
+  function wake(): void {
+    if (!isTauri || paused.value) return;
+    if (parsing.value) return; // 在途：本批结束后的链式续跑自会接管
+    standing.value = false;
+    strikes.clear();
+    queueMicrotask(() => void tick());
+  }
+
+  /** 单 tick：选书 → 环形收集一批未完成页 → 离屏渲染 → parse_pdf → 结果落地。
+   *  finally 里链式续跑（queueMicrotask），无可处理 → pickBook 返回 null → standing 挂起 */
+  async function tick(): Promise<void> {
+    if (!isRunnable()) return;
+    parsing.value = true;
+    try {
+      const book = await pickBook();
+      if (!book) {
+        standing.value = true; // 一轮扫完无事可做 → 挂起等事件
+        strikes.clear();
+        return;
+      }
+      try {
+        await processBatch(book);
+        strikes.delete(book.id);
+      } catch (err) {
+        const n = (strikes.get(book.id) ?? 0) + 1;
+        strikes.set(book.id, n);
+        if (n >= MAX_ATTEMPTS) {
+          toast(`《${book.name}》解析连续失败，本轮跳过`, "warn");
+        } else {
+          console.warn(`[parse] 批次失败(${n}/${MAX_ATTEMPTS}) ${book.name}:`, err);
+        }
+      }
+    } finally {
+      parsing.value = false;
+    }
+    if (!standing.value) queueMicrotask(() => void tick());
+  }
+
+  interface PickTarget {
+    id: string;
+    name: string;
+    state: PDF;
+    focused: boolean;
+  }
+
+  /** 选书：聚焦书优先，其余按索引序。逐本 load_pdf 直读绑定 JSON 的
+   *  status/finished 标志位（用户拍板：不加进度查询命令）；
+   *  Finished / 无未完成页（含页数未知空骨架书，待打开补骨架）/ 连败黑名单 → 跳过 */
+  async function pickBook(): Promise<PickTarget | null> {
+    const lib = useLibraryStore();
+    const index = lib.repoIndex;
+    if (!index) return null;
+    const focused = index.pdfs.find((p) => p.id === lib.currentPdfId) ?? null;
+    const order = focused
+      ? [focused, ...index.pdfs.filter((p) => p.id !== focused.id)]
+      : [...index.pdfs];
+    for (const entry of order) {
+      if ((strikes.get(entry.id) ?? 0) >= MAX_ATTEMPTS) continue;
+      const state = await bookState(entry);
+      if (!state || state.status === "Finished") continue;
+      if (!state.pages.some((p) => !p.finished)) continue;
+      return { id: entry.id, name: entry.name, state, focused: entry.id === lib.currentPdfId };
+    }
+    return null;
+  }
+
+  /** 书状态：聚焦书用 store 缓存（批量写回已就地同步），后台书逐本 load_pdf 直读 */
+  async function bookState(entry: PDFStruct): Promise<PDF | null> {
+    const lib = useLibraryStore();
+    if (entry.id === lib.currentPdfId && lib.currentPdf) return lib.currentPdf;
+    if (!lib.repoRoot) return null;
+    try {
+      return await invoke<PDF>("load_pdf", { root: lib.repoRoot, id: entry.id });
+    } catch {
+      return null;
+    }
+  }
+
+  /** 处理一批：环形收集 ≤4 未完成页 → 离屏渲染 PNG b64 → invoke parse_pdf → 结果落地 */
+  async function processBatch(book: PickTarget): Promise<void> {
+    const lib = useLibraryStore();
+    const reader = useReaderStore();
+    // 起点页：聚焦书从当前阅读页环形（用户视线先行），后台书从第 1 页
+    const start = book.focused
+      ? Math.max(1, Math.min(reader.currentPage, book.state.pages.length))
+      : 1;
+    const take: PageInfo[] = [];
+    for (let k = 0; k < book.state.pages.length && take.length < BATCH_SIZE; k++) {
+      const page = book.state.pages[(start - 1 + k) % book.state.pages.length];
+      if (!page.finished) take.push(page);
+    }
+    if (take.length === 0) return; // 竞态：已全部完成
+
+    // 离屏渲染：路径优先用 Rust 解析过的（聚焦书 currentPdf.pdfPath），
+    // 后台书按物理命名 name-id 拼装（与 load_pdf 同构）
+    const pdfPath =
+      (book.focused ? lib.currentPdf?.pdfPath : undefined) ??
+      `${lib.repoRoot}/${book.name}-${book.id}.pdf`;
+    const doc = await loadPdfDoc(book.id, pdfPath);
+    const pages: ParsePageInput[] = [];
+    for (const page of take) {
+      pages.push({
+        index: page.index,
+        imageB64: await renderPageToDataUrl(doc, page.index),
+        scale: RENDER_SCALE,
+      });
+    }
+    const outcome = await invoke<ParseOutcome>("parse_pdf", {
+      root: lib.repoRoot,
+      id: book.id,
+      pages,
+    });
+    applyOutcome(book.id, outcome);
+  }
+
+  /** 批量结果落地：聚焦书（有缓存）就地 patch（译文栏响应式刷新）；后台书无缓存，
+   *  磁盘 JSON 已由 Rust 原子写回，下轮 pickBook 直读即见 */
+  function applyOutcome(id: string, outcome: ParseOutcome): void {
+    const lib = useLibraryStore();
+    const cached = lib.pdfs[id];
+    if (!cached) return;
+    const updated = new Map(outcome.updatedPages.map((p) => [p.index, p]));
+    cached.status = outcome.bookStatus;
+    cached.pages = cached.pages.map((p) => updated.get(p.index) ?? p);
+  }
+
+  // ---- 打开书补骨架（用户拍板）：lopdf 解析失败的书 pages 为空，
+  //      pdfjs 几何就绪后以实测页数回填，再唤醒调度 ----
+  watch(
+    () => {
+      const lib = useLibraryStore();
+      return [useReaderStore().numPages, lib.currentPdf?.pages.length ?? 0, lib.currentPdfId] as const;
+    },
+    ([numPages, pageLen, pdfId]) => {
+      if (pdfId && numPages > 0 && pageLen === 0) void prefillCurrent(pdfId, numPages);
+    },
+  );
+
+  async function prefillCurrent(id: string, numPages: number): Promise<void> {
+    const lib = useLibraryStore();
+    if (!lib.repoRoot) return;
+    try {
+      await invoke("prefill_pages", { root: lib.repoRoot, id, total: numPages });
+      if (lib.currentPdfId !== id) return; // 已切书：JSON 已补，store 无需动
+      const loaded = await invoke<PDF>("load_pdf", { root: lib.repoRoot, id });
+      lib.pdfs[id] = { ...loaded, id };
+      wake(); // 骨架就位 → 立即开跑
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  }
+
+  // 服务连上（含断线重连/手动启动成功）→ 唤醒调度链
+  watch(serviceStatus, (s) => {
+    if (s === "connected") wake();
+  });
+
   return {
     paused,
     serviceStatus,
@@ -106,6 +299,9 @@ export const useParseStore = defineStore("parse", () => {
     checking,
     installing,
     modelsBusy,
+    parsing,
+    standing,
+    wake,
     checkEnv,
     installEnv,
     downloadModels,

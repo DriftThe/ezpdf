@@ -22,6 +22,8 @@ export type { ServiceStatus } from "../../src-tauri/bindings/ServiceStatus";
 export type { OcrEnvReport } from "../../src-tauri/bindings/OcrEnvReport";
 export type { GpuInfo } from "../../src-tauri/bindings/GpuInfo";
 export type { OcrModels } from "../../src-tauri/bindings/OcrModels";
+export type { ParseOutcome } from "../../src-tauri/bindings/ParseOutcome";
+export type { ParsePageInput } from "../../src-tauri/bindings/ParsePageInput";
 
 /** 仓库索引的 UI 分组视图：按 belong 平铺分组（v1 无子文件夹），由 library store 的 repoGroups 从平铺索引派生 */
 export interface RepoGroup {

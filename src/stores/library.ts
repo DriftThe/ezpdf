@@ -4,6 +4,7 @@ import type { ImportOutcome, PDF, PDFId, RepoGroup, RepoTree } from "../types/do
 import type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
 import { toast } from "../composables/toast";
 import { useReaderStore } from "./reader";
+import { useParseStore } from "./parse";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -83,6 +84,7 @@ export const useLibraryStore = defineStore("library", () => {
     currentPdfId.value = key;
     sidebarOpen.value = false; // 打开 PDF 后自动收起侧栏，把空间留给阅读器
     useReaderStore().restorePageFor(key);
+    useParseStore().wake(); // 打开书 = 调度事件：聚焦书自动开跑（含 Pending 书第一批）
 
     // 即用即丢：只保留当前 PDF（结构 JSON 重读便宜；真正的内存大头在阶段2 pdfjs 层释放）
     for (const id of Object.keys(pdfs.value)) {
@@ -149,6 +151,9 @@ export const useLibraryStore = defineStore("library", () => {
       });
       // 前端请求刷新仓库：gettree_from_config → repoIndex → repoGroups → 树自动更新
       await loadRepo(repoRoot.value);
+      if (outcome.imported.length > 0) {
+        useParseStore().wake(); // 导入即开跑（用户拍板：新书自动进入调度，无需打开）
+      }
       if (outcome.failed.length > 0) {
         const reasons = outcome.failed.map((f) => f.reason).join("；");
         const warn = outcome.warnings.length > 0 ? `；${outcome.warnings.length} 份页数未知（pages 为空骨架）` : "";
@@ -175,6 +180,7 @@ export const useLibraryStore = defineStore("library", () => {
       const index = await invoke<RepoTree>("gettree_from_config", { root });
       repoRoot.value = root;
       repoIndex.value = index; // 平铺索引直接落地，不做树转换
+      useParseStore().wake(); // 换仓/刷新 = 新的可处理书目，尝试续链
     } catch (error) {
       toast(String(error), "error");
     }
@@ -192,6 +198,7 @@ export const useLibraryStore = defineStore("library", () => {
 
   return {
     repoRoot,
+    repoIndex,
     repoGroups,
     currentPdfId,
     sidebarOpen,
