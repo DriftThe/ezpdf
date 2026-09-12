@@ -37,7 +37,7 @@ from typing import Optional, Sequence
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageFilter
 from transformers import (
     AutoImageProcessor,
     AutoModelForObjectDetection,
@@ -143,6 +143,28 @@ class PageResult:
 # ─────────────────────────────────────────────────────────────────────────────
 # 1) Layout detection —— PP-DocLayoutV3
 # ─────────────────────────────────────────────────────────────────────────────
+def _iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
+    """IoU of two xyxy boxes (float arrays of length 4)."""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _containment(a: np.ndarray, b: np.ndarray) -> float:
+    """a 被 b 覆盖的面积比（inter / area(a)）；用于剔除"整块内的一行"类重复候选。"""
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    ih = max(0.0, min(ay2, by2) - max(ay1, by1))
+    area = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    return (iw * ih) / area if area > 0 else 0.0
+
+
 class LayoutDetector:
     """把任意尺寸的图过 PP-DocLayoutV3，返回 (box, label, score) 三元组。"""
 
@@ -167,6 +189,25 @@ class LayoutDetector:
         }
         # processor 内置 800x800 resize；只要原图长边合理，processor 自动适配
         self._max_long_side = 1600  # 防止 4K+ 大图把显存打爆
+        # 二轮补召回参数（见 detect 注释）——调这里即可调灵敏度
+        self._fallback_labels = frozenset({
+            "text", "paragraph_title", "doc_title", "abstract", "aside_text",
+            "footnote", "figure_title", "content", "reference", "reference_content",
+        })
+        self._fallback_threshold = 0.45
+        self._fallback_sharpen = (2, 300, 1)  # PIL UnsharpMask: radius, percent, threshold
+        self._fallback_iou = 0.3
+        self._fallback_containment = 0.6
+        # 三轮半页分块补召回：整页 squash 到 800x800 后小字号被纵向压扁（封面信息栏/
+        # 公告标题/密集正文实测整块丢失），上下半页各自 squash 相当于纵向放大 ~1.5x。
+        # 同样 add-only；白名单多收 header/footer（封面"中华人民共和国行业标准"被判 header）。
+        self._tile_labels = self._fallback_labels | {"header", "footer"}
+        self._tile_threshold = 0.38
+        self._tile_overlap = 0.08
+        self._tile_iou = 0.3
+        self._tile_containment = 0.6
+        # batch=8 会命中慢速 kernel（实测 6.0s vs batch=4 的 0.22s），所有前向切块
+        self._max_forward_batch = 4
 
     def _maybe_downscale(self, image: Image.Image) -> Image.Image:
         """If the image's long side exceeds ``_max_long_side``, downscale it.
@@ -184,28 +225,42 @@ class LayoutDetector:
         )
 
     @torch.no_grad()
-    def detect(self, images: Sequence[Image.Image]) -> list[list[LayoutBox]]:
-        """Run layout detection on a batch of images.
+    def _forward(
+            self,
+            images: Sequence[Image.Image],
+            target_sizes: torch.Tensor,
+            threshold: float,
+    ) -> list[list[LayoutBox]]:
+        """分块前向（≤ ``_max_forward_batch``）+ post-process。
 
-        Args:
-            images: One or more PIL images (any size, any mode).
-
-        Returns:
-            A list (one entry per input image) of ``LayoutBox`` lists.
+        分块原因：本机 GPU 上 layout 前向 batch=8 会命中慢速 kernel（实测
+        6.0s vs batch=4 的 0.22s），而补召回的三轮合计会超过 4 张，必须切块。
         """
-        if not images:
-            return []
-        scaled = [self._maybe_downscale(im.convert("RGB")) for im in images]
+        images = list(images)
+        if len(images) <= self._max_forward_batch:
+            return self._forward_one(images, target_sizes, threshold)
+        out: list[list[LayoutBox]] = []
+        for i in range(0, len(images), self._max_forward_batch):
+            chunk = images[i:i + self._max_forward_batch]
+            out.extend(
+                self._forward_one(chunk, target_sizes[i:i + len(chunk)], threshold)
+            )
+        return out
 
-        inputs = self.processor(images=scaled, return_tensors="pt").to(self.device)
-        target_sizes = torch.tensor(
-            [[im.height, im.width] for im in images], device=self.device
-        )
+    @torch.no_grad()
+    def _forward_one(
+            self,
+            images: Sequence[Image.Image],
+            target_sizes: torch.Tensor,
+            threshold: float,
+    ) -> list[list[LayoutBox]]:
+        """一次前向 + post-process，返回每图 LayoutBox 列表（坐标为对应输入图坐标系）。"""
+        inputs = self.processor(images=list(images), return_tensors="pt").to(self.device)
         outputs = self.model(**inputs)
         # post_process_object_detection 在 threshold 处做一次初筛；后面 BoxFilter
         # 再做更细的 IoU / 面积过滤
         raw = self.processor.post_process_object_detection(
-            outputs, target_sizes=target_sizes, threshold=self.score_threshold
+            outputs, target_sizes=target_sizes, threshold=threshold
         )
 
         out: list[list[LayoutBox]] = []
@@ -232,6 +287,111 @@ class LayoutDetector:
             out.append(page_boxes)
         return out
 
+    def _append_candidate(
+            self,
+            page_boxes: list[LayoutBox],
+            candidate: LayoutBox,
+            labels: frozenset[str],
+            iou_limit: float,
+            containment_limit: float,
+    ) -> None:
+        """add-only 合并：白名单 label + 与既有框/已补框低重叠（IoU 和高覆盖率都不允许）。"""
+        if candidate.label_name not in labels:
+            return
+        for k in page_boxes:
+            if _iou_xyxy(candidate.xyxy, k.xyxy) > iou_limit:
+                return
+            if _containment(candidate.xyxy, k.xyxy) > containment_limit:
+                return
+        page_boxes.append(candidate)
+
+    def _split_tiles(self, image: Image.Image) -> tuple[list[Image.Image], list[int]]:
+        """上下半页（带重叠）：返回 (tiles, 各 tile 在整页中的 y 偏移)。"""
+        w, h = image.size
+        if h < 200:  # 太矮的图分块无意义
+            return [], []
+        cut = h // 2
+        ov = int(h * self._tile_overlap)
+        first = image.crop((0, 0, w, min(h, cut + ov)))
+        second = image.crop((0, max(0, cut - ov), w, h))
+        return [first, second], [0, max(0, cut - ov)]
+
+    @torch.no_grad()
+    def detect(self, images: Sequence[Image.Image]) -> list[list[LayoutBox]]:
+        """Run layout detection on a batch of images (multi-pass, add-only).
+
+        补召回背景（app pdfjs 渲染实测 2026-09-12）：检测器对 pdfjs 渲染的
+        小字号/居中/带字距文本分数系统性偏低（同页 pdfium 渲染高 0.1~0.15），
+        封面信息栏、公告标题、密集正文会出现整块丢失。三层只增不减：
+
+        1. 首轮：原图 0.5 阈值，结果不删不改（锐化会把个别边缘框分数压低，
+           替换式合并会造成新漏检）；
+        2. 二轮：锐化整图 0.45 阈值，补文本族候选；
+        3. 三轮：锐化上下半页 0.38 阈值——整页 squash 到 800x800 会把长页面
+           纵向压扁，分半页相当于放大 ~1.5x，救回压扁后过小的行。
+
+        只补与既有框低重叠（IoU / 覆盖率双阈值）的候选，避免"整块内的一行"
+        类重复叠框；三层的 label 白名单见 __init__。
+
+        Args:
+            images: One or more PIL images (any size, any mode).
+
+        Returns:
+            A list (one entry per input image) of ``LayoutBox`` lists.
+        """
+        if not images:
+            return []
+        scaled = [self._maybe_downscale(im.convert("RGB")) for im in images]
+
+        target_sizes = torch.tensor(
+            [[im.height, im.width] for im in images], device=self.device
+        )
+        out = self._forward(scaled, target_sizes, self.score_threshold)
+
+        fallback = [
+            im.filter(ImageFilter.UnsharpMask(*self._fallback_sharpen)) for im in scaled
+        ]
+        for page_boxes, candidates in zip(
+            out, self._forward(fallback, target_sizes, self._fallback_threshold)
+        ):
+            for b in candidates:
+                self._append_candidate(
+                    page_boxes, b, self._fallback_labels,
+                    self._fallback_iou, self._fallback_containment,
+                )
+
+        tiles: list[Image.Image] = []
+        offsets_per_page: list[list[int]] = []
+        for im in scaled:
+            parts, offsets = self._split_tiles(im)
+            tiles.extend(parts)
+            offsets_per_page.append(offsets)
+        if tiles:
+            tile_sizes = torch.tensor(
+                [[t.height, t.width] for t in tiles], device=self.device
+            )
+            sharp_tiles = [
+                t.filter(ImageFilter.UnsharpMask(*self._fallback_sharpen)) for t in tiles
+            ]
+            raw_tiles = self._forward(sharp_tiles, tile_sizes, self._tile_threshold)
+            cursor = 0
+            for page_boxes, offsets in zip(out, offsets_per_page):
+                for off in offsets:
+                    shift = np.array([0, off, 0, off], dtype=np.float32)
+                    for b in raw_tiles[cursor]:
+                        self._append_candidate(
+                            page_boxes,
+                            LayoutBox(
+                                xyxy=b.xyxy + shift,
+                                label_id=b.label_id,
+                                label_name=b.label_name,
+                                score=b.score,
+                            ),
+                            self._tile_labels, self._tile_iou, self._tile_containment,
+                        )
+                    cursor += 1
+        return out
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2) Box filter —— NMS + 面积 / 分数门槛
@@ -243,7 +403,8 @@ class BoxFilter:
 
     - ``iou_threshold``: NMS 重叠上限（越大越激进去重）
     - ``min_area``:      最小框面积（像素²）
-    - ``min_score``:     最低置信度
+    - ``min_score``:     最低置信度（低于 LayoutDetector 各轮阈值，给二/三轮
+                         补召回的 0.38~0.5 文本候选留通路）
     - ``unclip_ratio``:  NMS 后把框向外扩的比例（0.05 = 每边扩 5%）。给 VL 更多
                         上下文，提升 OCR 准确率；过大会把别的 region 也包进来。
                         doclayout 边界偏紧时这个最有用。
@@ -254,7 +415,7 @@ class BoxFilter:
             self,
             iou_threshold: float = 0.5,
             min_area: float = 16 * 16,
-            min_score: float = 0.5,
+            min_score: float = 0.35,
             unclip_ratio: float = 0.0,
             expand_pixels: float = 0.0,
     ) -> None:
@@ -550,7 +711,7 @@ class OCRPipeline:
             # ---- BoxFilter ----
             box_iou_threshold: float = 0.5,
             box_min_area: float = 16 * 16,
-            box_min_score: float = 0.5,
+            box_min_score: float = 0.35,
             # 只做固定小外扩：比例外扩随框增大，大 text 框会扩进框内的小标题框，
             # 渲染白底覆盖时两框互叠（layout.jpg 实测重叠对 11 -> 0，13 框不变）
             box_unclip_ratio: float = 0.0,

@@ -4,7 +4,7 @@ import type { Directive } from "vue";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useReaderStore } from "../../stores/reader";
 import type { Block } from "../../types/domain";
-import { isTranslatedType } from "../../lib/blocks";
+import { isOverlayType } from "../../lib/blocks";
 import { renderRichText } from "../../lib/richText";
 import PdfPageCanvas from "./PdfPageCanvas.vue";
 
@@ -14,7 +14,8 @@ import PdfPageCanvas from "./PdfPageCanvas.vue";
  * 旧版曾按第 1 页尺寸统一假设——页尺寸不一的扫描版 PDF 会整体错位，已改）。
  * 覆盖层体系（不改原 PDF 排版，全部绝对定位）：
  * - 原文栏：全部块虚线框标注（悬浮预览开关控制）；
- * - 译文栏：仅送翻类型（lib/blocks.ts 集合）白底覆盖框，框内文字 =
+ * - 译文栏：仅覆盖渲染类型（lib/blocks.ts OVERLAY_TYPES = 送翻 + formula）白底覆盖框，
+ *   框内文字 =
  *   translation ?? content（bypass 期 translation 全 null → 显示原文 content），
  *   字号经 v-fit 自适应：二分找"塞得下"的最大字号，填满且不溢出。
  */
@@ -76,11 +77,11 @@ interface CoverRect extends Rect {
   html: string;
 }
 
-/** 译文栏覆盖块：仅送翻类型且文本非空；内容渲染成富文本（figure 空串等不渲染白框） */
+/** 译文栏覆盖块：仅覆盖渲染类型且文本非空；内容渲染成富文本（figure 空串等不渲染白框） */
 const coverRects = computed<CoverRect[]>(() =>
   rects.value
     .filter(
-      (r) => isTranslatedType(r.block.type) && (r.block.translation ?? r.block.content).trim(),
+      (r) => isOverlayType(r.block.type) && (r.block.translation ?? r.block.content).trim(),
     )
     .map((r) => ({ ...r, html: renderRichText(r.block.translation ?? r.block.content) })),
 );
@@ -205,7 +206,7 @@ const vFit: Directive<HTMLElement> = {
         />
       </template>
 
-      <!-- 译文：仅送翻类型白底覆盖（不送翻类型零覆盖，原 PDF 像素直出）；
+      <!-- 译文：仅覆盖渲染类型白底覆盖（未覆盖类型原 PDF 像素直出）；
            框内 translation ?? content：bypass 期全 null → 显示原文 content -->
       <template v-if="kind === 'translation'">
         <div
@@ -277,7 +278,7 @@ const vFit: Directive<HTMLElement> = {
   border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: 2px;
   overflow: hidden;
-  padding: 4px 6px;
+  padding: 2px 4px;
 }
 .cover-text {
   display: block;
