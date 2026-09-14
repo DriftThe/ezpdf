@@ -27,6 +27,7 @@ onMounted(async () => {
   await settings.ensureLoaded();
   if (!(settings.general.autoLaunch && settings.general.resumeOnStart)) parse.paused = true;
   await lib.openLastRepo();
+  void settings.checkUpdate(); // 启动静默检查更新（发现新版本才 toast）
   void parse.autoStartIfEnabled();
 });
 </script>

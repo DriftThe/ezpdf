@@ -12,6 +12,7 @@ pub mod parse;
 pub mod pyenv;
 pub mod pyserver;
 pub mod translate;
+pub mod update;
 
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
@@ -621,6 +622,13 @@ async fn fetch_llm_models(base_url: String, api_key: String) -> Result<Vec<Strin
     translate::fetch_models(&base_url, &api_key).await
 }
 
+/// 检查更新（GitHub Releases 最新版本 vs 应用版本；启动静默/手动 toast 由前端决定）
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<update::UpdateInfo, String> {
+    let current = app.package_info().version.to_string();
+    update::check_update(&current).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -655,6 +663,7 @@ pub fn run() {
             prefill_pages,
             verify_llm,
             fetch_llm_models,
+            check_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

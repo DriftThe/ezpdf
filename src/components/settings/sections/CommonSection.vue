@@ -22,5 +22,22 @@ const settings = useSettingsStore();
       关闭时应用启动后处于暂停态（工具栏显示「启动翻译」），点一下才开始；只有同时开启「自动唤醒 OCR 服务」与「自动续跑」时，才会自动进入运行态（工具栏显示「暂停翻译」）。
     </p>
     <p class="set-hint">设置改动在退出设置页（左上角返回）时写入 config.json。</p>
+    <!-- 更新检查（用户 2026-09-14）：启动静默一次，这里手动重查 -->
+    <div class="set-field">
+      <span>版本更新</span>
+      <div class="set-field-row update-row">
+        <span class="set-hint">v{{ settings.appVersion || "…" }} · {{ settings.updateText }}</span>
+        <button class="set-button" :disabled="settings.updateBusy" @click="settings.checkUpdate(true)">
+          {{ settings.updateBusy ? "检查中…" : "检查更新" }}
+        </button>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.update-row {
+  gap: 10px;
+  align-items: center;
+}
+</style>

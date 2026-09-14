@@ -1,7 +1,9 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import type { LlmVerifyReport } from "../../src-tauri/bindings/LlmVerifyReport";
+import type { UpdateInfo } from "../../src-tauri/bindings/UpdateInfo";
 import { toast } from "../composables/toast";
 import { useLibraryStore } from "./library";
 
@@ -117,6 +119,11 @@ export const useSettingsStore = defineStore("settings", () => {
   /** /models 拉取结果（模型输入框 datalist 补全） */
   const modelOptions = ref<string[]>([]);
 
+  /** 当前应用版本 + 更新检查状态（常规设置页展示；启动静默检查一次） */
+  const appVersion = ref("");
+  const updateBusy = ref(false);
+  const updateText = ref("未检查");
+
   const general = ref<GeneralSettings>({
     autoLaunch: true,
     resumeOnStart: true,
@@ -134,6 +141,11 @@ export const useSettingsStore = defineStore("settings", () => {
   function ensureLoaded(): Promise<void> {
     loadPromise ??= (async () => {
       if (!isTauri) return;
+      try {
+        appVersion.value = await getVersion();
+      } catch {
+        /* 版本号拿不到不致命（更新检查时仍会回填） */
+      }
       try {
         const text = await invoke<string | null>("load_settings");
         if (!text) return;
@@ -238,6 +250,28 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
+  /** 检查更新（用户 2026-09-14）：GitHub Releases 最新版 vs 当前版；
+   *  manual=false（启动）失败静默，manual=true（按钮）失败 toast */
+  async function checkUpdate(manual = false): Promise<void> {
+    if (!isTauri || updateBusy.value) return;
+    updateBusy.value = true;
+    try {
+      const info = await invoke<UpdateInfo>("check_update");
+      appVersion.value = info.current;
+      if (info.newer && info.latest) {
+        updateText.value = `发现新版本 v${info.latest}`;
+        toast(`发现新版本 v${info.latest}（当前 v${info.current}），可到 GitHub Releases 下载`, "info");
+      } else {
+        updateText.value = `已是最新（v${info.current}）`;
+      }
+    } catch (e) {
+      updateText.value = "检查失败（仓库暂无发布或网络不可达）";
+      if (manual) toast(`检查更新失败：${String(e)}`, "warn");
+    } finally {
+      updateBusy.value = false;
+    }
+  }
+
   return {
     pageOpen,
     section,
@@ -247,11 +281,15 @@ export const useSettingsStore = defineStore("settings", () => {
     verifying,
     modelsFetching,
     modelOptions,
+    appVersion,
+    updateBusy,
+    updateText,
     openPage,
     save,
     setRepoPath,
     verifyLlm,
     fetchModels,
+    checkUpdate,
     ensureLoaded,
   };
 
