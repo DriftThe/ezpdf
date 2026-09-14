@@ -376,7 +376,7 @@ async fn import_pdf(
 }
 
 // ---- 仓库条目增删改（用户 2026-09-14）：文件夹为逻辑分组（belong 标签，不落物理目录），
-//      PDF/绑定 JSON 始终平铺在仓库根，故增删文件夹只改索引，不碰磁盘 ----
+//      PDF/绑定 JSON 始终平铺在仓库根；建/移文件夹只改索引，删文件夹级联删除其中的文件 ----
 
 /// 文件夹名（逻辑标签）词法校验：非空、无路径分隔符/盘符、非 `.`/`..`、长度上限
 fn check_folder_name(name: &str) -> Result<(), String> {
@@ -413,35 +413,9 @@ fn create_folder(root: &str, name: String) -> Result<RepoTree, String> {
     Ok(index)
 }
 
-/// 删除文件夹：仅允许空文件夹（非空请先移出或删除文件，防误删用户数据）
-#[tauri::command]
-fn delete_folder(root: &str, name: String) -> Result<RepoTree, String> {
-    let mut index = read_index(root)?;
-    let pos = index
-        .folders
-        .iter()
-        .position(|f| f == &name)
-        .ok_or_else(|| format!("文件夹不存在: {name}"))?;
-    if index.pdfs.iter().any(|p| p.belong.as_deref() == Some(name.as_str())) {
-        return Err("文件夹非空：请先把文件移出或删除".into());
-    }
-    index.folders.remove(pos);
-    write_index(root, &index)?;
-    Ok(index)
-}
-
-/// 删除 PDF：摘除索引条目 + best-effort 删除库内 PDF 与绑定 JSON
-/// （bind 越界/文件缺失不致命——索引已删，残留文件不影响使用）
-#[tauri::command]
-fn delete_pdf(root: &str, id: &str) -> Result<RepoTree, String> {
-    let mut index = read_index(root)?;
-    let pos = index
-        .pdfs
-        .iter()
-        .position(|p| p.id == id)
-        .ok_or_else(|| format!("PDF id not found in repo: {id}"))?;
-    let entry = index.pdfs.remove(pos);
-
+/// 删除一份 PDF 的库内文件（PDF + 绑定 JSON）：best-effort——索引条目为准，
+/// bind 越界/文件缺失不致命（残留文件不影响使用）
+fn remove_pdf_files(root: &str, entry: &PDFStruct) {
     let pdf_name = format!("{}-{}.pdf", entry.name, entry.id);
     if check_relative(&pdf_name).is_ok() {
         let _ = fs::remove_file(Path::new(root).join(&pdf_name));
@@ -451,6 +425,45 @@ fn delete_pdf(root: &str, id: &str) -> Result<RepoTree, String> {
             let _ = fs::remove_file(abs);
         }
     }
+}
+
+/// 删除文件夹：级联删除其中的全部 PDF（索引 + 库内文件）。用户拍板 2026-09-14：
+/// 不再拒绝非空——确认框明示“一并删除”后由用户决定。与在途 OCR/翻译批次的竞态：
+/// 批任务重读绑定 JSON 失败即安全中止，不会复活已删数据。
+#[tauri::command]
+fn delete_folder(root: &str, name: String) -> Result<RepoTree, String> {
+    let mut index = read_index(root)?;
+    let pos = index
+        .folders
+        .iter()
+        .position(|f| f == &name)
+        .ok_or_else(|| format!("文件夹不存在: {name}"))?;
+    let victims: Vec<PDFStruct> = index
+        .pdfs
+        .iter()
+        .filter(|p| p.belong.as_deref() == Some(name.as_str()))
+        .cloned()
+        .collect();
+    index.pdfs.retain(|p| p.belong.as_deref() != Some(name.as_str()));
+    for victim in &victims {
+        remove_pdf_files(root, victim);
+    }
+    index.folders.remove(pos);
+    write_index(root, &index)?;
+    Ok(index)
+}
+
+/// 删除 PDF：摘除索引条目 + best-effort 删除库内 PDF 与绑定 JSON
+#[tauri::command]
+fn delete_pdf(root: &str, id: &str) -> Result<RepoTree, String> {
+    let mut index = read_index(root)?;
+    let pos = index
+        .pdfs
+        .iter()
+        .position(|p| p.id == id)
+        .ok_or_else(|| format!("PDF id not found in repo: {id}"))?;
+    let entry = index.pdfs.remove(pos);
+    remove_pdf_files(root, &entry);
     write_index(root, &index)?;
     Ok(index)
 }
@@ -690,23 +703,41 @@ mod tests {
         let index = create_folder(&root_s, "实验".into()).unwrap();
         assert_eq!(index.folders, vec!["理论".to_string(), "实验".to_string()]);
 
-        // 非空文件夹拒绝删除
+        // 非空文件夹级联删除：索引条目 + 库内 PDF/绑定 JSON 一并删除（用户拍板 2026-09-14）
+        fs::write(root.join("book-abc.pdf"), b"pdf").unwrap();
+        fs::write(root.join("book-abc.json"), b"{}").unwrap();
         let with_pdf = RepoTree {
             folders: index.folders.clone(),
             pdfs: vec![PDFStruct {
                 id: "abc".into(),
                 name: "book".into(),
-                bind: None,
+                bind: Some("book-abc.json".into()),
                 belong: Some("理论".into()),
             }],
         };
         write_index(&root_s, &with_pdf).unwrap();
-        assert!(delete_folder(&root_s, "理论".into()).is_err());
+        let after = delete_folder(&root_s, "理论".into()).unwrap();
+        assert_eq!(after.folders, vec!["实验".to_string()]);
+        assert!(after.pdfs.is_empty());
+        assert!(!root.join("book-abc.pdf").exists());
+        assert!(!root.join("book-abc.json").exists());
+        assert!(delete_folder(&root_s, "理论".into()).is_err()); // 已删
 
-        let moved = move_pdf(&root_s, "abc", None).unwrap();
+        // 移动 PDF：根级 → 文件夹（自动建组保留）→ 根级
+        let single = RepoTree {
+            folders: vec!["实验".into()],
+            pdfs: vec![PDFStruct {
+                id: "xy".into(),
+                name: "second".into(),
+                bind: None,
+                belong: None,
+            }],
+        };
+        write_index(&root_s, &single).unwrap();
+        let moved = move_pdf(&root_s, "xy", Some("实验".into())).unwrap();
+        assert_eq!(moved.pdfs[0].belong.as_deref(), Some("实验"));
+        let moved = move_pdf(&root_s, "xy", None).unwrap();
         assert_eq!(moved.pdfs[0].belong, None);
-        assert!(delete_folder(&root_s, "理论".into()).is_ok());
-        assert!(delete_folder(&root_s, "理论".into()).is_err());
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -144,6 +144,15 @@ textarea {
 .btn.warn {
   color: var(--warn);
 }
+/* 危险操作（删除确认等）：实心红，两主题通用（--err 两套均已定义） */
+.btn.danger {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+}
+.btn.danger:hover {
+  filter: brightness(1.07);
+}
 
 .icon-btn {
   width: 26px;

@@ -2,6 +2,7 @@
 import { onMounted } from "vue";
 import Sidebar from "./Sidebar.vue";
 import Toasts from "./Toasts.vue";
+import ConfirmDialog from "../common/ConfirmDialog.vue";
 import ReaderToolbar from "../toolbar/ReaderToolbar.vue";
 import ReaderArea from "../reader/ReaderArea.vue";
 import PageStatusStrip from "../reader/PageStatusStrip.vue";
@@ -40,6 +41,7 @@ onMounted(async () => {
     </main>
     <SettingsPage />
     <Toasts />
+    <ConfirmDialog />
   </div>
 </template>
 

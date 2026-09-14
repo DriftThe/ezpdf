@@ -226,7 +226,7 @@ export const useLibraryStore = defineStore("library", () => {
     return mutateRepoTree("create_folder", { name });
   }
 
-  /** 删除空文件夹（非空由后端拒绝） */
+  /** 删除文件夹：后端级联删除其中 PDF（索引 + 库内文件） */
   function deleteFolder(name: string): Promise<boolean> {
     return mutateRepoTree("delete_folder", { name });
   }

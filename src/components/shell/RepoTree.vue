@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import type { PDFStruct } from "../../../src-tauri/bindings/PDFStruct";
 import { useLibraryStore } from "../../stores/library";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { confirmDialog } from "../../composables/confirm";
 
 defineOptions({ name: "RepoTree" });
 
@@ -45,16 +45,23 @@ function toggleMenu(id: string): void {
   menuFor.value = menuFor.value === id ? null : id;
 }
 
-async function onDeleteFolder(name: string): Promise<void> {
-  const ok = await ask(`删除文件夹「${name}」？`, { title: "删除确认", kind: "warning" });
-  if (ok) await lib.deleteFolder(name);
+/** 删除文件夹（自绘确认框，用户 2026-09-14）：非空时明示将连同其中 PDF 一并删除 */
+async function onDeleteFolder(row: FolderRow): Promise<void> {
+  const message =
+    row.count > 0
+      ? `删除文件夹「${row.name}」？其中的 ${row.count} 个 PDF 及其解析数据将一并删除，且不可恢复。`
+      : `删除文件夹「${row.name}」？`;
+  if (await confirmDialog({ title: "删除文件夹", message, confirmText: "删除" })) {
+    await lib.deleteFolder(row.name);
+  }
 }
 
 async function onDeletePdf(pdf: PDFStruct): Promise<void> {
   menuFor.value = null;
-  const ok = await ask(`删除《${pdf.name}》？库内 PDF 与解析数据将一并删除，且不可恢复。`, {
-    title: "删除确认",
-    kind: "warning",
+  const ok = await confirmDialog({
+    title: "删除 PDF",
+    message: `删除《${pdf.name}》？库内 PDF 与解析数据将一并删除，且不可恢复。`,
+    confirmText: "删除",
   });
   if (ok) await lib.deletePdf(pdf);
 }
@@ -81,9 +88,8 @@ async function onMove(pdf: PDFStruct, belong: string | null): Promise<void> {
         </button>
         <button
           class="row-btn"
-          :title="row.count > 0 ? '文件夹非空：先移出或删除文件' : '删除文件夹'"
-          :disabled="row.count > 0"
-          @click.stop="onDeleteFolder(row.name)"
+          :title="row.count > 0 ? '删除文件夹（连同其中 PDF）' : '删除文件夹'"
+          @click.stop="onDeleteFolder(row)"
         >
           <svg viewBox="0 0 14 14" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
             <path d="M2.5 3.5h9M5.5 3.5V2h3v1.5M3.5 3.5l.6 8h5.8l.6-8M6 6v3.5M8 6v3.5" />
