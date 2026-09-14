@@ -1,8 +1,25 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useParseStore } from "../../../stores/parse";
+import { useSettingsStore } from "../../../stores/settings";
 
 const parse = useParseStore();
+const settings = useSettingsStore();
+
+/** 安装模式（用户 2026-09-14）：默认跟硬件走（探测到 GPU 自动选 GPU） */
+const installMode = ref<"cpu" | "gpu">("cpu");
+watch(
+  () => parse.envReport?.gpu,
+  (gpu) => {
+    if (gpu) installMode.value = "gpu";
+  },
+  { immediate: true },
+);
+
+// 打开 OCR 设置页即刷新一次报告（灯与按钮可用性以最新探测为准）
+onMounted(() => {
+  if (parse.envReport === null) void parse.checkEnv();
+});
 
 /** 状态位 → 文案 / 状态灯修饰类（"" = 灰色未就绪态） */
 type EnvState = "notready" | "cpu" | "gpu";
@@ -47,7 +64,7 @@ const modelsTip = computed(() => {
   const m = parse.envReport?.models;
   if (!m) return "未检查";
   const missing = [!m.layout && "PP-DocLayoutV3", !m.vl && "PaddleOCR-VL-1.6"].filter(Boolean);
-  return missing.length > 0 ? `缺模型目录: ${missing.join(", ")}` : "models/ 下两模型目录齐备";
+  return missing.length > 0 ? `缺模型目录: ${missing.join(", ")}` : "模型目录齐备";
 });
 
 const READY_LABEL: Record<"notready" | "ready", string> = { notready: "未就绪", ready: "已就绪" };
@@ -110,25 +127,44 @@ const lights = computed(() => [
         </span>
       </div>
     </div>
+    <!-- 一键安装服务（用户 2026-09-14）：CPU/GPU 选择 + 镜像源开关 + 进度（日志上方） -->
     <div class="set-field">
-      <span>环境操作</span>
-      <div class="set-field-row">
+      <span>安装服务</span>
+      <div class="set-field-row install-row">
+        <label class="set-check">
+          <input v-model="installMode" type="radio" value="gpu" />
+          <span>GPU</span>
+        </label>
+        <label class="set-check">
+          <input v-model="installMode" type="radio" value="cpu" />
+          <span>CPU</span>
+        </label>
+        <label class="set-check">
+          <input v-model="settings.ocr.installMirror" type="checkbox" />
+          <span>使用镜像源</span>
+        </label>
         <button
-          v-if="pythonReady && envState === 'notready'"
           class="set-button"
           :disabled="parse.installing"
-          @click="parse.installEnv()"
+          @click="parse.installService(installMode, settings.ocr.installMirror)"
         >
-          {{ parse.installing ? "安装中…" : "一键安装" }}
+          {{ parse.installing ? "安装中…" : "一键安装服务" }}
         </button>
-        <button
-          v-if="pythonReady && !modelsReady"
-          class="set-button"
-          :disabled="parse.modelsBusy || parse.installing"
-          @click="parse.downloadModels()"
-        >
-          {{ parse.modelsBusy ? "下载中…" : "下载模型（约1.9GB）" }}
-        </button>
+        <span v-if="parse.installing && parse.installProgress" class="install-phase">
+          {{ parse.installProgress.phase }} {{ parse.installProgress.percent }}%
+        </span>
+      </div>
+    </div>
+    <div v-if="parse.installing && parse.installProgress" class="progress-track">
+      <div class="progress-fill" :style="{ width: parse.installProgress.percent + '%' }" />
+    </div>
+    <p class="set-hint">
+      安装内容 = 基础依赖 + torch（{{ installMode === "gpu" ? "GPU/CUDA 版，约 3GB" : "CPU 版，约 200MB" }}）+ 两个模型（约 1.9GB）。
+      GPU 模式要求 nvidia-smi 可用（无则中止并提示）；网络受限时保持「使用镜像源」开启。
+    </p>
+    <div class="set-field">
+      <span>服务操作</span>
+      <div class="set-field-row">
         <button v-if="!serviceBusy" class="set-button" @click="parse.startService()">启动服务</button>
         <button v-if="serviceBusy" class="set-button" @click="parse.stopService()">停止服务</button>
       </div>
@@ -139,3 +175,27 @@ const lights = computed(() => [
     </div>
   </div>
 </template>
+
+<style scoped>
+.install-row {
+  gap: 12px;
+  align-items: center;
+}
+.install-phase {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.progress-track {
+  height: 4px;
+  margin: -2px 0 6px 120px; /* 与 .set-field 的 110px 标签列 + 10px gap 对齐 */
+  border-radius: 2px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+</style>

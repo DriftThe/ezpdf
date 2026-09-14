@@ -1,3 +1,4 @@
-# CPU 变体：PyPI Windows 默认构建（~200MB）。无 N 卡或驱动过旧时由 Rust 选择本文件
+# CPU 变体：PyPI 默认构建（~200MB）
+# index-url 由 Rust 按【镜像源开关】显式传入（TUNA 镜像或 PyPI 官方），见 pyenv.rs
 torch==2.13.0
 torchvision==0.28.0

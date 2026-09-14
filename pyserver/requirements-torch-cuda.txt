@@ -1,5 +1,4 @@
-# GPU 变体：CUDA 13.2 构建 wheels（~3GB 下载）。驱动 CUDA Version >= 13.0 时由 Rust 选择本文件
---index-url https://download.pytorch.org/whl/cu132
---extra-index-url https://pypi.org/simple
+# GPU 变体：torch 2.13 CUDA 13.2 构建（~3GB 下载）
+# index-url 由 Rust 按【镜像源开关】显式传入（TUNA/SJTU 镜像或官方源），见 pyenv.rs
 torch==2.13.0+cu132
 torchvision==0.28.0+cu132

@@ -36,6 +36,11 @@ export interface GeneralSettings {
   resumeOnStart: boolean;
 }
 
+/** OCR 服务安装选项（用户 2026-09-14）：一键安装服务时是否走国内镜像源 */
+export interface OcrSettings {
+  installMirror: boolean;
+}
+
 /**
  * 设置页左侧导航子项。
  * 新增设置块三步：① 此处扩展 union（如 "theme"）
@@ -79,10 +84,10 @@ async function fillLlmFromAuthCfg(llm: { value: LlmSettings }): Promise<void> {
 interface PersistedConfig {
   llm?: Partial<LlmSettings>;
   general?: Partial<GeneralSettings>;
+  ocr?: Partial<OcrSettings> & { autoLaunch?: unknown };
   /** 上次打开的仓库根目录（启动时自动打开；空 = 未选择） */
   repo?: string | null;
   /** 旧版分节（仅迁移用，保存时不再写出） */
-  ocr?: { autoLaunch?: unknown };
   parse?: { resumeOnStart?: unknown };
 }
 
@@ -129,6 +134,10 @@ export const useSettingsStore = defineStore("settings", () => {
     resumeOnStart: true,
   });
 
+  const ocr = ref<OcrSettings>({
+    installMirror: true,
+  });
+
   /** 上次选择的仓库根目录（config.json 持久化；library 启动时据此自动打开） */
   const repoPath = ref<string | null>(null);
 
@@ -155,6 +164,7 @@ export const useSettingsStore = defineStore("settings", () => {
         if (typeof cfg.ocr?.autoLaunch === "boolean") general.value.autoLaunch = cfg.ocr.autoLaunch;
         if (typeof cfg.parse?.resumeOnStart === "boolean") general.value.resumeOnStart = cfg.parse.resumeOnStart;
         mergeSection(general.value, cfg.general);
+        mergeSection(ocr.value, cfg.ocr); // installMirror（autoLaunch 键不在目标对象上，被忽略）
         if (typeof cfg.repo === "string" && cfg.repo.trim()) repoPath.value = cfg.repo;
       } catch (e) {
         console.warn("[settings] config.json 读取失败，使用默认值:", e);
@@ -180,6 +190,7 @@ export const useSettingsStore = defineStore("settings", () => {
     const payload: PersistedConfig = {
       llm: { ...llm.value },
       general: { ...general.value },
+      ocr: { ...ocr.value },
       repo: repoPath.value,
     };
     await invoke("save_settings", { json: JSON.stringify(payload, null, 2) });
@@ -277,6 +288,7 @@ export const useSettingsStore = defineStore("settings", () => {
     section,
     llm,
     general,
+    ocr,
     repoPath,
     verifying,
     modelsFetching,

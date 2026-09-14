@@ -544,16 +544,19 @@ async fn ocr_env_report(paths: tauri::State<'_, pyenv::PyPaths>) -> Result<pyenv
 async fn ocr_install_env(
     app: tauri::AppHandle,
     paths: tauri::State<'_, pyenv::PyPaths>,
+    mode: String,
+    use_mirror: bool,
 ) -> Result<(), String> {
-    pyenv::install_env(&app, &paths).await
+    pyenv::install_env(&app, &paths, pyenv::InstallMode::parse(&mode)?, use_mirror).await
 }
 
 #[tauri::command]
 async fn ocr_download_models(
     app: tauri::AppHandle,
     paths: tauri::State<'_, pyenv::PyPaths>,
+    use_mirror: bool,
 ) -> Result<(), String> {
-    pyenv::download_models(&app, &paths).await
+    pyenv::download_models(&app, &paths, use_mirror).await
 }
 
 #[tauri::command]

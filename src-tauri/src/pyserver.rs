@@ -200,14 +200,15 @@ async fn handle_failure(
 
 /// 单次启动：spawn → 逐行读 stdout 等 READY（超时 60s）→ /health 确认 → 持 stdin
 async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result<tokio::process::Child, String> {
-    if !paths.venv_python.is_file() {
-        return Err("venv 解释器不存在，请先在设置页安装环境".into());
+    if !paths.python.is_file() {
+        return Err("服务解释器不存在，请到设置页「一键安装服务」".into());
     }
     let token = fresh_token();
-    let mut cmd = tokio::process::Command::new(&paths.venv_python);
+    let mut cmd = tokio::process::Command::new(&paths.python);
     cmd.args(["-m", "app.main"])
         .current_dir(&paths.root)
         .env("EZPDF_TOKEN", &token)
+        .env("EZPDF_MODELS_DIR", &paths.models)
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
         .stdin(std::process::Stdio::piped())

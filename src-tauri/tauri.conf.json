@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm build && node scripts/pack-runtime.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -29,7 +29,22 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "publisher": "DriftThe",
+    "category": "Productivity",
+    "shortDescription": "实时 PDF 翻译阅读器",
+    "longDescription": "本地 OCR + LLM 逐页翻译的 PDF 阅读器：原文/译文双栏，边读边翻。",
+    "resources": {
+      "resources/python": "python",
+      "resources/pyserver": "pyserver",
+      "resources/system_prompt": "system_prompt"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese"]
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

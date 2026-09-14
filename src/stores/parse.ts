@@ -49,7 +49,8 @@ export const useParseStore = defineStore("parse", () => {
 
   const checking = ref(false);
   const installing = ref(false);
-  const modelsBusy = ref(false);
+  /** 一键安装服务进度（ocr://install；null = 未在安装） */
+  const installProgress = ref<{ phase: string; percent: number } | null>(null);
 
   function togglePaused(): void {
     paused.value = !paused.value;
@@ -78,6 +79,9 @@ export const useParseStore = defineStore("parse", () => {
   listen<ServiceStatus>("ocr://status", (e) => {
     serviceStatus.value = e.payload;
   }).catch(() => undefined);
+  listen<{ phase: string; percent: number }>("ocr://install", (e) => {
+    installProgress.value = e.payload;
+  }).catch(() => undefined);
 
   /** 检查环境：Rust 跑 bootstrap.py 探测，整份报告入缓存 */
   async function checkEnv(): Promise<void> {
@@ -93,29 +97,29 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** 长任务命令（环境安装/模型下载）：busy 防重入 → invoke → 重查环境 → 成功提示 */
-  async function runLongCommand(command: string, busy: { value: boolean }, success: string): Promise<void> {
-    if (busy.value) return;
-    busy.value = true;
+  /** 一键安装服务（用户 2026-09-14）：环境+torch 变体（CPU/GPU 选择、镜像开关）
+   *  → 模型下载；全程进度经 ocr://install 推送（按钮旁进度条）。
+   *  GPU 模式无 nvidia-smi 时后端直接报错中止（toast 展示原因）。 */
+  async function installService(mode: "cpu" | "gpu", useMirror: boolean): Promise<void> {
+    if (installing.value) return;
+    installing.value = true;
+    installProgress.value = null;
     try {
-      await invoke(command);
+      await invoke("ocr_install_env", { mode, useMirror });
       await checkEnv();
-      toast(success, "info");
+      const r = envReport.value;
+      const modelsReady = !!r?.models?.layout && !!r?.models?.vl;
+      if (!modelsReady) {
+        await invoke("ocr_download_models", { useMirror });
+        await checkEnv();
+      }
+      toast("服务安装完成", "info");
     } catch (e) {
       toast(String(e), "error");
     } finally {
-      busy.value = false;
+      installing.value = false;
+      installProgress.value = null;
     }
-  }
-
-  /** 一键安装：venv 创建（必要时）→ 基础依赖 → torch 变体；过程经 ocr://log 流式展示 */
-  function installEnv(): Promise<void> {
-    return runLongCommand("ocr_install_env", installing, "环境安装完成");
-  }
-
-  /** 模型下载：huggingface_hub 按需补装 → python -m app.fetch（hf-mirror 镜像，缺哪补哪） */
-  function downloadModels(): Promise<void> {
-    return runLongCommand("ocr_download_models", modelsBusy, "模型下载完成");
   }
 
   /** 生命周期命令（启动/停止）：失败 toast；状态由 ocr://status 事件回报 */
@@ -479,13 +483,12 @@ export const useParseStore = defineStore("parse", () => {
     llmLogs,
     checking,
     installing,
-    modelsBusy,
+    installProgress,
     parsing,
     standing,
     wake,
     checkEnv,
-    installEnv,
-    downloadModels,
+    installService,
     startService,
     stopService,
     autoStartIfEnabled,
