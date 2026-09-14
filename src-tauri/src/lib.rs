@@ -213,6 +213,12 @@ async fn gettree_from_config(app: tauri::AppHandle, root: &str) -> Result<RepoTr
     Ok(index)
 }
 
+/// 读并解析绑定 JSON（load_pdf / parse.rs 的批量写回共用同一错误文案与语义）
+pub(crate) fn read_bind_doc(abs: &Path) -> Result<BindDoc, String> {
+    let text = fs::read_to_string(abs).map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("Failed when parsing bound JSON: {e}"))
+}
+
 // Open a PDF by its stable id: look up the .ezrepo entry, resolve paths, read the bound JSON.
 #[tauri::command]
 async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
@@ -231,11 +237,12 @@ async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
     let (json_path, status, pages) = match &entry.bind {
         Some(rel) => {
             let json_abs = resolve_bind_path(_root, rel)?;
-            let text = fs::read_to_string(&json_abs)
-                .map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
-            let doc: BindDoc = serde_json::from_str(&text)
-                .map_err(|e| format!("Failed when parsing bound JSON: {e}"))?;
-            (Some(json_abs.to_string_lossy().to_string()), doc.status, doc.pages)
+            let doc = read_bind_doc(&json_abs)?;
+            (
+                Some(json_abs.to_string_lossy().to_string()),
+                doc.status,
+                doc.pages,
+            )
         }
         None => (None, PDFStatus::Pending, Vec::new()),
     };
@@ -303,17 +310,7 @@ fn import_one(
     let json_name = format!("{name}-{id}.json");
     fs::write(dir.join(&pdf_name), &bytes).map_err(|e| format!("入库失败: {e}"))?;
     let page_count = pdf_page_count(&bytes);
-    let pages: Vec<PageInfo> = match page_count {
-        Some(n) => (1..=n)
-            .map(|i| PageInfo {
-                index: i,
-                finished: false,
-                translated: false,
-                blocks: Vec::new(),
-            })
-            .collect(),
-        None => Vec::new(),
-    };
+    let pages = page_count.map(parse::build_skeleton).unwrap_or_default();
     let doc = BindDoc {
         status: PDFStatus::Pending,
         pages,
@@ -353,9 +350,7 @@ async fn import_pdf(
         match import_one(dir, belong.as_deref(), src, &index) {
             Ok((entry, page_warning)) => {
                 if let Some(b) = &entry.belong {
-                    if !index.folders.iter().any(|f| f == b) {
-                        index.folders.push(b.clone());
-                    }
+                    ensure_folder(&mut index, b);
                 }
                 index.pdfs.push(entry.clone());
                 imported.push(entry);
@@ -378,6 +373,146 @@ async fn import_pdf(
         failed,
         warnings,
     })
+}
+
+// ---- 仓库条目增删改（用户 2026-09-14）：文件夹为逻辑分组（belong 标签，不落物理目录），
+//      PDF/绑定 JSON 始终平铺在仓库根，故增删文件夹只改索引，不碰磁盘 ----
+
+/// 文件夹名（逻辑标签）词法校验：非空、无路径分隔符/盘符、非 `.`/`..`、长度上限
+fn check_folder_name(name: &str) -> Result<(), String> {
+    let bad = name.trim().is_empty()
+        || name.contains(['/', '\\', ':'])
+        || name == "."
+        || name == ".."
+        || name.chars().count() > 64;
+    if bad {
+        Err("文件夹名无效（不能为空、不能含路径分隔符，最长 64 字符）".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// 确保索引里有该文件夹（幂等；belong 是逻辑标签，无物理目录）
+fn ensure_folder(index: &mut RepoTree, name: &str) {
+    if !index.folders.iter().any(|f| f == name) {
+        index.folders.push(name.to_string());
+    }
+}
+
+/// 新建文件夹（仅索引；重名直接拒绝）
+#[tauri::command]
+fn create_folder(root: &str, name: String) -> Result<RepoTree, String> {
+    let name = name.trim().to_string();
+    check_folder_name(&name)?;
+    let mut index = read_index(root)?;
+    if index.folders.iter().any(|f| f == &name) {
+        return Err(format!("同名文件夹已存在: {name}"));
+    }
+    index.folders.push(name);
+    write_index(root, &index)?;
+    Ok(index)
+}
+
+/// 删除文件夹：仅允许空文件夹（非空请先移出或删除文件，防误删用户数据）
+#[tauri::command]
+fn delete_folder(root: &str, name: String) -> Result<RepoTree, String> {
+    let mut index = read_index(root)?;
+    let pos = index
+        .folders
+        .iter()
+        .position(|f| f == &name)
+        .ok_or_else(|| format!("文件夹不存在: {name}"))?;
+    if index.pdfs.iter().any(|p| p.belong.as_deref() == Some(name.as_str())) {
+        return Err("文件夹非空：请先把文件移出或删除".into());
+    }
+    index.folders.remove(pos);
+    write_index(root, &index)?;
+    Ok(index)
+}
+
+/// 删除 PDF：摘除索引条目 + best-effort 删除库内 PDF 与绑定 JSON
+/// （bind 越界/文件缺失不致命——索引已删，残留文件不影响使用）
+#[tauri::command]
+fn delete_pdf(root: &str, id: &str) -> Result<RepoTree, String> {
+    let mut index = read_index(root)?;
+    let pos = index
+        .pdfs
+        .iter()
+        .position(|p| p.id == id)
+        .ok_or_else(|| format!("PDF id not found in repo: {id}"))?;
+    let entry = index.pdfs.remove(pos);
+
+    let pdf_name = format!("{}-{}.pdf", entry.name, entry.id);
+    if check_relative(&pdf_name).is_ok() {
+        let _ = fs::remove_file(Path::new(root).join(&pdf_name));
+    }
+    if let Some(rel) = &entry.bind {
+        if let Ok(abs) = resolve_bind_path(root, rel) {
+            let _ = fs::remove_file(abs);
+        }
+    }
+    write_index(root, &index)?;
+    Ok(index)
+}
+
+/// 移动 PDF：belong=Some 移入文件夹（不存在则自动建组），None 移出到根级
+#[tauri::command]
+fn move_pdf(root: &str, id: &str, belong: Option<String>) -> Result<RepoTree, String> {
+    let mut index = read_index(root)?;
+    let belong = belong.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    if let Some(b) = &belong {
+        check_folder_name(b)?;
+        ensure_folder(&mut index, b);
+    }
+    let entry = index
+        .pdfs
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("PDF id not found in repo: {id}"))?;
+    entry.belong = belong;
+    write_index(root, &index)?;
+    Ok(index)
+}
+
+// ---- 应用设置持久化（用户 2026-09-14）：dev = 仓库根 config.json；生产 = ~/.ezpdf/config.json ----
+
+/// 设置文件位置：与 pyserver 同一 app 根（dev 源码仓库根 / 生产 ~/.ezpdf）
+fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    #[cfg(dev)]
+    {
+        let _ = app;
+        Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config.json"))
+    }
+    #[cfg(not(dev))]
+    {
+        let home = app.path().home_dir().map_err(|e| e.to_string())?;
+        Ok(home.join(".ezpdf").join("config.json"))
+    }
+}
+
+/// 读设置：文件不存在 → Ok(None)（前端用默认值，不打断启动）
+#[tauri::command]
+fn load_settings(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = settings_path(&app)?;
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("读取设置失败 {}: {e}", path.display())),
+    }
+}
+
+/// 写设置（JSON 校验 + 临时文件原子替换）：退出设置页时前端整份下发
+#[tauri::command]
+fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
+    serde_json::from_str::<serde_json::Value>(&json).map_err(|e| format!("设置 JSON 非法: {e}"))?;
+    let path = settings_path(&app)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("创建设置目录失败: {e}"))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, json).map_err(|e| format!("写入设置失败: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("替换设置文件失败: {e}"))?;
+    Ok(())
 }
 
 // ---- OCR 服务（阶段2.5）：环境报告 / 环境安装 / 生命周期。探测与安装细节在 pyenv.rs，
@@ -479,6 +614,12 @@ pub fn run() {
             gettree_from_config,
             load_pdf,
             import_pdf,
+            create_folder,
+            delete_folder,
+            delete_pdf,
+            move_pdf,
+            load_settings,
+            save_settings,
             ocr_env_report,
             ocr_install_env,
             ocr_download_models,
@@ -521,6 +662,53 @@ mod tests {
         assert!(check_relative("/abs/foo.json").is_err());
         assert!(check_relative(r"C:\evil\foo.json").is_err());
         assert!(check_relative(r"a-..\..\evil.pdf").is_err());
+    }
+
+    #[test]
+    fn folder_name_validation() {
+        assert!(check_folder_name("理论").is_ok());
+        assert!(check_folder_name("a b-c_1").is_ok());
+        assert!(check_folder_name("").is_err());
+        assert!(check_folder_name("   ").is_err());
+        assert!(check_folder_name("..").is_err());
+        assert!(check_folder_name("../evil").is_err());
+        assert!(check_folder_name(r"sub\dir").is_err());
+        assert!(check_folder_name("C:dir").is_err());
+        assert!(check_folder_name(&"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn folder_crud_round_trip() {
+        let root = std::env::temp_dir().join(format!("ezpdf-folder-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let root_s = root.to_string_lossy().to_string();
+        write_index(&root_s, &RepoTree { folders: vec![], pdfs: vec![] }).unwrap();
+
+        assert!(create_folder(&root_s, "理论".into()).is_ok());
+        assert!(create_folder(&root_s, " 理论 ".into()).is_err()); // trim 后重名
+        let index = create_folder(&root_s, "实验".into()).unwrap();
+        assert_eq!(index.folders, vec!["理论".to_string(), "实验".to_string()]);
+
+        // 非空文件夹拒绝删除
+        let with_pdf = RepoTree {
+            folders: index.folders.clone(),
+            pdfs: vec![PDFStruct {
+                id: "abc".into(),
+                name: "book".into(),
+                bind: None,
+                belong: Some("理论".into()),
+            }],
+        };
+        write_index(&root_s, &with_pdf).unwrap();
+        assert!(delete_folder(&root_s, "理论".into()).is_err());
+
+        let moved = move_pdf(&root_s, "abc", None).unwrap();
+        assert_eq!(moved.pdfs[0].belong, None);
+        assert!(delete_folder(&root_s, "理论".into()).is_ok());
+        assert!(delete_folder(&root_s, "理论".into()).is_err());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -2,24 +2,32 @@
 import { computed, ref } from "vue";
 import type { PDFStruct } from "../../../src-tauri/bindings/PDFStruct";
 import { useLibraryStore } from "../../stores/library";
+import { ask } from "@tauri-apps/plugin-dialog";
 
 defineOptions({ name: "RepoTree" });
 
 const lib = useLibraryStore();
 const collapsed = ref<Set<string>>(new Set());
+/** 打开的 PDF 行操作菜单（id）；点击树任意处关闭 */
+const menuFor = ref<string | null>(null);
 
-type Row = { kind: "folder"; name: string } | { kind: "pdf"; pdf: PDFStruct; inFolder: boolean };
+type FolderRow = { kind: "folder"; name: string; count: number };
+type PdfRow = { kind: "pdf"; pdf: PDFStruct; inFolder: boolean; targets: string[] };
 
-/** 由分组索引派生可见行序列：目录行 + 其 PDF 行（可折叠）+ 根级 PDF 行（belong 为空，与目录平齐） */
-const rows = computed<Row[]>(() => {
-  const out: Row[] = [];
+/** 由分组索引派生可见行序列：目录行 + 其 PDF 行（可折叠）+ 根级 PDF 行（belong 为空，与目录平齐）；
+ *  每行的删除可用性（count）与移动目标（targets）在派生时一次算好，模板不再逐次过滤索引 */
+const rows = computed<Array<FolderRow | PdfRow>>(() => {
+  const index = lib.repoIndex;
+  if (!index) return [];
+  const moveTargets = (pdf: PDFStruct): string[] => index.folders.filter((f) => f !== pdf.belong);
+  const out: Array<FolderRow | PdfRow> = [];
   for (const group of lib.repoGroups ?? []) {
     if (group.folder === null) {
-      for (const pdf of group.pdfs) out.push({ kind: "pdf", pdf, inFolder: false });
+      for (const pdf of group.pdfs) out.push({ kind: "pdf", pdf, inFolder: false, targets: moveTargets(pdf) });
     } else {
-      out.push({ kind: "folder", name: group.folder });
+      out.push({ kind: "folder", name: group.folder, count: group.pdfs.length });
       if (!collapsed.value.has(group.folder)) {
-        for (const pdf of group.pdfs) out.push({ kind: "pdf", pdf, inFolder: true });
+        for (const pdf of group.pdfs) out.push({ kind: "pdf", pdf, inFolder: true, targets: moveTargets(pdf) });
       }
     }
   }
@@ -32,24 +40,57 @@ function toggle(folder: string): void {
   else s.add(folder);
   collapsed.value = s;
 }
+
+function toggleMenu(id: string): void {
+  menuFor.value = menuFor.value === id ? null : id;
+}
+
+async function onDeleteFolder(name: string): Promise<void> {
+  const ok = await ask(`删除文件夹「${name}」？`, { title: "删除确认", kind: "warning" });
+  if (ok) await lib.deleteFolder(name);
+}
+
+async function onDeletePdf(pdf: PDFStruct): Promise<void> {
+  menuFor.value = null;
+  const ok = await ask(`删除《${pdf.name}》？库内 PDF 与解析数据将一并删除，且不可恢复。`, {
+    title: "删除确认",
+    kind: "warning",
+  });
+  if (ok) await lib.deletePdf(pdf);
+}
+
+async function onMove(pdf: PDFStruct, belong: string | null): Promise<void> {
+  menuFor.value = null;
+  await lib.movePdf(pdf.id, belong);
+}
 </script>
 
 <template>
-  <ul class="tree">
+  <ul class="tree" @click="menuFor = null">
     <li v-for="row in rows" :key="row.kind === 'folder' ? `f:${row.name}` : row.pdf.id">
-      <!-- 目录行（belong 分组）；悬浮时最右侧出现导入加号 -->
+      <!-- 目录行（belong 分组）；悬浮时最右侧出现导入加号与删除 -->
       <div v-if="row.kind === 'folder'" class="tree-row folder" @click="toggle(row.name)">
         <span class="chev" :class="{ open: !collapsed.has(row.name) }" aria-hidden="true">
           <svg viewBox="0 0 8 8" width="10" height="10"><path d="M2 1l4 3-4 3z" fill="currentColor" /></svg>
         </span>
         <span class="row-name folder-name">{{ row.name }}</span>
-        <button class="row-add" title="导入 PDF 到此文件夹" :disabled="lib.importing" @click.stop="lib.importPdf(row.name)">
+        <button class="row-btn" title="导入 PDF 到此文件夹" :disabled="lib.importing" @click.stop="lib.importPdf(row.name)">
           <svg viewBox="0 0 10 10" width="20" height="20" aria-hidden="true">
             <path d="M5 1.2v7.6M1.2 5h7.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
           </svg>
         </button>
+        <button
+          class="row-btn"
+          :title="row.count > 0 ? '文件夹非空：先移出或删除文件' : '删除文件夹'"
+          :disabled="row.count > 0"
+          @click.stop="onDeleteFolder(row.name)"
+        >
+          <svg viewBox="0 0 14 14" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+            <path d="M2.5 3.5h9M5.5 3.5V2h3v1.5M3.5 3.5l.6 8h5.8l.6-8M6 6v3.5M8 6v3.5" />
+          </svg>
+        </button>
       </div>
-      <!-- PDF 行：组内缩进；bind 为 null（未解析）半透明 -->
+      <!-- PDF 行：组内缩进；bind 为 null（未解析）半透明；悬浮出现移动/删除 -->
       <div
         v-else
         class="tree-row pdf"
@@ -68,6 +109,26 @@ function toggle(folder: string): void {
           </svg>
         </span>
         <span class="row-name pdf-name">{{ row.pdf.name }}</span>
+        <button class="row-btn" title="移动到文件夹" @click.stop="toggleMenu(row.pdf.id)">
+          <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 2h4.5A1.5 1.5 0 0 1 14 6.5v5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5z" />
+            <path d="M6 9.5h4.5M8.5 7.5l2 2-2 2" />
+          </svg>
+        </button>
+        <button class="row-btn" title="从仓库删除" @click.stop="onDeletePdf(row.pdf)">
+          <svg viewBox="0 0 14 14" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+            <path d="M2.5 3.5h9M5.5 3.5V2h3v1.5M3.5 3.5l.6 8h5.8l.6-8M6 6v3.5M8 6v3.5" />
+          </svg>
+        </button>
+        <!-- 移动菜单：目标目录 + 移出到根 -->
+        <div v-if="menuFor === row.pdf.id" class="row-menu" @click.stop>
+          <button v-if="row.inFolder" class="menu-item" @click="onMove(row.pdf, null)">移出到仓库根目录</button>
+          <div v-if="row.inFolder && row.targets.length > 0" class="menu-sep" />
+          <button v-for="f in row.targets" :key="f" class="menu-item" @click="onMove(row.pdf, f)">
+            移入「{{ f }}」
+          </button>
+          <div v-if="!row.inFolder && row.targets.length === 0" class="menu-empty">暂无其他文件夹</div>
+        </div>
       </div>
     </li>
   </ul>
@@ -104,6 +165,7 @@ function toggle(folder: string): void {
 }
 .tree-row.pdf {
   padding-left: 10px;
+  position: relative;
 }
 .tree-row.pdf.nested {
   padding-left: 26px;
@@ -122,7 +184,7 @@ function toggle(folder: string): void {
   transform: rotate(90deg);
 }
 .row-name {
-  min-width: 0; /* 长名截断而非把右侧加号挤出行 */
+  min-width: 0; /* 长名截断而非把右侧按钮挤出行 */
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -144,7 +206,7 @@ function toggle(folder: string): void {
 .tree-row.unparsed:hover {
   opacity: 1;
 }
-.row-add {
+.row-btn {
   margin-left: auto; /* 推到条目最右端 */
   width: 24px;
   height: 24px;
@@ -158,22 +220,69 @@ function toggle(folder: string): void {
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
-  opacity: 0; /* 默认隐藏，悬浮文件夹行时出现 */
+  opacity: 0; /* 默认隐藏，悬浮行时出现 */
 }
-.tree-row.folder:hover .row-add,
-.row-add:focus-visible {
+.row-btn + .row-btn {
+  margin-left: 0;
+}
+.tree-row:hover .row-btn,
+.row-btn:focus-visible {
   opacity: 1;
 }
-.row-add:hover {
+.row-btn:hover {
   background: var(--bg-hover);
   color: var(--accent);
 }
-/* 导入进行中：加号置灰失能，悬浮也不再高亮（需压过上面的 hover/浮现规则，故放最后） */
-.row-add:disabled,
-.tree-row.folder:hover .row-add:disabled {
+/* 导入/删除进行中或禁用：置灰失能，悬浮也不再高亮（需压过上面的 hover/浮现规则） */
+.row-btn:disabled,
+.tree-row:hover .row-btn:disabled {
   opacity: 0.45;
   background: transparent;
   color: var(--text-3);
   cursor: not-allowed;
+}
+/* ---- PDF 行移动菜单 ---- */
+.row-menu {
+  position: absolute;
+  top: 30px;
+  right: 8px;
+  z-index: 30;
+  min-width: 150px;
+  max-width: 240px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-1);
+  cursor: default;
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.menu-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+.menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+.menu-empty {
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--text-3);
 }
 </style>

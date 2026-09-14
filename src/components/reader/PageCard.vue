@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import type { Directive } from "vue";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useReaderStore } from "../../stores/reader";
@@ -54,22 +54,23 @@ const rects = computed<Rect[]>(() =>
 );
 
 /** 原文栏：块类型 → 虚线框颜色（figure/image 绿、formula 紫、table 橙、标题加底边） */
+const TYPE_CLASS: Record<string, string> = {
+  figure: "lbl-figure",
+  image: "lbl-figure",
+  formula: "lbl-formula",
+  table: "lbl-table",
+  title: "lbl-title",
+  paragraph_title: "lbl-title",
+  doc_title: "lbl-title",
+};
+
 function typeClass(type: string): string {
-  switch (type) {
-    case "figure":
-    case "image":
-      return "lbl-figure";
-    case "formula":
-      return "lbl-formula";
-    case "table":
-      return "lbl-table";
-    case "title":
-    case "paragraph_title":
-    case "doc_title":
-      return "lbl-title";
-    default:
-      return "lbl-text";
-  }
+  return TYPE_CLASS[type] ?? "lbl-text";
+}
+
+/** 百分比矩形 → 覆盖层绝对定位样式（原文虚线框 / 译文白框共用） */
+function rectStyle(r: Rect): Record<string, string> {
+  return { left: r.left + "%", top: r.top + "%", width: r.width + "%", height: r.height + "%" };
 }
 
 interface CoverRect extends Rect {
@@ -84,6 +85,42 @@ const coverRects = computed<CoverRect[]>(() =>
       (r) => isOverlayType(r.block.type) && (r.block.translation ?? r.block.content).trim(),
     )
     .map((r) => ({ ...r, html: renderRichText(r.block.translation ?? r.block.content) })),
+);
+
+// ---- 原文悬浮预览（用户 2026-09-14）：已翻译块悬浮显示译文卡片（不用 title，浮层渲染） ----
+// 位置：跟随鼠标进入点偏移；视口下半区向上弹（above → translateY(-100%)），水平限位防溢出。
+
+interface HoverInfo {
+  html: string;
+  x: number;
+  y: number;
+  above: boolean;
+}
+
+const hoverInfo = ref<HoverInfo | null>(null);
+
+function onBlockEnter(r: Rect, e: MouseEvent): void {
+  const translated = r.block.translation?.trim();
+  if (!translated) return; // 未翻译（含不送翻类型）：不弹卡
+  const above = e.clientY > window.innerHeight * 0.55;
+  hoverInfo.value = {
+    html: renderRichText(translated),
+    x: Math.max(8, Math.min(e.clientX + 16, window.innerWidth - 480)),
+    y: above ? e.clientY - 12 : e.clientY + 16,
+    above,
+  };
+}
+
+function onBlockLeave(): void {
+  hoverInfo.value = null;
+}
+
+// 悬浮预览开关关闭时，指示框一并消失 → 浮层立即收起
+watch(
+  () => reader.hoverPreview,
+  (on) => {
+    if (!on) hoverInfo.value = null;
+  },
 );
 
 // ---- v-fit：白底框字号自适应（框尺寸 × 文字量 → 填满、不溢出） ----
@@ -194,15 +231,17 @@ const vFit: Directive<HTMLElement> = {
       <!-- pdfjs canvas：原/译两栏同一渲染，差异全在覆盖层 -->
       <PdfPageCanvas :doc="doc" :page-number="pageNumber" :zoom="zoom" />
 
-      <!-- 原文：OCR 块虚线标注（悬浮预览关闭时一并隐藏，悬浮目标随之消失） -->
+      <!-- 原文：OCR 块虚线标注（悬浮预览关闭时一并隐藏，悬浮目标随之消失）；
+           已翻译块悬浮弹译文卡片（自绘浮层，非 title） -->
       <template v-if="kind === 'original' && reader.hoverPreview">
         <div
           v-for="(r, ri) in rects"
           :key="ri"
           class="blk-line"
           :class="typeClass(r.block.type)"
-          :style="{ left: r.left + '%', top: r.top + '%', width: r.width + '%', height: r.height + '%' }"
-          :title="`[${r.block.type}]` + (r.block.translation ? ` ${r.block.translation}` : '')"
+          :style="rectStyle(r)"
+          @mouseenter="onBlockEnter(r, $event)"
+          @mouseleave="onBlockLeave"
         />
       </template>
 
@@ -215,7 +254,7 @@ const vFit: Directive<HTMLElement> = {
           v-fit
           class="blk-cover"
           :class="{ 'cover-formula': r.block.type === 'formula' }"
-          :style="{ left: r.left + '%', top: r.top + '%', width: r.width + '%', height: r.height + '%' }"
+          :style="rectStyle(r)"
           :title="r.block.type"
         >
           <span class="cover-text" v-html="r.html"></span>
@@ -224,6 +263,17 @@ const vFit: Directive<HTMLElement> = {
     </div>
     <div class="page-num">{{ pageNumber }}</div>
   </div>
+
+  <!-- 原文悬浮译文卡片：Teleport 到 body（脱离滚动容器裁剪），fixed 跟随光标 -->
+  <Teleport to="body">
+    <div
+      v-if="hoverInfo"
+      class="hover-preview"
+      :class="{ above: hoverInfo.above }"
+      :style="{ left: hoverInfo.x + 'px', top: hoverInfo.y + 'px' }"
+      v-html="hoverInfo.html"
+    />
+  </Teleport>
 </template>
 
 <style scoped>
@@ -270,6 +320,29 @@ const vFit: Directive<HTMLElement> = {
 .blk-line.lbl-title {
   border-color: var(--page-annot);
   border-bottom-style: solid;
+}
+
+/* ---- 原文悬浮译文卡片（Teleport 到 body）：白卡片跟随光标，不拦截鼠标 ---- */
+.hover-preview {
+  position: fixed;
+  z-index: 100;
+  max-width: min(460px, calc(100vw - 24px));
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  pointer-events: none; /* 纯展示：不抢原文块的鼠标事件 */
+}
+.hover-preview.above {
+  transform: translateY(-100%); /* 视口下半区向上弹，避免被裁 */
+}
+.hover-preview :deep(.katex-display) {
+  margin: 0.1em 0;
 }
 
 /* ---- 译文：白底覆盖（不送翻类型零覆盖） ---- */

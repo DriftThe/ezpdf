@@ -8,6 +8,22 @@ import { useParseStore } from "./parse";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
+/** 导入结果文案：失败详情；仅页数未知则给原因；全部成功则简讯（措辞与原来一致） */
+function formatImportOutcome(outcome: ImportOutcome): { text: string; kind: "warn" | "info" } {
+  if (outcome.failed.length > 0) {
+    const reasons = outcome.failed.map((f) => f.reason).join("；");
+    const warn = outcome.warnings.length > 0 ? `；${outcome.warnings.length} 份页数未知（pages 为空骨架）` : "";
+    return { text: `已导入 ${outcome.imported.length} 份，失败 ${outcome.failed.length} 份：${reasons}${warn}`, kind: "warn" };
+  }
+  if (outcome.warnings.length > 0) {
+    return {
+      text: `已导入 ${outcome.imported.length} 份，${outcome.warnings.length} 份页数未知：${outcome.warnings.map((f) => f.reason).join("；")}`,
+      kind: "warn",
+    };
+  }
+  return { text: `已导入 ${outcome.imported.length} 份 PDF`, kind: "info" };
+}
+
 export const useLibraryStore = defineStore("library", () => {
   const repoRoot = ref<string | null>(null);
   /** .ezrepo 平铺索引（真相源）；树形呈现由 repoGroups 按 belong 派生，不做物理路径拼接 */
@@ -98,7 +114,7 @@ export const useLibraryStore = defineStore("library", () => {
     sidebarOpen.value = !sidebarOpen.value;
   }
 
-  // ---- 仓库：选择/刷新/加载（阶段1：导入与 PDF 目录 CRUD 后续接入） ----
+  // ---- 仓库：选择/加载 + 条目增删改 ----
   async function chooseRepoRoot(): Promise<void> {
     const repoPath = await open({
       directory: true,
@@ -154,15 +170,8 @@ export const useLibraryStore = defineStore("library", () => {
       if (outcome.imported.length > 0) {
         useParseStore().wake(); // 导入即开跑（用户拍板：新书自动进入调度，无需打开）
       }
-      if (outcome.failed.length > 0) {
-        const reasons = outcome.failed.map((f) => f.reason).join("；");
-        const warn = outcome.warnings.length > 0 ? `；${outcome.warnings.length} 份页数未知（pages 为空骨架）` : "";
-        toast(`已导入 ${outcome.imported.length} 份，失败 ${outcome.failed.length} 份：${reasons}${warn}`, "warn");
-      } else if (outcome.warnings.length > 0) {
-        toast(`已导入 ${outcome.imported.length} 份，${outcome.warnings.length} 份页数未知：${outcome.warnings.map((f) => f.reason).join("；")}`, "warn");
-      } else {
-        toast(`已导入 ${outcome.imported.length} 份 PDF`);
-      }
+      const report = formatImportOutcome(outcome);
+      toast(report.text, report.kind);
     } catch (error) {
       toast(String(error), "error");
     } finally {
@@ -170,8 +179,48 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
 
-  function importPdfFolder(): void {
-    toast("阶段1接入：导入 ezpdf PDF 文件夹");
+  // ---- 仓库条目增删改（用户 2026-09-14）：文件夹是逻辑分组（belong），后端只改索引；
+  //      成功后以后端返回的 RepoTree 就地更新树，无需整仓刷新 ----
+
+  /** 仓库变更命令统一出口：成功就地更新索引；失败 toast 并返回 false */
+  async function mutateRepoTree(command: string, args: Record<string, unknown>): Promise<boolean> {
+    if (!repoRoot.value) return false;
+    try {
+      repoIndex.value = await invoke<RepoTree>(command, { root: repoRoot.value, ...args });
+      return true;
+    } catch (error) {
+      toast(String(error), "error");
+      return false;
+    }
+  }
+
+  /** 新建文件夹（名由调用方输入；重名/非法名后端拒绝 → toast） */
+  function createFolder(name: string): Promise<boolean> {
+    if (!repoRoot.value) {
+      toast("尚未选择仓库", "warn");
+      return Promise.resolve(false);
+    }
+    return mutateRepoTree("create_folder", { name });
+  }
+
+  /** 删除空文件夹（非空由后端拒绝） */
+  function deleteFolder(name: string): Promise<boolean> {
+    return mutateRepoTree("delete_folder", { name });
+  }
+
+  /** 删除 PDF：后端摘索引 + 删库内 PDF/绑定 JSON；若删的是当前打开的书 → 回空态 */
+  async function deletePdf(pdf: PDFStruct): Promise<boolean> {
+    const ok = await mutateRepoTree("delete_pdf", { id: pdf.id });
+    if (ok) {
+      delete pdfs.value[pdf.id];
+      if (currentPdfId.value === pdf.id) currentPdfId.value = null;
+    }
+    return ok;
+  }
+
+  /** 移动 PDF：belong=目录名移入（不存在自动建组），null 移出到根级 */
+  function movePdf(id: string, belong: string | null): Promise<boolean> {
+    return mutateRepoTree("move_pdf", { id, belong });
   }
 
   /** 拉取仓库索引；成功才落地状态，失败保留原状并报错 */
@@ -184,16 +233,6 @@ export const useLibraryStore = defineStore("library", () => {
     } catch (error) {
       toast(String(error), "error");
     }
-  }
-
-  /** 刷新仓库索引（侧栏「刷新仓库」按钮）：无参包装，内部走 loadRepo；
-   *  模板 @click 会把 PointerEvent 当首参传入，带参的 loadRepo 不能直接绑定 */
-  async function refreshRepo(): Promise<void> {
-    if (!repoRoot.value) {
-      toast("尚未选择仓库", "warn");
-      return;
-    }
-    await loadRepo(repoRoot.value);
   }
 
   return {
@@ -209,7 +248,10 @@ export const useLibraryStore = defineStore("library", () => {
     chooseRepoRoot,
     importing,
     importPdf,
-    importPdfFolder,
-    refreshRepo,
+    loadRepo,
+    createFolder,
+    deleteFolder,
+    deletePdf,
+    movePdf,
   };
 });

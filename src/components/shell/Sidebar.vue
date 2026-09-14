@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { nextTick, ref } from "vue";
 import { useLibraryStore } from "../../stores/library";
 import { toast } from "../../composables/toast";
 import RepoTree from "./RepoTree.vue";
@@ -8,6 +9,36 @@ const lib = useLibraryStore();
 
 function onOfflineTab(): void {
   toast("开发中");
+}
+
+/** 新增文件夹：侧栏内联输入（不弹系统框，避免打断）——后端只加逻辑分组 */
+const folderOpen = ref(false);
+const folderName = ref("");
+const folderInput = ref<HTMLInputElement | null>(null);
+
+function onNewFolder(): void {
+  if (!lib.repoRoot) {
+    toast("尚未选择仓库", "warn");
+    return;
+  }
+  folderOpen.value = true;
+  folderName.value = "";
+  void nextTick(() => folderInput.value?.focus());
+}
+
+async function confirmNewFolder(): Promise<void> {
+  const name = folderName.value.trim();
+  if (!name) return;
+  if (await lib.createFolder(name)) {
+    toast(`已创建文件夹「${name}」`);
+    folderOpen.value = false;
+    folderName.value = "";
+  }
+}
+
+function cancelNewFolder(): void {
+  folderOpen.value = false;
+  folderName.value = "";
 }
 </script>
 
@@ -21,7 +52,20 @@ function onOfflineTab(): void {
 
     <div class="side-actions">
       <button class="btn primary grow" :disabled="lib.importing" @click="lib.importPdf()">{{ lib.importing ? "导入中" : "导入 PDF" }}</button>
-      <button class="btn grow" @click="lib.refreshRepo">刷新仓库</button>
+      <button class="btn grow" :disabled="!lib.repoRoot" @click="onNewFolder">新增文件夹</button>
+    </div>
+
+    <div v-if="folderOpen" class="side-new-folder">
+      <input
+        ref="folderInput"
+        v-model="folderName"
+        class="folder-input"
+        placeholder="文件夹名"
+        @keydown.enter="confirmNewFolder"
+        @keydown.esc="cancelNewFolder"
+      />
+      <button class="btn primary sm" :disabled="!folderName.trim()" @click="confirmNewFolder">创建</button>
+      <button class="btn ghost sm" @click="cancelNewFolder">取消</button>
     </div>
 
     <div class="side-body">
@@ -39,7 +83,6 @@ function onOfflineTab(): void {
           </svg>
         </span>
         <span class="root-path">{{ lib.repoRoot }}</span>
-        <!-- <button class="btn ghost sm" @click="lib.refreshRepo">刷新</button> -->
       </div>
     </div>
     </div>
@@ -98,6 +141,25 @@ function onOfflineTab(): void {
 .grow {
   flex: 1;
 }
+/* 新增文件夹内联输入行 */
+.side-new-folder {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+.folder-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.folder-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .side-body {
   flex: 1;
   overflow: auto;
@@ -129,8 +191,5 @@ function onOfflineTab(): void {
   white-space: nowrap;
   direction: rtl; /* 长路径时显示尾部 */
   text-align: left;
-}
-.dev-btn {
-  color: var(--text-3);
 }
 </style>

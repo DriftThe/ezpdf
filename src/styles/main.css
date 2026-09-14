@@ -4,7 +4,6 @@
   --bg-app: #eef0f4;
   --bg-panel: #ffffff;
   --bg-hover: #f0f2f5;
-  --bg-active: #e6e9ee;
   --bg-workspace: #e4e7ec;
 
   --border: #e2e4ea;
@@ -34,7 +33,6 @@
   --scrollbar-thumb-hover: #9aa0ab;
 
   --page-bg: #ffffff;
-  --radius: 8px;
   --radius-sm: 6px;
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.1);
   --shadow-2: 0 8px 24px rgba(16, 24, 40, 0.18);
@@ -49,7 +47,6 @@
     --bg-app: #121212;
     --bg-panel: #1c1c1c;
     --bg-hover: #262626;
-    --bg-active: #2d2d2d;
     --bg-workspace: #0a0a0a;
 
     --border: #2a2a2a;
@@ -281,11 +278,6 @@ textarea {
 .set-pane {
   padding: 24px 32px;
 }
-.set-pane-fill {
-  flex: 1; /* 撑满滚动容器（空态面板居中用） */
-  min-height: 360px;
-  display: flex;
-}
 .set-title {
   margin: 0 0 16px;
   font-size: 17px;
@@ -333,6 +325,14 @@ textarea {
 }
 .set-check input {
   accent-color: var(--accent);
+}
+/* 设置项说明文字（勾选项下方的小字提示） */
+.set-hint {
+  margin: -4px 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-3);
+  max-width: 560px;
 }
 
 /*

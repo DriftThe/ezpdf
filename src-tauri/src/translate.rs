@@ -108,6 +108,13 @@ pub fn load_system_prompt(cfg: &LlmConfig) -> Result<String, String> {
         cfg.target_lang.trim()
     };
     let text = text.replace("{{target_language}}", lang);
+    // 兜底（用户 2026-09-14）：提示词被大改成没有 {{target_language}} 占位符时，
+    // 仍把目标语言追加进系统提示——保证目标语言一定在提示词里
+    let text = if text.contains(lang) {
+        text
+    } else {
+        format!("{text}\n\n目标语言：{lang}。所有译文必须使用该语言。\n")
+    };
     Ok(if cfg.smart_context {
         text
     } else {

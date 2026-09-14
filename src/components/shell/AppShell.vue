@@ -1,16 +1,26 @@
 <script setup lang="ts">
+import { onMounted } from "vue";
 import Sidebar from "./Sidebar.vue";
 import Toasts from "./Toasts.vue";
 import ReaderToolbar from "../toolbar/ReaderToolbar.vue";
 import ReaderArea from "../reader/ReaderArea.vue";
 import PageStatusStrip from "../reader/PageStatusStrip.vue";
 import SettingsPage from "../settings/SettingsPage.vue";
+import { useSettingsStore } from "../../stores/settings";
+import { useParseStore } from "../../stores/parse";
 
 /**
  * App Shell 三区布局：
  * 左侧栏（仓库树/离线列表）│ 主区（工具栏 + 双栏阅读器 + 页状态条）│ 全局（设置整页/Toast）
  * 设置整页绝对定位覆盖 sidebar+reader（含页状态条），顶部工具栏 z-index 更高保持可见。
  */
+const settings = useSettingsStore();
+const parse = useParseStore();
+
+// 启动序列：读 config.json（覆盖 auth.cfg 默认）→ 按「常规」开关自动唤醒 OCR 服务
+onMounted(() => {
+  void settings.ensureLoaded().then(() => parse.autoStartIfEnabled());
+});
 </script>
 
 <template>

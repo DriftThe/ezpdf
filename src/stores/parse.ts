@@ -1,8 +1,15 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import { toast } from "../composables/toast";
-import type { OcrEnvReport, ServiceStatus } from "../types/domain";
-import type { PageInfo, ParsePageInput, PDF, ParseOutcome, PDFStruct } from "../types/domain";
+import type {
+  OcrEnvReport,
+  PageInfo,
+  ParseOutcome,
+  ParsePageInput,
+  PDF,
+  PDFStruct,
+  ServiceStatus,
+} from "../types/domain";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { loadPdfDoc } from "../composables/usePdfDoc";
@@ -22,6 +29,10 @@ interface LlmPayload {
 
 /** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，调度整体静默（同 listen().catch 哲学） */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** 页级谓词（调度取样共用） */
+const needsOcr = (p: PageInfo): boolean => !p.finished;
+const needsTranslation = (p: PageInfo): boolean => p.finished && !p.translated;
 
 export const useParseStore = defineStore("parse", () => {
   /** 全局暂停/恢复（阶段4由 Rust 调度器驱动） */
@@ -45,18 +56,19 @@ export const useParseStore = defineStore("parse", () => {
     if (!paused.value) wake(); // 恢复 → 续链
   }
 
-  function pushLog(line: string): void {
-    envLogs.value.push(line);
-    if (envLogs.value.length > 200) {
-      envLogs.value.splice(0, envLogs.value.length - 200);
+  function pushCapped(target: { value: string[] }, line: string): void {
+    target.value.push(line);
+    if (target.value.length > 200) {
+      target.value.splice(0, target.value.length - 200);
     }
   }
 
+  function pushLog(line: string): void {
+    pushCapped(envLogs, line);
+  }
+
   function pushLlmLog(line: string): void {
-    llmLogs.value.push(line);
-    if (llmLogs.value.length > 200) {
-      llmLogs.value.splice(0, llmLogs.value.length - 200);
-    }
+    pushCapped(llmLogs, line);
   }
 
   // 事件订阅（store 单例创建一次即完成；非 Tauri 环境（纯浏览器 dev）静默失败）
@@ -80,53 +92,59 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** 一键安装：venv 创建（必要时）→ 基础依赖 → torch 变体；过程经 ocr://log 流式展示 */
-  async function installEnv(): Promise<void> {
-    if (installing.value) return;
-    installing.value = true;
+  /** 长任务命令（环境安装/模型下载）：busy 防重入 → invoke → 重查环境 → 成功提示 */
+  async function runLongCommand(command: string, busy: { value: boolean }, success: string): Promise<void> {
+    if (busy.value) return;
+    busy.value = true;
     try {
-      await invoke("ocr_install_env");
+      await invoke(command);
       await checkEnv();
-      toast("环境安装完成", "info");
+      toast(success, "info");
     } catch (e) {
       toast(String(e), "error");
     } finally {
-      installing.value = false;
+      busy.value = false;
     }
+  }
+
+  /** 一键安装：venv 创建（必要时）→ 基础依赖 → torch 变体；过程经 ocr://log 流式展示 */
+  function installEnv(): Promise<void> {
+    return runLongCommand("ocr_install_env", installing, "环境安装完成");
   }
 
   /** 模型下载：huggingface_hub 按需补装 → python -m app.fetch（hf-mirror 镜像，缺哪补哪） */
-  async function downloadModels(): Promise<void> {
-    if (modelsBusy.value) return;
-    modelsBusy.value = true;
-    try {
-      await invoke("ocr_download_models");
-      await checkEnv();
-      toast("模型下载完成", "info");
-    } catch (e) {
-      toast(String(e), "error");
-    } finally {
-      modelsBusy.value = false;
-    }
+  function downloadModels(): Promise<void> {
+    return runLongCommand("ocr_download_models", modelsBusy, "模型下载完成");
   }
 
-  async function startService(): Promise<void> {
+  /** 生命周期命令（启动/停止）：失败 toast；状态由 ocr://status 事件回报 */
+  async function runServiceCommand(command: string): Promise<void> {
     try {
-      await invoke("ocr_start");
+      await invoke(command);
     } catch (e) {
       toast(String(e), "error");
     }
   }
 
-  async function stopService(): Promise<void> {
-    try {
-      await invoke("ocr_stop");
-    } catch (e) {
-      toast(String(e), "error");
+  const startService = (): Promise<void> => runServiceCommand("ocr_start");
+  const stopService = (): Promise<void> => runServiceCommand("ocr_stop");
+
+  /** 启动自动唤醒（常规设置 autoLaunch，用户 2026-09-14）：环境/模型全就绪才拉起，
+   *  缺件只记日志不打扰（到 OCR 服务设置页处理） */
+  async function autoStartIfEnabled(): Promise<void> {
+    if (!isTauri || !useSettingsStore().ocr.autoLaunch) return;
+    await checkEnv();
+    const r = envReport.value;
+    const ready = !!r && !!r.python && r.missing.length === 0 && !!r.models?.layout && !!r.models?.vl;
+    if (!ready) {
+      pushLlmLog("[ui] OCR 自动唤醒跳过：环境或模型未就绪（设置 → OCR 服务）");
+      return;
     }
+    pushLlmLog("[ui] OCR 自动唤醒：环境就绪 → 启动服务");
+    await startService();
   }
 
-  // ---- OCR 页级调度回路（阶段4 批3，PLAN-OCR.md §4）：parse_append 桥 ----
+  // ---- OCR 页级调度回路（阶段4 批3，PLAN-OCR.md §4）：parse_pdf 桥 ----
   // 前端是调度者：单 tick = 一批（≤4 页、同书）→ Rust parse_pdf 整批推理 + 一次原子写。
   // 事件驱动链：本批完成 → 链式续跑；一轮扫描无可处理书 → standing 挂起，等事件唤醒。
 
@@ -208,8 +226,6 @@ export const useParseStore = defineStore("parse", () => {
       wakePending = false;
       standing.value = false;
       strikes.clear();
-      queueMicrotask(() => void tick());
-      return;
     }
     if (!standing.value) queueMicrotask(() => void tick());
   }
@@ -254,10 +270,10 @@ export const useParseStore = defineStore("parse", () => {
       const state = await bookState(entry);
       if (!state || state.pages.length === 0) continue;
       const focusedBook = entry.id === lib.currentPdfId;
-      if (state.pages.some((p) => !p.finished)) {
+      if (state.pages.some(needsOcr)) {
         return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "ocr" };
       }
-      if (canTranslate && !translateChains.has(entry.id) && state.pages.some((p) => p.finished && !p.translated)) {
+      if (canTranslate && !translateChains.has(entry.id) && state.pages.some(needsTranslation)) {
         return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "translate" };
       }
     }
@@ -281,44 +297,66 @@ export const useParseStore = defineStore("parse", () => {
   function notifyLlmMissingOnce(): void {
     if (llmMissingNotified || llmPayload()) return;
     const current = useLibraryStore().currentPdf;
-    if (current?.pages.some((p) => p.finished && !p.translated)) {
+    if (current?.pages.some(needsTranslation)) {
       llmMissingNotified = true;
       pushLlmLog("[ui] LLM 未配置（baseUrl/apiKey/model 为空）→ 翻译跳过；dev 期可配 auth.cfg");
       toast("LLM 未配置，翻译已跳过（设置页填写或配置 auth.cfg）", "warn");
     }
   }
 
-  /** 处理一批：OCR（翻译由 queueTranslate 并发跟进）或翻译重试（translate_pdf） */
-  async function processBatch(book: PickTarget): Promise<void> {
-    const lib = useLibraryStore();
-    if (book.kind === "translate") {
-      const llm = llmPayload();
-      if (!llm) throw new Error("LLM 未配置");
-      const pages = collectTranslatePages(book);
-      if (pages.length === 0) return; // 竞态：已全部翻译
-      pushLlmLog(`[ui] 翻译重试批次 p${pages.join(",")}（${book.name}）`);
-      const outcome = await invoke<ParseOutcome>("translate_pdf", {
-        root: lib.repoRoot,
-        id: book.id,
-        pages,
-        llm,
-      });
-      if (outcome.updatedPages.length === 0) {
-        throw new Error("翻译无进展"); // 计入 strike，防止坏页空转
-      }
-      applyOutcome(book.id, outcome);
-      return;
-    }
+  /** 环形取样起点：聚焦书从当前阅读页开始（用户视线先行），后台书从第 1 页 */
+  function startPageFor(book: PickTarget): number {
     const reader = useReaderStore();
-    // 起点页：聚焦书从当前阅读页环形（用户视线先行），后台书从第 1 页
-    const start = book.focused
+    return book.focused
       ? Math.max(1, Math.min(reader.currentPage, book.state.pages.length))
       : 1;
-    const take: PageInfo[] = [];
-    for (let k = 0; k < book.state.pages.length && take.length < BATCH_SIZE; k++) {
-      const page = book.state.pages[(start - 1 + k) % book.state.pages.length];
-      if (!page.finished) take.push(page);
+  }
+
+  /** 环形收集 ≤BATCH_SIZE 个命中页（pick 返回 null = 跳过该页） */
+  function ringCollect<T>(book: PickTarget, pick: (page: PageInfo) => T | null): T[] {
+    const pages = book.state.pages;
+    const start = startPageFor(book);
+    const out: T[] = [];
+    for (let k = 0; k < pages.length && out.length < BATCH_SIZE; k++) {
+      const hit = pick(pages[(start - 1 + k) % pages.length]);
+      if (hit !== null) out.push(hit);
     }
+    return out;
+  }
+
+  /** 处理一批：翻译重试（translate_pdf）或 OCR（翻译由 queueTranslate 并发跟进） */
+  async function processBatch(book: PickTarget): Promise<void> {
+    if (book.kind === "translate") {
+      await processTranslateBatch(book);
+    } else {
+      await processOcrBatch(book);
+    }
+  }
+
+  /** 翻译重试批次：finished && !translated 的页（环形，聚焦书从当前页起） */
+  async function processTranslateBatch(book: PickTarget): Promise<void> {
+    const lib = useLibraryStore();
+    const llm = llmPayload();
+    if (!llm) throw new Error("LLM 未配置");
+    const pages = ringCollect(book, (page) => (needsTranslation(page) ? page.index : null));
+    if (pages.length === 0) return; // 竞态：已全部翻译
+    pushLlmLog(`[ui] 翻译重试批次 p${pages.join(",")}（${book.name}）`);
+    const outcome = await invoke<ParseOutcome>("translate_pdf", {
+      root: lib.repoRoot,
+      id: book.id,
+      pages,
+      llm,
+    });
+    if (outcome.updatedPages.length === 0) {
+      throw new Error("翻译无进展"); // 计入 strike，防止坏页空转
+    }
+    applyOutcome(book.id, outcome);
+  }
+
+  /** OCR 批次：环形取 ≤BATCH_SIZE 未完成页 → 离屏渲染 → parse_pdf → 排翻译链 */
+  async function processOcrBatch(book: PickTarget): Promise<void> {
+    const lib = useLibraryStore();
+    const take = ringCollect(book, (page) => (needsOcr(page) ? page : null));
     if (take.length === 0) return; // 竞态：已全部完成
     pushLlmLog(`[ui] OCR 批次 p${take.map((p) => p.index).join(",")}（${book.name}）`);
 
@@ -352,10 +390,12 @@ export const useParseStore = defineStore("parse", () => {
   const translateChains = new Map<string, Promise<boolean>>();
 
   function queueTranslate(bookId: string, pages: number[]): void {
+    if (paused.value) return; // 暂停：不排新翻译任务（未翻页留给恢复后的重试支路）
     const llm = llmPayload();
     if (!llm || pages.length === 0) return;
-    // 返回 true = 整批无进展（全失败）——链清空后需要唤醒重试支路
+    // 返回 true = 整批无进展（全失败/暂停跳过）——链清空后需要唤醒重试支路
     const run = async (): Promise<boolean> => {
+      if (paused.value) return true; // 暂停：跳过本批，恢复时由 wake 续跑
       const root = useLibraryStore().repoRoot;
       if (!root) return false;
       const outcome = await invoke<ParseOutcome>("translate_pdf", {
@@ -382,22 +422,8 @@ export const useParseStore = defineStore("parse", () => {
       // 仍有未翻译页（失败/漏批）→ 唤醒重试支路（strike 机制防打转）；
       // 后台书无缓存，用 noProgress（整批无进展）兜底
       const cached = useLibraryStore().pdfs[bookId];
-      if (noProgress || cached?.pages.some((p) => p.finished && !p.translated)) wake();
+      if (noProgress || cached?.pages.some(needsTranslation)) wake();
     });
-  }
-
-  /** 翻译重试取样：环形 ≤BATCH_SIZE 个 finished && !translated 的页 */
-  function collectTranslatePages(book: PickTarget): number[] {
-    const reader = useReaderStore();
-    const start = book.focused
-      ? Math.max(1, Math.min(reader.currentPage, book.state.pages.length))
-      : 1;
-    const take: number[] = [];
-    for (let k = 0; k < book.state.pages.length && take.length < BATCH_SIZE; k++) {
-      const page = book.state.pages[(start - 1 + k) % book.state.pages.length];
-      if (page.finished && !page.translated) take.push(page.index);
-    }
-    return take;
   }
 
   /** 批量结果落地：聚焦书（有缓存）就地 patch（译文栏响应式刷新）；后台书无缓存，
@@ -460,5 +486,6 @@ export const useParseStore = defineStore("parse", () => {
     downloadModels,
     startService,
     stopService,
+    autoStartIfEnabled,
   };
 });

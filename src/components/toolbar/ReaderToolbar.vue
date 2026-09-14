@@ -4,7 +4,6 @@ import { useLibraryStore } from "../../stores/library";
 import { useParseStore } from "../../stores/parse";
 import { useReaderStore } from "../../stores/reader";
 import { useSettingsStore } from "../../stores/settings";
-import { toast } from "../../composables/toast";
 import type { LayoutMode } from "../../types/domain";
 
 const lib = useLibraryStore();
@@ -37,8 +36,9 @@ function onPageInput(e: Event): void {
   if (Number.isFinite(v) && v > 0) reader.gotoPage(v);
 }
 
-function onRetryPage(): void {
-  toast("阶段4接入：本页重新入队解析");
+/** 适应宽度按钮：仅手动缩放模式下可点（已适应宽度则无事发生） */
+function onFitWidthClick(): void {
+  if (reader.fitMode === "custom") reader.toggleFit();
 }
 </script>
 
@@ -80,7 +80,7 @@ function onRetryPage(): void {
         {{ Math.round(reader.effectiveZoom * 100) }}%
       </button>
       <button class="icon-btn" title="放大" @click="reader.zoomIn">＋</button>
-      <button class="icon-btn fit-btn" title="适应宽度" :class="{ active: reader.fitMode === 'width' }" @click="reader.fitMode === 'custom' && reader.toggleFit()">
+      <button class="icon-btn fit-btn" title="适应宽度" :class="{ active: reader.fitMode === 'width' }" @click="onFitWidthClick">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
           <path d="M1.5 5V2.5H4M12 2.5h2.5V5M14.5 11v2.5H12M4 13.5H1.5V11" />
           <path d="M4.5 8h7" />
@@ -116,14 +116,11 @@ function onRetryPage(): void {
       悬浮预览
     </label>
 
-    <!-- 本页重解析 -->
-    <button class="btn ghost" :disabled="!hasPdf" title="把当前页重新入队解析" @click="onRetryPage">本页重解析</button>
-
     <span class="spacer" />
 
-    <!-- 暂停/恢复解析 -->
-    <button class="btn ghost" :class="{ warn: parse.paused }" @click="parse.togglePaused">
-      {{ parse.paused ? "▶ 恢复解析" : "⏸ 暂停解析" }}
+    <!-- 暂停/启动：驱动调度回路（OCR 批次与翻译链都不再提交新任务） -->
+    <button class="btn ghost" :class="{ warn: parse.paused }" title="暂停/启动解析与翻译调度" @click="parse.togglePaused">
+      {{ parse.paused ? "▶ 启动翻译" : "⏸ 暂停翻译" }}
     </button>
 
     <!-- OCR 服务状态 -->
