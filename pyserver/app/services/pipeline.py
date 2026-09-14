@@ -405,6 +405,8 @@ class BoxFilter:
     - ``min_area``:      最小框面积（像素²）
     - ``min_score``:     最低置信度（低于 LayoutDetector 各轮阈值，给二/三轮
                          补召回的 0.38~0.5 文本候选留通路）
+    - ``contain_threshold``: 嵌套去重阈值（用户拍板 2026-09-14）：已经存在大框
+                         时，被大框覆盖比例超过该值的小框直接丢弃（大框套小框）
     - ``unclip_ratio``:  NMS 后把框向外扩的比例（0.05 = 每边扩 5%）。给 VL 更多
                         上下文，提升 OCR 准确率；过大会把别的 region 也包进来。
                         doclayout 边界偏紧时这个最有用。
@@ -416,12 +418,14 @@ class BoxFilter:
             iou_threshold: float = 0.5,
             min_area: float = 16 * 16,
             min_score: float = 0.35,
+            contain_threshold: float = 0.6,
             unclip_ratio: float = 0.0,
             expand_pixels: float = 0.0,
     ) -> None:
         self.iou_threshold = float(iou_threshold)
         self.min_area = float(min_area)
         self.min_score = float(min_score)
+        self.contain_threshold = float(contain_threshold)
         self.unclip_ratio = float(unclip_ratio)
         self.expand_pixels = float(expand_pixels)
 
@@ -468,8 +472,26 @@ class BoxFilter:
                 continue
             if any(self._iou(b.xyxy, k.xyxy) > self.iou_threshold for k in keep):
                 continue
-            # unclip：在 NMS 之后，避免影响 NMS 决策
-            if self.unclip_ratio > 0 or self.expand_pixels > 0:
+            keep.append(b)
+
+        # 嵌套去重（用户拍板 2026-09-14）：大框优先保留，被大框显著覆盖的小框
+        # 直接丢弃——NMS 只看 IoU，大框套小框时 IoU 很低（inter/union 小）拦不住。
+        # 按面积降序判定，输出仍保持分数序（回填 survivors）。
+        survivors: list[LayoutBox] = []
+        for b in sorted(keep, key=lambda b: b.area, reverse=True):
+            if any(
+                    b.area <= k.area and _containment(b.xyxy, k.xyxy) > self.contain_threshold
+                    for k in survivors
+            ):
+                continue
+            survivors.append(b)
+        survivors_ids = {id(b) for b in survivors}
+        keep = [b for b in keep if id(b) in survivors_ids]
+
+        # unclip：在 NMS 之后，避免影响 NMS 决策
+        if self.unclip_ratio > 0 or self.expand_pixels > 0:
+            expanded_keep: list[LayoutBox] = []
+            for b in keep:
                 expanded = self._unclip(b.xyxy).copy()
                 if page_size is not None:
                     w, h = page_size
@@ -477,13 +499,13 @@ class BoxFilter:
                     expanded[1] = max(0.0, expanded[1])
                     expanded[2] = min(float(w), expanded[2])
                     expanded[3] = min(float(h), expanded[3])
-                b = LayoutBox(
+                expanded_keep.append(LayoutBox(
                     xyxy=expanded,
                     label_id=b.label_id,
                     label_name=b.label_name,
                     score=b.score,
-                )
-            keep.append(b)
+                ))
+            keep = expanded_keep
         return keep
 
 
@@ -712,6 +734,8 @@ class OCRPipeline:
             box_iou_threshold: float = 0.5,
             box_min_area: float = 16 * 16,
             box_min_score: float = 0.35,
+            # 大框套小框去重：小框被大框覆盖超过该比例 → 丢弃小框（NMS 拦不住低 IoU 嵌套）
+            box_contain_threshold: float = 0.6,
             # 只做固定小外扩：比例外扩随框增大，大 text 框会扩进框内的小标题框，
             # 渲染白底覆盖时两框互叠（layout.jpg 实测重叠对 11 -> 0，13 框不变）
             box_unclip_ratio: float = 0.0,
@@ -739,6 +763,7 @@ class OCRPipeline:
             iou_threshold=box_iou_threshold,
             min_area=box_min_area,
             min_score=box_min_score,
+            contain_threshold=box_contain_threshold,
             unclip_ratio=box_unclip_ratio,
             expand_pixels=box_expand_pixels,
         )
