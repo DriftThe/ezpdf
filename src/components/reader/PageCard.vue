@@ -214,6 +214,7 @@ const vFit: Directive<HTMLElement> = {
           :key="ri"
           v-fit
           class="blk-cover"
+          :class="{ 'cover-formula': r.block.type === 'formula' }"
           :style="{ left: r.left + '%', top: r.top + '%', width: r.width + '%', height: r.height + '%' }"
           :title="r.block.type"
         >
@@ -280,8 +281,18 @@ const vFit: Directive<HTMLElement> = {
   overflow: hidden;
   padding: 2px 4px;
 }
+/* 公式：KaTeX 垂直居中（用户 2026-09-14）；KaTeX display 公式自带 1em 上下
+   margin，在 ~16pt 高的公式框里会把内容顶到贴顶、还逼 v-fit 选极小字号——收窄 */
+.cover-formula {
+  display: flex;
+  align-items: center;
+}
+.cover-formula :deep(.katex-display) {
+  margin: 0.15em 0;
+}
 .cover-text {
   display: block;
+  width: 100%;
   line-height: 1.25;
   color: #222;
   /* 字号由 v-fit 指令按框尺寸×文字量动态设定 */
