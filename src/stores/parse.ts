@@ -116,7 +116,7 @@ export const useParseStore = defineStore("parse", () => {
         await checkEnv();
         toast("服务安装完成", "info");
       } else if (alreadyEnv) {
-        toast("服务已安装（环境与模型均已就绪）", "info");
+        toast("服务已安装", "info");
       } else {
         toast("服务安装完成", "info");
       }

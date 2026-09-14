@@ -127,13 +127,13 @@ const lights = computed(() => [
         </span>
       </div>
     </div>
-    <!-- 一键安装服务（用户 2026-09-14）：下拉选择安装模式（自绘样式）+ 镜像源开关 + 进度 -->
+    <!-- 一键安装服务（用户 2026-0x9-14）：下拉选择安装模式（自绘样式）+ 镜像源开关 + 进度 -->
     <div class="set-field">
       <span>安装服务</span>
       <div class="set-field-row install-row">
         <span class="set-select-wrap">
           <select v-model="installMode" class="set-select" title="安装模式">
-            <option value="gpu">GPU（CUDA cu132）</option>
+            <option value="gpu">GPU</option>
             <option value="cpu">CPU</option>
           </select>
           <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
@@ -159,10 +159,6 @@ const lights = computed(() => [
     <div v-if="parse.installing && parse.installProgress" class="progress-track">
       <div class="progress-fill" :style="{ width: parse.installProgress.percent + '%' }" />
     </div>
-    <p class="set-hint">
-      安装内容 = 基础依赖 + torch（{{ installMode === "gpu" ? "GPU/CUDA 版，约 3GB" : "CPU 版，约 200MB" }}）+ 两个模型（约 1.9GB）。
-      GPU 模式要求 nvidia-smi 可用（无则中止并提示）；网络受限时保持「使用镜像源」开启。
-    </p>
     <div class="set-field">
       <span>服务操作</span>
       <div class="set-field-row">

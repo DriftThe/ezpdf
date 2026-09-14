@@ -47,7 +47,7 @@ function cancelNewFolder(): void {
     <div class="side-inner">
     <div class="side-tabs">
       <button class="tab active">仓库</button>
-      <button class="tab" @click="onOfflineTab">离线</button>
+      <!-- <button class="tab" @click="onOfflineTab">离线</button> -->
     </div>
 
     <div class="side-actions">
