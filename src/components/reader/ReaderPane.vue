@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useLibraryStore } from "../../stores/library";
 import { useReaderStore } from "../../stores/reader";
@@ -59,11 +59,84 @@ function onScroll(e: Event): void {
   const el = e.target as HTMLElement;
   cancelAnimationFrame(raf);
   raf = requestAnimationFrame(() => {
+    emit("pageVisible", visiblePage(el));
+    if (restoring) return; // 锚点恢复的程序化滚动：不上报比例，避免双栏互推
     const max = el.scrollHeight - el.clientHeight;
     emit("scrollRatio", max > 0 ? el.scrollTop / max : 0);
-    emit("pageVisible", visiblePage(el));
   });
 }
+
+// ---- 缩放/几何变化锚点（用户 2026-09-14）：zoom 变化让全部页卡同步伸缩，浏览器原生
+// scroll anchoring 对 width/height 变化主动失效 → scrollTop 不变而上方内容已按比例缩放，
+// 视口漂移（页数越多越明显；逐页几何后台回填同理）。这里自己记「视口内锚点页 + 页内比例」，
+// 重排后恢复同一内容位置。导航跳页（jumpTarget）期间不抢滚动。 ----
+let anchor: { page: number; frac: number } | null = null;
+let restoring = false;
+let restoreFrames = 0;
+
+/** 标记恢复窗口（覆盖「scrollTop 写入 → scroll 事件 → rAF」的时机差） */
+function markRestoring(): void {
+  restoring = true;
+  restoreFrames = 2;
+  const tick = (): void => {
+    if (--restoreFrames <= 0) {
+      restoring = false;
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+function captureAnchor(): void {
+  const el = scrollEl.value;
+  if (!el) return;
+  const nodes = el.querySelectorAll<HTMLElement>("[data-page-index]");
+  const center = el.scrollTop + el.clientHeight / 2;
+  let best: HTMLElement | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+  nodes.forEach((n) => {
+    const top = n.offsetTop;
+    const bottom = top + n.offsetHeight;
+    const d = center < top ? top - center : center > bottom ? center - bottom : 0;
+    if (d < bestDist) {
+      bestDist = d;
+      best = n;
+    }
+  });
+  const node = best as HTMLElement | null;
+  if (!node) {
+    anchor = null;
+    return;
+  }
+  anchor = {
+    page: Number(node.dataset.pageIndex) + 1,
+    frac: node.offsetHeight > 0 ? (el.scrollTop - node.offsetTop) / node.offsetHeight : 0,
+  };
+}
+
+async function restoreAnchor(): Promise<void> {
+  const el = scrollEl.value;
+  const a = anchor;
+  anchor = null;
+  if (!el || !a) return;
+  await nextTick(); // 等新尺寸落到 DOM（offsetTop/Height 已按新几何）
+  const node = el.querySelector<HTMLElement>(`[data-page-index="${a.page - 1}"]`);
+  if (!node) return;
+  markRestoring();
+  el.scrollTop = node.offsetTop + a.frac * node.offsetHeight;
+}
+
+// pre：先在旧布局上采锚点，再等 Vue 重排后恢复
+watch(
+  [() => reader.effectiveZoom, () => reader.pageSizesPt, () => reader.pageCount],
+  () => {
+    if (reader.jumpTarget != null) return; // 导航跳页优先
+    captureAnchor();
+    void restoreAnchor();
+  },
+  { flush: "pre" },
+);
 
 /** 以滚动容器垂直中点所在页为可视页 */
 function visiblePage(el: HTMLElement): number {
@@ -157,6 +230,7 @@ defineExpose({ scrollToRatio, scrollToPage });
   flex: 1;
   overflow: auto; /* 适应宽度时无水平溢出；手动放大后允许水平滚动 */
   background: var(--bg-workspace);
+  overflow-anchor: none; /* 锚点由本组件自管（缩放锚点），关掉原生双保险避免互相打架 */
 }
 .page-col {
   position: relative; /* 页卡 offsetTop 的定位基准 */
