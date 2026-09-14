@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { Directive } from "vue";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useReaderStore } from "../../stores/reader";
@@ -88,7 +88,8 @@ const coverRects = computed<CoverRect[]>(() =>
 );
 
 // ---- 原文悬浮预览（用户 2026-09-14）：已翻译块悬浮显示译文卡片（不用 title，浮层渲染） ----
-// 位置：跟随鼠标进入点偏移；视口下半区向上弹（above → translateY(-100%)），水平限位防溢出。
+// 位置跟随鼠标（mousemove 经 rAF 节流，只改定位不重渲内容）；视口下半区向上弹
+// （above → translateY(-100%)），水平限位防溢出。
 
 interface HoverInfo {
   html: string;
@@ -99,27 +100,57 @@ interface HoverInfo {
 
 const hoverInfo = ref<HoverInfo | null>(null);
 
+/** 鼠标位置 → 卡片定位（右缘留 12px 限位；下 45% 视口向上弹） */
+function previewPos(e: MouseEvent): { x: number; y: number; above: boolean } {
+  const cardMax = Math.min(460, window.innerWidth - 24);
+  const x = Math.max(8, Math.min(e.clientX + 16, window.innerWidth - cardMax - 12));
+  const above = e.clientY > window.innerHeight * 0.55;
+  const y = above ? e.clientY - 12 : e.clientY + 16;
+  return { x, y, above };
+}
+
 function onBlockEnter(r: Rect, e: MouseEvent): void {
   const translated = r.block.translation?.trim();
   if (!translated) return; // 未翻译（含不送翻类型）：不弹卡
-  const above = e.clientY > window.innerHeight * 0.55;
-  hoverInfo.value = {
-    html: renderRichText(translated),
-    x: Math.max(8, Math.min(e.clientX + 16, window.innerWidth - 480)),
-    y: above ? e.clientY - 12 : e.clientY + 16,
-    above,
-  };
+  hoverInfo.value = { html: renderRichText(translated), ...previewPos(e) };
+}
+
+let moveRaf = 0;
+let pendingMove: MouseEvent | null = null;
+
+/** 跟随鼠标：一帧最多更新一次定位（html 不变，Vue 只 patch style） */
+function onBlockMove(e: MouseEvent): void {
+  if (!hoverInfo.value) return;
+  pendingMove = e;
+  if (moveRaf) return;
+  moveRaf = requestAnimationFrame(() => {
+    moveRaf = 0;
+    const ev = pendingMove;
+    pendingMove = null;
+    if (hoverInfo.value && ev) {
+      hoverInfo.value = { ...hoverInfo.value, ...previewPos(ev) };
+    }
+  });
 }
 
 function onBlockLeave(): void {
+  if (moveRaf) {
+    cancelAnimationFrame(moveRaf);
+    moveRaf = 0;
+  }
+  pendingMove = null;
   hoverInfo.value = null;
 }
+
+onBeforeUnmount(() => {
+  if (moveRaf) cancelAnimationFrame(moveRaf);
+});
 
 // 悬浮预览开关关闭时，指示框一并消失 → 浮层立即收起
 watch(
   () => reader.hoverPreview,
   (on) => {
-    if (!on) hoverInfo.value = null;
+    if (!on) onBlockLeave();
   },
 );
 
@@ -241,6 +272,7 @@ const vFit: Directive<HTMLElement> = {
           :class="typeClass(r.block.type)"
           :style="rectStyle(r)"
           @mouseenter="onBlockEnter(r, $event)"
+          @mousemove="onBlockMove"
           @mouseleave="onBlockLeave"
         />
       </template>
