@@ -30,10 +30,14 @@ export interface LlmSettings {
  * - autoLaunch：启动时自动唤醒 OCR 服务（环境+模型全就绪才拉起）
  * - resumeOnStart：启动时自动续跑未完成的解析；关闭则启动后为暂停态
  *   （工具栏显示「启动翻译」）；两者都开才会自动进入运行态
+ * - theme：界面主题（浅色/深色/跟随系统；标题栏右侧切换）
  */
+export type ThemeMode = "system" | "light" | "dark";
+
 export interface GeneralSettings {
   autoLaunch: boolean;
   resumeOnStart: boolean;
+  theme: ThemeMode;
 }
 
 /** OCR 服务安装选项（用户 2026-09-14）：一键安装服务时是否走国内镜像源 */
@@ -132,6 +136,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const general = ref<GeneralSettings>({
     autoLaunch: true,
     resumeOnStart: true,
+    theme: "system",
   });
 
   const ocr = ref<OcrSettings>({
@@ -221,6 +226,17 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
+  /** 主题切换即时持久化（用户 2026-09-14）：无需等设置页退出保存；localStorage 镜像由 theme.ts 维护 */
+  async function setTheme(mode: ThemeMode): Promise<void> {
+    general.value.theme = mode;
+    if (!isTauri) return;
+    try {
+      await doSave();
+    } catch (e) {
+      console.warn("[settings] 主题持久化失败:", e);
+    }
+  }
+
   /** 验证 LLM（用户 2026-09-14）：连通性 + 关思考策略探测；策略回写 thinkingOff */
   async function verifyLlm(): Promise<void> {
     if (verifying.value) return;
@@ -299,6 +315,7 @@ export const useSettingsStore = defineStore("settings", () => {
     openPage,
     save,
     setRepoPath,
+    setTheme,
     verifyLlm,
     fetchModels,
     checkUpdate,

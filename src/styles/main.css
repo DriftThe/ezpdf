@@ -1,36 +1,37 @@
 /* ===== ezpdf 全局样式：变量 / 重置 / 通用控件 ===== */
 
 :root {
-  --bg-app: #eef0f4;
+  /* 浅色 = 蓝白（用户 2026-09-14）：中性色带蓝调，强调色为蓝 */
+  --bg-app: #eef3fc;
   --bg-panel: #ffffff;
-  --bg-hover: #f0f2f5;
-  --bg-workspace: #e4e7ec;
+  --bg-hover: #e9f0fd;
+  --bg-workspace: #e3ebfa;
 
-  --border: #e2e4ea;
-  --border-strong: #ccd0d9;
+  --border: #dbe4f6;
+  --border-strong: #c5d2ee;
 
-  --text-1: #1f2329;
-  --text-2: #5f6672;
-  --text-3: #9aa0ab;
+  --text-1: #17233d;
+  --text-2: #526080;
+  --text-3: #8e9ab5;
 
-  --accent: #3b6ef6;
-  --accent-weak: rgba(59, 110, 246, 0.14);
+  --accent: #2f6bff;
+  --accent-weak: rgba(47, 107, 255, 0.14);
   --accent-contrast: #ffffff;
 
   /* 页面内标注色（页面恒为白底，不随主题切换） */
-  --page-annot: #3b6ef6;
+  --page-annot: #2f6bff;
   --page-annot-figure: #2ea44f;
   --page-annot-formula: #8b5cf6;
   --page-annot-table: #d97706;
-  --page-annot-weak: rgba(59, 110, 246, 0.12);
+  --page-annot-weak: rgba(47, 107, 255, 0.12);
 
   --ok: #2ea44f;
   --warn: #d97706;
   --err: #e5484d;
   --pending: #c3c8d1;
 
-  --scrollbar-thumb: #c2c7d0;
-  --scrollbar-thumb-hover: #9aa0ab;
+  --scrollbar-thumb: #c2cbe0;
+  --scrollbar-thumb-hover: #9aa6c2;
 
   --page-bg: #ffffff;
   --radius-sm: 6px;
@@ -39,38 +40,54 @@
 
   --sidebar-w: 264px;
   --toolbar-h: 46px;
+  --titlebar-h: 34px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    /* 黑灰白单色系 */
-    --bg-app: #121212;
-    --bg-panel: #1c1c1c;
-    --bg-hover: #262626;
-    --bg-workspace: #0a0a0a;
+/* 深色：显式 data-theme（主题切换的真相源在 JS；不再用媒体查询，
+   跟随系统由 theme.ts 解析成 light/dark 后写入该属性） */
+:root[data-theme="dark"] {
+  /* 黑灰白单色系 */
+  --bg-app: #121212;
+  --bg-panel: #1c1c1c;
+  --bg-hover: #262626;
+  --bg-workspace: #0a0a0a;
 
-    --border: #2a2a2a;
-    --border-strong: #3a3a3a;
+  --border: #2a2a2a;
+  --border-strong: #3a3a3a;
 
-    --text-1: #f2f2f2;
-    --text-2: #a3a3a3;
-    --text-3: #6e6e6e;
+  --text-1: #f2f2f2;
+  --text-2: #a3a3a3;
+  --text-3: #6e6e6e;
 
-    --accent: #f2f2f2;
-    --accent-weak: rgba(255, 255, 255, 0.09);
-    --accent-contrast: #141414;
+  --accent: #f2f2f2;
+  --accent-weak: rgba(255, 255, 255, 0.09);
+  --accent-contrast: #141414;
 
-    --ok: #3fb950;
-    --warn: #d29922;
-    --err: #f85149;
-    --pending: #333333;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+  --pending: #333333;
 
-    --scrollbar-thumb: #4d4d4d;
-    --scrollbar-thumb-hover: #757575;
+  --scrollbar-thumb: #4d4d4d;
+  --scrollbar-thumb-hover: #757575;
 
-    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
-    --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.6);
-  }
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+
+/* 主题切换瞬间：只在此期间给所有元素挂颜色过渡（0.3s，用户 2026-09-14），
+   不常驻——否则 hover 等交互也会被过渡拖慢 */
+html.theme-switching,
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease,
+    border-color 0.3s ease,
+    box-shadow 0.3s ease,
+    fill 0.3s ease,
+    stroke 0.3s ease !important;
 }
 
 * {

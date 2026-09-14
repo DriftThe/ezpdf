@@ -5,6 +5,21 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ezpdf</title>
+    <script>
+      // 首帧前应用主题（避免深色用户看到白色闪屏）：localStorage 镜像是启动期唯一同步来源，
+      // 随后 settings.ensureLoaded() 以 config.json 的值覆盖。
+      (function () {
+        try {
+          var mode = localStorage.getItem("ezpdf-theme") || "system";
+          var dark = mode === "dark" || (mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+          var resolved = dark ? "dark" : "light";
+          document.documentElement.dataset.theme = resolved;
+          document.documentElement.style.colorScheme = resolved;
+        } catch (e) {
+          /* 忽略：默认浅色 */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>
