@@ -8,6 +8,7 @@ import PageStatusStrip from "../reader/PageStatusStrip.vue";
 import SettingsPage from "../settings/SettingsPage.vue";
 import { useSettingsStore } from "../../stores/settings";
 import { useParseStore } from "../../stores/parse";
+import { useLibraryStore } from "../../stores/library";
 
 /**
  * App Shell 三区布局：
@@ -16,12 +17,15 @@ import { useParseStore } from "../../stores/parse";
  */
 const settings = useSettingsStore();
 const parse = useParseStore();
+const lib = useLibraryStore();
 
 // 启动序列（用户 2026-09-14）：读 config.json（覆盖 auth.cfg 默认）→ 默认置暂停
-// （工具栏显示「启动翻译」；仅当「自动唤醒 OCR + 自动续跑」都开才自动运行）→ 自动唤醒 OCR
+// （工具栏显示「启动翻译」；仅当「自动唤醒 OCR + 自动续跑」都开才自动运行）
+// → 自动打开上次仓库 → 按开关自动唤醒 OCR 服务
 onMounted(async () => {
   await settings.ensureLoaded();
   if (!(settings.general.autoLaunch && settings.general.resumeOnStart)) parse.paused = true;
+  await lib.openLastRepo();
   void parse.autoStartIfEnabled();
 });
 </script>

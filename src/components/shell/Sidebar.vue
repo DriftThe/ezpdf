@@ -51,7 +51,7 @@ function cancelNewFolder(): void {
     </div>
 
     <div class="side-actions">
-      <button class="btn primary grow" :disabled="lib.importing" @click="lib.importPdf()">{{ lib.importing ? "导入中" : "导入 PDF" }}</button>
+      <button class="btn primary grow" :disabled="lib.importing || !lib.repoRoot" @click="lib.importPdf()">{{ lib.importing ? "导入中" : "导入 PDF" }}</button>
       <button class="btn grow" :disabled="!lib.repoRoot" @click="onNewFolder">新增文件夹</button>
     </div>
 
@@ -83,6 +83,8 @@ function cancelNewFolder(): void {
           </svg>
         </span>
         <span class="root-path">{{ lib.repoRoot }}</span>
+        <!-- 重新选择仓库（用户 2026-09-14）：系统目录选择器 -->
+        <button class="btn ghost sm root-pick" title="重新选择仓库" @click="lib.chooseRepoRoot">选择</button>
       </div>
     </div>
     </div>
@@ -191,5 +193,11 @@ function cancelNewFolder(): void {
   white-space: nowrap;
   direction: rtl; /* 长路径时显示尾部 */
   text-align: left;
+}
+.root-pick {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.5;
 }
 </style>

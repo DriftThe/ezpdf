@@ -5,6 +5,7 @@ import type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
 import { toast } from "../composables/toast";
 import { useReaderStore } from "./reader";
 import { useParseStore } from "./parse";
+import { useSettingsStore } from "./settings";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -122,12 +123,34 @@ export const useLibraryStore = defineStore("library", () => {
       title: "选择仓库根目录",
     });
     if (repoPath === null) return;
+    let created: boolean;
     try {
-      const created = await invoke<boolean>("check_and_build_repo", { root: repoPath });
-      toast(created ? "已创建新仓库" : "已打开现有仓库");
-      await loadRepo(repoPath);
+      created = await invoke<boolean>("check_and_build_repo", { root: repoPath });
     } catch (error) {
       toast(String(error), "error");
+      return;
+    }
+    try {
+      await loadRepo(repoPath);
+      toast(created ? "已创建新仓库" : "已打开现有仓库");
+    } catch (error) {
+      toast(String(error), "error");
+    }
+  }
+
+  /**
+   * 启动自动打开上次仓库（用户 2026-09-14）：路径来自 config.json（settings.repoPath）。
+   * 失败（目录被删/移动/索引损坏）→ 提示并清除持久化路径，回到未选择状态。
+   */
+  async function openLastRepo(): Promise<void> {
+    const settings = useSettingsStore();
+    const root = settings.repoPath;
+    if (!root) return;
+    try {
+      await loadRepo(root);
+    } catch (error) {
+      toast(`自动打开上次仓库失败：${String(error)}`, "warn");
+      void settings.setRepoPath(null);
     }
   }
 
@@ -223,16 +246,13 @@ export const useLibraryStore = defineStore("library", () => {
     return mutateRepoTree("move_pdf", { id, belong });
   }
 
-  /** 拉取仓库索引；成功才落地状态，失败保留原状并报错 */
+  /** 拉取仓库索引；成功才落地状态并持久化路径，失败保留原状（调用方负责提示） */
   async function loadRepo(root: string): Promise<void> {
-    try {
-      const index = await invoke<RepoTree>("gettree_from_config", { root });
-      repoRoot.value = root;
-      repoIndex.value = index; // 平铺索引直接落地，不做树转换
-      useParseStore().wake(); // 换仓/刷新 = 新的可处理书目，尝试续链
-    } catch (error) {
-      toast(String(error), "error");
-    }
+    const index = await invoke<RepoTree>("gettree_from_config", { root });
+    repoRoot.value = root;
+    repoIndex.value = index; // 平铺索引直接落地，不做树转换
+    void useSettingsStore().setRepoPath(root); // 下次启动默认打开（用户 2026-09-14）
+    useParseStore().wake(); // 换仓/刷新 = 新的可处理书目，尝试续链
   }
 
   return {
@@ -246,6 +266,7 @@ export const useLibraryStore = defineStore("library", () => {
     selectPdf,
     toggleSidebar,
     chooseRepoRoot,
+    openLastRepo,
     importing,
     importPdf,
     loadRepo,
