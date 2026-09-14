@@ -301,7 +301,7 @@ export const useParseStore = defineStore("parse", () => {
     const current = useLibraryStore().currentPdf;
     if (current?.pages.some(needsTranslation)) {
       llmMissingNotified = true;
-      pushLlmLog("[ui] LLM 未配置（baseUrl/apiKey/model 为空）→ 翻译跳过；dev 期可配 auth.cfg");
+      pushLlmLog("[ui] LLM 未配置（baseUrl/apiKey/model 为空）→ 翻译跳过；到设置页填写");
       toast("LLM 未配置，翻译已跳过（设置页填写或配置 auth.cfg）", "warn");
     }
   }

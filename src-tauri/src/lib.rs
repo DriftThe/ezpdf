@@ -488,9 +488,10 @@ fn move_pdf(root: &str, id: &str, belong: Option<String>) -> Result<RepoTree, St
     Ok(index)
 }
 
-// ---- 应用设置持久化（用户 2026-09-14）：dev = 仓库根 config.json；生产 = ~/.ezpdf/config.json ----
+// ---- 应用设置持久化（用户 2026-09-14）：dev = 仓库根 config.json；生产 = 应用所在目录 config.json ----
 
-/// 设置文件位置：与 pyserver 同一 app 根（dev 源码仓库根 / 生产 ~/.ezpdf）
+/// 设置文件位置：与应用同目录（用户拍板 2026-09-14：所有设置都存应用目录的 cfg 文件）。
+/// 生产 = exe 所在目录（NSIS per-user 安装，目录可写）；dev = 源码仓库根。
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     #[cfg(dev)]
     {
@@ -499,8 +500,10 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
     #[cfg(not(dev))]
     {
-        let home = app.path().home_dir().map_err(|e| e.to_string())?;
-        Ok(home.join(".ezpdf").join("config.json"))
+        let _ = app;
+        let exe = std::env::current_exe().map_err(|e| format!("无法定位应用路径: {e}"))?;
+        let dir = exe.parent().ok_or("无法解析应用目录")?;
+        Ok(dir.join("config.json"))
     }
 }
 
