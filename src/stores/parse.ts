@@ -99,21 +99,27 @@ export const useParseStore = defineStore("parse", () => {
 
   /** 一键安装服务（用户 2026-09-14）：环境+torch 变体（CPU/GPU 选择、镜像开关）
    *  → 模型下载；全程进度经 ocr://install 推送（按钮旁进度条）。
+   *  已安装（含 CPU ⊂ GPU 子集规则）由后端判定并跳过 → 提示「服务已安装」；
    *  GPU 模式无 nvidia-smi 时后端直接报错中止（toast 展示原因）。 */
   async function installService(mode: "cpu" | "gpu", useMirror: boolean): Promise<void> {
     if (installing.value) return;
     installing.value = true;
     installProgress.value = null;
     try {
-      await invoke("ocr_install_env", { mode, useMirror });
+      const alreadyEnv = await invoke<boolean>("ocr_install_env", { mode, useMirror });
       await checkEnv();
       const r = envReport.value;
       const modelsReady = !!r?.models?.layout && !!r?.models?.vl;
       if (!modelsReady) {
+        if (alreadyEnv) pushLlmLog("[ui] 环境已安装，仅补齐模型");
         await invoke("ocr_download_models", { useMirror });
         await checkEnv();
+        toast("服务安装完成", "info");
+      } else if (alreadyEnv) {
+        toast("服务已安装（环境与模型均已就绪）", "info");
+      } else {
+        toast("服务安装完成", "info");
       }
-      toast("服务安装完成", "info");
     } catch (e) {
       toast(String(e), "error");
     } finally {

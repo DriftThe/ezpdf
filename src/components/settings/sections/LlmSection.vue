@@ -1,18 +1,9 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
 import { useParseStore } from "../../../stores/parse";
 import { useSettingsStore } from "../../../stores/settings";
 
 const settings = useSettingsStore();
 const parse = useParseStore();
-
-/** 自动拉取模型列表：每会话只静默尝试一次（失败会 toast，不反复打扰） */
-let autoFetchDone = false;
-onMounted(() => {
-  if (autoFetchDone) return;
-  autoFetchDone = true;
-  void settings.fetchModels(true);
-});
 </script>
 
 <template>

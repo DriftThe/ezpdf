@@ -546,7 +546,7 @@ async fn ocr_install_env(
     paths: tauri::State<'_, pyenv::PyPaths>,
     mode: String,
     use_mirror: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     pyenv::install_env(&app, &paths, pyenv::InstallMode::parse(&mode)?, use_mirror).await
 }
 

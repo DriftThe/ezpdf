@@ -323,14 +323,6 @@ impl InstallMode {
         }
     }
 
-    /// torch 构建标识（与 bootstrap 的 torch_build 口径一致）
-    fn torch_build(self) -> &'static str {
-        match self {
-            Self::Cpu => "cpu",
-            Self::Gpu => "cuda",
-        }
-    }
-
     fn label(self) -> &'static str {
         match self {
             Self::Cpu => "CPU",
@@ -515,14 +507,42 @@ async fn pip_install(
     run_streamed(app, &paths.python, &args, &paths.root, &paths.models, &[], progress).await
 }
 
+/// 已安装判定（用户 2026-09-14）：CPU 环境是 GPU 环境的子集——
+/// 装过 cu132（"cuda"）时 CPU 选择同样算已安装（不降级重装）；反向不成立。
+fn env_satisfies(report: &OcrEnvReport, mode: InstallMode) -> bool {
+    if report.python.is_none() || !report.missing.is_empty() {
+        return false;
+    }
+    match report.torch_build.as_deref() {
+        Some("cuda") => true,
+        Some("cpu") => mode == InstallMode::Cpu,
+        _ => false,
+    }
+}
+
 /// 服务安装：解释器（dev 缺 venv 时用系统 python 创建）→ GPU 预检 → 基础依赖 →
 /// torch 变体（按选择；已是目标构建则跳过）→ 完成。进度经 ocr://install 推送。
+/// 返回 true = 已安装（未做任何安装；前端提示「服务已安装」）。
 pub async fn install_env(
     app: &AppHandle,
     paths: &PyPaths,
     mode: InstallMode,
     use_mirror: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    // 先探测：环境齐备（且 torch 构建满足所选模式）→ 直接跳过，避免重复安装
+    let report = probe_blocking(paths);
+    if env_satisfies(&report, mode) {
+        emit_log(
+            app,
+            format!(
+                "[ezpdf] 服务已安装（torch {} 构建满足 {} 选择），跳过安装",
+                report.torch_build.as_deref().unwrap_or("?"),
+                mode.label()
+            ),
+        )
+        .await;
+        return Ok(true);
+    }
     emit_log(
         app,
         format!(
@@ -576,7 +596,8 @@ pub async fn install_env(
         Some(("安装基础依赖".to_string(), 5, 42)),
     )
     .await?;
-    if probe_blocking(paths).torch_build.as_deref() != Some(mode.torch_build()) {
+    let report = probe_blocking(paths);
+    if !env_satisfies(&report, mode) {
         emit_log(app, format!("[ezpdf] 安装 torch（{}）…", mode.label())).await;
         pip_install(
             app,
@@ -587,11 +608,15 @@ pub async fn install_env(
         )
         .await?;
     } else {
-        emit_log(app, format!("[ezpdf] torch 已是 {} 构建，跳过", mode.torch_build())).await;
+        emit_log(
+            app,
+            format!("[ezpdf] torch 已是 {} 构建，跳过", report.torch_build.as_deref().unwrap_or("?")),
+        )
+        .await;
     }
     emit_progress(app, "环境就绪", 75).await;
     emit_log(app, "[ezpdf] OCR 环境安装完成".into()).await;
-    Ok(())
+    Ok(false)
 }
 
 /// 模型下载：huggingface_hub（requirements-download.txt 按需补装，已装则 pip 秒过）

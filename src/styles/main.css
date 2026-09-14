@@ -335,6 +335,37 @@ textarea {
 .set-check input {
   accent-color: var(--accent);
 }
+/* 自绘下拉选择（安装模式等；风格与软件一致，箭头由外层 SVG 画） */
+.set-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.set-select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-1);
+  font-size: 13px;
+  padding: 5px 28px 5px 10px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.set-select:hover {
+  background: var(--bg-hover);
+}
+.set-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.set-select-arrow {
+  position: absolute;
+  right: 9px;
+  pointer-events: none;
+  color: var(--text-3);
+}
 /* 设置项说明文字（勾选项下方的小字提示） */
 .set-hint {
   margin: -4px 0 10px;

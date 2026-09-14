@@ -127,18 +127,19 @@ const lights = computed(() => [
         </span>
       </div>
     </div>
-    <!-- 一键安装服务（用户 2026-09-14）：CPU/GPU 选择 + 镜像源开关 + 进度（日志上方） -->
+    <!-- 一键安装服务（用户 2026-09-14）：下拉选择安装模式（自绘样式）+ 镜像源开关 + 进度 -->
     <div class="set-field">
       <span>安装服务</span>
       <div class="set-field-row install-row">
-        <label class="set-check">
-          <input v-model="installMode" type="radio" value="gpu" />
-          <span>GPU</span>
-        </label>
-        <label class="set-check">
-          <input v-model="installMode" type="radio" value="cpu" />
-          <span>CPU</span>
-        </label>
+        <span class="set-select-wrap">
+          <select v-model="installMode" class="set-select" title="安装模式">
+            <option value="gpu">GPU（CUDA cu132）</option>
+            <option value="cpu">CPU</option>
+          </select>
+          <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
+            <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+          </svg>
+        </span>
         <label class="set-check">
           <input v-model="settings.ocr.installMirror" type="checkbox" />
           <span>使用镜像源</span>
