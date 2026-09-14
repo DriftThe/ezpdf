@@ -609,6 +609,18 @@ async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus, St
     parse::prefill_pages(root, id, total).await
 }
 
+/// LLM 连通性验证 + 关思考策略探测（设置页 API Key 旁「验证」按钮，用户 2026-09-14）
+#[tauri::command]
+async fn verify_llm(llm: translate::LlmConfig) -> Result<translate::LlmVerifyReport, String> {
+    translate::verify_llm(&llm).await
+}
+
+/// 拉取 OpenAI 兼容 /models 列表（模型输入框自动补全，用户 2026-09-14）
+#[tauri::command]
+async fn fetch_llm_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+    translate::fetch_models(&base_url, &api_key).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -641,6 +653,8 @@ pub fn run() {
             parse_pdf,
             translate_pdf,
             prefill_pages,
+            verify_llm,
+            fetch_llm_models,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

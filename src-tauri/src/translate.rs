@@ -24,9 +24,10 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
+use ts_rs::TS;
 
 use crate::parse::truncate;
 use crate::{BindDoc, PageInfo};
@@ -42,6 +43,11 @@ pub struct LlmConfig {
     /// 智能上下文翻译开关（默认开，见 LlmSection）
     #[serde(default)]
     pub smart_context: bool,
+    /// 关思考请求参数策略："auto"（默认，按端点 URL 推断）|
+    /// "reasoning" | "enable_thinking" | "thinking_type" | "none"。
+    /// 由设置页「验证」按钮探测后写入（用户 2026-09-14）。
+    #[serde(default)]
+    pub thinking_off: String,
 }
 
 impl LlmConfig {
@@ -326,8 +332,39 @@ pub fn llm_client() -> Result<reqwest::Client, String> {
 /// 忽略该头。仅在 base_url 命中 opencode.ai 时发送（见 PLAN-LLM.md §5）。
 const OPENCODE_SESSION: &str = "ezpdf";
 
-/// OpenAI 兼容 /chat/completions（非流式）；返回首个 choice 的 content
-async fn chat(client: &reqwest::Client, cfg: &LlmConfig, messages: &[Value]) -> Result<String, String> {
+/// 关思考参数策略（用户 2026-09-14）：显式策略直接施加；"auto"/未知按端点 URL 推断；
+/// "none" 不加任何参数（OpenAI 官方等对未知参数直接 400，兼容优先）。
+/// 实测矩阵见 PLAN-LLM.md §5。
+fn apply_thinking_off(body: &mut Value, url: &str, strategy: &str) {
+    match strategy {
+        "reasoning" => {
+            body["reasoning"] = json!({"enabled": false});
+            body["reasoning_effort"] = json!("none");
+        }
+        "enable_thinking" => body["enable_thinking"] = json!(false),
+        "thinking_type" => body["thinking"] = json!({"type": "disabled"}),
+        "none" => {}
+        _ => {
+            // auto：opencode zen（OpenRouter 系）用 reasoning 参数；
+            // SiliconFlow（Qwen3.5 默认开思考）用 enable_thinking + thinking.type
+            if url.contains("opencode.ai") {
+                body["reasoning"] = json!({"enabled": false});
+                body["reasoning_effort"] = json!("none");
+            } else if url.contains("siliconflow") {
+                body["enable_thinking"] = json!(false);
+                body["thinking"] = json!({"type": "disabled"});
+            }
+        }
+    }
+}
+
+/// OpenAI 兼容 /chat/completions 请求（关思考策略 + zen 路由头），供对话与验证共用
+fn chat_request(
+    client: &reqwest::Client,
+    cfg: &LlmConfig,
+    messages: &[Value],
+    max_tokens: u32,
+) -> reqwest::RequestBuilder {
     let url = format!(
         "{}/chat/completions",
         cfg.base_url.trim().trim_end_matches('/')
@@ -336,28 +373,25 @@ async fn chat(client: &reqwest::Client, cfg: &LlmConfig, messages: &[Value]) -> 
         "model": cfg.model,
         "messages": messages,
         "temperature": 0,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": max_tokens,
         "stream": false,
     });
-    // 关思考（用户拍板 2026-09-14；实测矩阵见 PLAN-LLM.md §5）：
-    // - opencode zen（OpenRouter 系）：reasoning.enabled=false 与 reasoning_effort=none 均生效
-    // - SiliconFlow（Qwen3.5 默认开思考，content 空、reasoning_content 占 token）：
-    //   enable_thinking=false 与 thinking.type=disabled 均生效
-    // - 其他端点不加（OpenAI 官方等对未知参数直接 400，兼容优先）
-    let is_zen = url.contains("opencode.ai");
-    if is_zen {
-        body["reasoning"] = json!({"enabled": false});
-        body["reasoning_effort"] = json!("none");
-    } else if url.contains("siliconflow") {
-        body["enable_thinking"] = json!(false);
-        body["thinking"] = json!({"type": "disabled"});
-    }
+    apply_thinking_off(&mut body, &url, cfg.thinking_off.trim());
     let mut req = client.post(&url).bearer_auth(&cfg.api_key);
-    if is_zen {
+    if url.contains("opencode.ai") {
         req = req.header("x-opencode-session", OPENCODE_SESSION);
     }
-    let resp = req
-        .json(&body)
+    req.json(&body)
+}
+
+/// 发一次对话请求，返回 choices[0].message 原始对象（取 content 与思考检测共用）
+async fn chat_raw(
+    client: &reqwest::Client,
+    cfg: &LlmConfig,
+    messages: &[Value],
+    max_tokens: u32,
+) -> Result<Value, String> {
+    let resp = chat_request(client, cfg, messages, max_tokens)
         .send()
         .await
         .map_err(|e| format!("LLM 请求失败: {e}"))?;
@@ -369,12 +403,138 @@ async fn chat(client: &reqwest::Client, cfg: &LlmConfig, messages: &[Value]) -> 
     if !status.is_success() {
         return Err(format!("LLM 返回 {status}: {}", truncate(&text, 300)));
     }
-    let v: Value =
-        serde_json::from_str(&text).map_err(|e| format!("LLM 响应非 JSON: {e}"))?;
-    v["choices"][0]["message"]["content"]
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("LLM 响应非 JSON: {e}"))?;
+    let msg = &v["choices"][0]["message"];
+    if msg.is_object() {
+        Ok(msg.clone())
+    } else {
+        Err(format!(
+            "LLM 响应缺少 choices[0].message: {}",
+            truncate(&text, 200)
+        ))
+    }
+}
+
+/// OpenAI 兼容 /chat/completions（非流式）；返回首个 choice 的 content
+async fn chat(client: &reqwest::Client, cfg: &LlmConfig, messages: &[Value]) -> Result<String, String> {
+    let msg = chat_raw(client, cfg, messages, MAX_TOKENS).await?;
+    msg["content"]
         .as_str()
         .map(String::from)
-        .ok_or_else(|| format!("LLM 响应缺少 choices[0].message.content: {}", truncate(&text, 200)))
+        .ok_or_else(|| format!("LLM 响应缺少 choices[0].message.content: {}", truncate(&msg.to_string(), 200)))
+}
+
+// ---- 设置页「验证」按钮（用户 2026-09-14）：连通性检查 + 关思考策略探测 ----
+
+/// 探测请求：短问短答，max_tokens 故意小——思考模型会先被思考吃满导致 content 为空
+const PROBE_PROMPT: &str = "不要思考，直接回答：2+2 等于几？只输出数字。";
+const PROBE_MAX_TOKENS: u32 = 64;
+
+/// 验证报告（设置页 LLM 面板展示 + 回写 thinkingOff 策略）
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmVerifyReport {
+    /// 生效策略；"none" = 连通但尝试后仍无法关闭思考（前端 toast 警告）
+    pub strategy: String,
+    /// 展示文案（含耗时与策略说明）
+    pub message: String,
+}
+
+/// message 是否仍带思考：reasoning_content/reasoning 字段非空，或 content 被吃空
+fn message_thinks(msg: &Value) -> bool {
+    for key in ["reasoning_content", "reasoning"] {
+        match msg.get(key) {
+            Some(Value::String(s)) => {
+                if !s.trim().is_empty() {
+                    return true;
+                }
+            }
+            Some(Value::Null) | None => {}
+            Some(_) => return true, // 对象/数组形态的 reasoning（OpenRouter）
+        }
+    }
+    msg.get("content")
+        .and_then(|c| c.as_str())
+        .map(|c| c.trim().is_empty())
+        .unwrap_or(true)
+}
+
+/// 验证 LLM：先按 auto 发探测（失败即连通性错误，原样返回），仍在思考则逐个试显式策略
+pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
+    if !cfg.usable() {
+        return Err("请先填写 Base URL / API Key / 模型".into());
+    }
+    let client = llm_client()?;
+    let messages = vec![json!({"role": "user", "content": PROBE_PROMPT})];
+    let started = std::time::Instant::now();
+
+    let mut probe = cfg.clone();
+    probe.thinking_off = "auto".into();
+    let first = chat_raw(&client, &probe, &messages, PROBE_MAX_TOKENS).await?; // 连通性失败 → 直接上报
+    let mut strategy = if !message_thinks(&first) { "auto" } else { "" };
+    if strategy.is_empty() {
+        for cand in ["reasoning", "enable_thinking", "thinking_type"] {
+            let mut p = cfg.clone();
+            p.thinking_off = cand.into();
+            match chat_raw(&client, &p, &messages, PROBE_MAX_TOKENS).await {
+                Ok(msg) if !message_thinks(&msg) => {
+                    strategy = cand;
+                    break;
+                }
+                _ => continue, // 端点拒绝该参数或仍未关思考 → 试下一个
+            }
+        }
+    }
+    let ms = started.elapsed().as_millis();
+    Ok(if strategy.is_empty() {
+        LlmVerifyReport {
+            strategy: "none".into(),
+            message: format!("连接正常（{ms}ms），但尝试后无法关闭思考模式"),
+        }
+    } else {
+        LlmVerifyReport {
+            strategy: strategy.to_string(),
+            message: format!("连接正常（{ms}ms），思考关闭策略：{strategy}"),
+        }
+    })
+}
+
+/// 拉取 OpenAI 兼容 /models 列表（模型输入框自动补全；zen 端点补会话头）
+pub async fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+    if base_url.trim().is_empty() || api_key.trim().is_empty() {
+        return Err("请先填写 Base URL / API Key".into());
+    }
+    let client = llm_client()?;
+    let url = format!("{}/models", base_url.trim().trim_end_matches('/'));
+    let mut req = client.get(&url).bearer_auth(api_key);
+    if url.contains("opencode.ai") {
+        req = req.header("x-opencode-session", OPENCODE_SESSION);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("获取模型列表失败: {e}"))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("获取模型列表失败: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("获取模型列表返回 {status}: {}", truncate(&text, 200)));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("模型列表非 JSON: {e}"))?;
+    let mut ids: Vec<String> = v["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["id"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
 }
 
 const CORRECTION: &str = "上一轮输出无法解析或与 requests 不匹配。请仅输出合法 JSON，且 result 必须与本次输入 requests 的 index 一一对应（A 允许为 null，表示无需翻译）。";
@@ -641,6 +801,7 @@ mod tests {
             model: "m".into(),
             target_lang: "Simplified Chinese".into(),
             smart_context: smart,
+            thinking_off: "auto".into(),
         }
     }
 
@@ -660,6 +821,45 @@ mod tests {
         custom.target_lang = "Klingon".into();
         let text = load_system_prompt(&custom).unwrap();
         assert!(text.contains("Klingon"));
+    }
+
+    #[test]
+    fn thinking_off_strategies_shape_body() {
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://x/v1", "reasoning");
+        assert_eq!(body["reasoning"]["enabled"], json!(false));
+        assert_eq!(body["reasoning_effort"], json!("none"));
+
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://x/v1", "enable_thinking");
+        assert_eq!(body["enable_thinking"], json!(false));
+
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://x/v1", "thinking_type");
+        assert_eq!(body["thinking"]["type"], json!("disabled"));
+
+        // auto 矩阵：zen → reasoning；siliconflow → enable_thinking；未知端点不加参数
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://zen.opencode.ai/v1", "auto");
+        assert_eq!(body["reasoning"]["enabled"], json!(false));
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://api.siliconflow.cn/v1", "auto");
+        assert_eq!(body["enable_thinking"], json!(false));
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://api.openai.com/v1", "auto");
+        assert!(body.as_object().unwrap().is_empty());
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://api.openai.com/v1", "none");
+        assert!(body.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn message_thinks_detects_reasoning_fields() {
+        assert!(!message_thinks(&json!({"content": "4"})));
+        assert!(message_thinks(&json!({"content": "", "reasoning_content": "想…"})));
+        assert!(message_thinks(&json!({"content": "x", "reasoning": {"foo": 1}})));
+        assert!(message_thinks(&json!({"content": ""})));
+        assert!(message_thinks(&json!({})));
     }
 
     #[test]

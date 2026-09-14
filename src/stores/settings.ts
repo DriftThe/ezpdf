@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import type { LlmVerifyReport } from "../../src-tauri/bindings/LlmVerifyReport";
 import { toast } from "../composables/toast";
 import { useLibraryStore } from "./library";
 
@@ -14,6 +15,12 @@ export interface LlmSettings {
   targetLang: string;
   /** 智能上下文翻译：跨页截断文本经 agent loop 请求上下文联合翻译（默认开） */
   smartContext: boolean;
+  /**
+   * 关思考请求参数策略（用户 2026-09-14）："auto" 按端点 URL 推断；
+   * "reasoning" | "enable_thinking" | "thinking_type" 显式；"none" 不加参数。
+   * 由「验证」按钮探测成功后回写。
+   */
+  thinkingOff: string;
 }
 
 /**
@@ -101,7 +108,14 @@ export const useSettingsStore = defineStore("settings", () => {
     model: "",
     targetLang: "",
     smartContext: true,
+    thinkingOff: "auto",
   });
+
+  /** LLM 验证/模型拉取进行中（按钮防重入 + 文案） */
+  const verifying = ref(false);
+  const modelsFetching = ref(false);
+  /** /models 拉取结果（模型输入框 datalist 补全） */
+  const modelOptions = ref<string[]>([]);
 
   const general = ref<GeneralSettings>({
     autoLaunch: true,
@@ -184,6 +198,61 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
-  return { pageOpen, section, llm, general, repoPath, openPage, save, setRepoPath, ensureLoaded };
+  /** 验证 LLM（用户 2026-09-14）：连通性 + 关思考策略探测；策略回写 thinkingOff */
+  async function verifyLlm(): Promise<void> {
+    if (verifying.value) return;
+    const { baseUrl, apiKey, model } = llm.value;
+    if (!baseUrl.trim() || !apiKey.trim() || !model.trim()) {
+      toast("请先填写 Base URL / API Key / 模型", "warn");
+      return;
+    }
+    verifying.value = true;
+    try {
+      const report = await invoke<LlmVerifyReport>("verify_llm", { llm: { ...llm.value } });
+      llm.value.thinkingOff = report.strategy;
+      // 找不到关思考参数时明确警告（用户 2026-09-14）
+      toast(report.message, report.strategy === "none" ? "warn" : "info");
+    } catch (e) {
+      toast(`验证失败：${String(e)}`, "error");
+    } finally {
+      verifying.value = false;
+    }
+  }
+
+  /** 拉取 /models 列表（失败 toast 兜底；成功不打扰） */
+  async function fetchModels(silent = false): Promise<void> {
+    if (modelsFetching.value) return;
+    const { baseUrl, apiKey } = llm.value;
+    if (!baseUrl.trim() || !apiKey.trim()) {
+      if (!silent) toast("请先填写 Base URL / API Key", "warn");
+      return;
+    }
+    modelsFetching.value = true;
+    try {
+      modelOptions.value = await invoke<string[]>("fetch_llm_models", { baseUrl, apiKey });
+      if (!silent) toast(`已获取 ${modelOptions.value.length} 个模型`);
+    } catch (e) {
+      toast(`获取模型列表失败：${String(e)}`, "error");
+    } finally {
+      modelsFetching.value = false;
+    }
+  }
+
+  return {
+    pageOpen,
+    section,
+    llm,
+    general,
+    repoPath,
+    verifying,
+    modelsFetching,
+    modelOptions,
+    openPage,
+    save,
+    setRepoPath,
+    verifyLlm,
+    fetchModels,
+    ensureLoaded,
+  };
 
 });

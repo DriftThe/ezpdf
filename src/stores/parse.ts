@@ -25,6 +25,7 @@ interface LlmPayload {
   model: string;
   targetLang: string;
   smartContext: boolean;
+  thinkingOff: string;
 }
 
 /** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，调度整体静默（同 listen().catch 哲学） */
@@ -249,6 +250,7 @@ export const useParseStore = defineStore("parse", () => {
       model: s.model,
       targetLang: s.targetLang,
       smartContext: s.smartContext,
+      thinkingOff: s.thinkingOff,
     };
   }
 
