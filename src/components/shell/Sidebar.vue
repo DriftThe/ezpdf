@@ -7,10 +7,6 @@ import EmptyState from "../common/EmptyState.vue";
 
 const lib = useLibraryStore();
 
-function onOfflineTab(): void {
-  toast("开发中");
-}
-
 /** 新增文件夹：侧栏内联输入（不弹系统框，避免打断）——后端只加逻辑分组 */
 const folderOpen = ref(false);
 const folderName = ref("");
