@@ -52,7 +52,8 @@ Two halves, communicating only through Tauri's IPC:
 2. **构建**：仓库根执行 `pnpm tauri build`。自动执行：`vue-tsc` 类型检查 → `vite build` → `scripts/pack-runtime.mjs`（随包 Python/pyserver/提示词，已缓存则秒过；改 Python 版本需删 `src-tauri/resources/.runtime-stamp` 或 `--force`）→ Rust release（LTO）→ NSIS 打包。
 3. **产物**：`src-tauri/target/release/bundle/nsis/ezpdf_<version>_x64-setup.exe`（约 30MB；首次运行后在应用内「一键安装服务」下载依赖与模型）。
 4. **分发**：把 setup.exe 传到 GitHub Releases，tag 用 `v<version>`（如 `v0.2.0`）——应用内「检查更新」查 `DriftThe/ezpdf` 的 latest release 并按 tag 比数字版本。
-5. **注意**：安装包未签名（用户首次运行会有 SmartScreen 提示，需代码签名证书才能消除）；`pack-runtime.mjs` 会在构建时校验 `dist/` 不含 `auth.cfg` 的 apiKey，发现即中止构建。
+5. **CI（推荐）**：`git push` tag `v<version>` 即触发 `.github/workflows/release.yml`（windows-latest + `tauri-apps/tauri-action@v1`，`pnpm install --frozen-lockfile` → tauri build → NSIS），产物进 **draft** Release；先跑 `check-version` 卡 tag 与 tauri.conf 版本一致。冒烟后手动 publish（`gh release edit v0.2.0 --draft=false`）——draft/预发布不会被「检查更新」看到。注意 CI 里没有 `auth.cfg`（`pack-runtime.mjs` 的密钥断言自然通过），Python 运行时由镜像链在 runner 上现下（~50MB）。
+6. **注意**：安装包未签名（用户首次运行会有 SmartScreen 提示，需代码签名证书才能消除）；`pack-runtime.mjs` 会在构建时校验 `dist/` 不含 `auth.cfg` 的 apiKey，发现即中止构建。
 
 ## User Harness
 - After smoke testing, should kill port 1420 task with powershell to ensure user can test.

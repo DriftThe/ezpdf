@@ -1,0 +1,65 @@
+name: Release
+
+# 打 tag（v<version>，须与 src-tauri/tauri.conf.json 的 version 一致）即出一版
+# Windows 安装包并建 draft Release（人工冒烟后转正）；也可手动 workflow_dispatch。
+# 应用内「检查更新」查的是 GitHub 的 latest release，draft/预发布不会被看到。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # tag 必须等于 tauri.conf.json 的 version：tag 漂移会让更新检查静默错版
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches app version
+        if: github.event_name == 'push'
+        run: |
+          APP_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "${{ github.ref_name }}" != "v${APP_VERSION}" ]; then
+            echo "::error::tag ${{ github.ref_name }} != v${APP_VERSION} (src-tauri/tauri.conf.json)"
+            exit 1
+          fi
+
+  build-windows:
+    needs: check-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      # beforeBuildCommand（pnpm build + pack-runtime.mjs）由 tauri build 自动执行：
+      # vue-tsc 类型检查 → vite build → 随包 Python/pyserver/提示词 → LTO release → NSIS
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: ezpdf v__VERSION__
+          releaseBody: 下载下方 setup.exe 安装；首次运行后在应用内「一键安装服务」下载 OCR 依赖与模型。
+          releaseDraft: true
+          prerelease: false
+          tauriScript: pnpm tauri
+          uploadUpdaterJson: false # 未用 Tauri updater 插件（应用自查 GitHub Releases）
+          args: --bundles nsis
