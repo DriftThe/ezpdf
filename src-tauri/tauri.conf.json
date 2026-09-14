@@ -13,10 +13,11 @@
     "windows": [
       {
         "title": "ezpdf",
-        "width": 1440,
-        "height": 920,
+        "width": 1600,
+        "height": 1022,
         "minWidth": 1000,
-        "minHeight": 660
+        "minHeight": 660,
+        "decorations": false
       }
     ],
     "security": {

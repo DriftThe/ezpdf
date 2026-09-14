@@ -2,6 +2,7 @@
 import { onMounted } from "vue";
 import Sidebar from "./Sidebar.vue";
 import Toasts from "./Toasts.vue";
+import TitleBar from "./TitleBar.vue";
 import ConfirmDialog from "../common/ConfirmDialog.vue";
 import ReaderToolbar from "../toolbar/ReaderToolbar.vue";
 import ReaderArea from "../reader/ReaderArea.vue";
@@ -12,9 +13,10 @@ import { useParseStore } from "../../stores/parse";
 import { useLibraryStore } from "../../stores/library";
 
 /**
- * App Shell 三区布局：
- * 左侧栏（仓库树/离线列表）│ 主区（工具栏 + 双栏阅读器 + 页状态条）│ 全局（设置整页/Toast）
- * 设置整页绝对定位覆盖 sidebar+reader（含页状态条），顶部工具栏 z-index 更高保持可见。
+ * App Shell：自绘标题栏（跨全宽）│ 左侧栏（仓库树）│ 主区（工具栏 + 双栏阅读器 + 页状态条）
+ * │ 全局（设置整页/Toast/确认框）
+ * 设置整页绝对定位覆盖 app-body（含页状态条与工具栏区域），顶部工具栏 z-index 更高保持可见；
+ * 标题栏独立在外，始终可见（窗口装饰已关，装饰与拖动都由 TitleBar 自绘）。
  */
 const settings = useSettingsStore();
 const parse = useParseStore();
@@ -34,13 +36,16 @@ onMounted(async () => {
 
 <template>
   <div class="app-shell">
-    <Sidebar />
-    <main class="app-main">
-      <ReaderToolbar />
-      <ReaderArea />
-      <PageStatusStrip />
-    </main>
-    <SettingsPage />
+    <TitleBar />
+    <div class="app-body">
+      <Sidebar />
+      <main class="app-main">
+        <ReaderToolbar />
+        <ReaderArea />
+        <PageStatusStrip />
+      </main>
+      <SettingsPage />
+    </div>
     <Toasts />
     <ConfirmDialog />
   </div>
@@ -50,8 +55,15 @@ onMounted(async () => {
 .app-shell {
   height: 100%;
   display: flex;
+  flex-direction: column;
   overflow: hidden;
-  position: relative; /* 设置整页覆盖层的定位基准 */
+}
+/* 标题栏以下的工作区：设置整页覆盖层的定位基准 */
+.app-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
 }
 .app-main {
   flex: 1;
