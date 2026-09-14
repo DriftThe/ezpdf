@@ -73,6 +73,20 @@ function rectStyle(r: Rect): Record<string, string> {
   return { left: r.left + "%", top: r.top + "%", width: r.width + "%", height: r.height + "%" };
 }
 
+/**
+ * 译文框内边距按框像素尺寸比例取（用户 2026-09-14）：
+ * 固定 padding（2px 4px）在 ~16pt 高的小框里占掉 25%+ 高度，v-fit 只能选到极小字号；
+ * 改为比例式（垂直 ≤4px / 水平 ≤6px，各按框尺寸缩放）后小框字号明显变大，大框视觉不变。
+ * 注：v-fit 读 computed padding，内联样式同样生效。
+ */
+function coverStyle(r: Rect): Record<string, string> {
+  const w = (r.width / 100) * width.value;
+  const h = (r.height / 100) * height.value;
+  const pv = Math.max(0.5, Math.min(4, h * 0.06));
+  const ph = Math.max(1, Math.min(6, w * 0.02));
+  return { ...rectStyle(r), padding: `${pv}px ${ph}px` };
+}
+
 interface CoverRect extends Rect {
   /** 内容 HTML：正文转义 + 公式 KaTeX（lib/richText.ts） */
   html: string;
@@ -286,7 +300,7 @@ const vFit: Directive<HTMLElement> = {
           v-fit
           class="blk-cover"
           :class="{ 'cover-formula': r.block.type === 'formula' }"
-          :style="rectStyle(r)"
+          :style="coverStyle(r)"
           :title="r.block.type"
         >
           <span class="cover-text" v-html="r.html"></span>
