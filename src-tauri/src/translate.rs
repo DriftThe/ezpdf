@@ -1,6 +1,11 @@
 //! LLM 翻译（阶段4 批4）：单页打包 + 智能上下文 agent loop + external 跨页绑定。
 //!
-//! 协议见 `system_prompt/intelli_context.md`（运行时从项目根读取，用户可改）：
+//! 两套系统提示词（运行时从 system_prompt/ 读取，用户可改；EZPDF_SYSTEM_PROMPT_DIR 覆盖目录）：
+//! - smart_context=true → `intelli_context.md`：协议 A–D（下文），result 项键为 `A`
+//! - smart_context=false → `standard_translate.md`：无上下文协议，result 项键为 `content`
+//! 解析层对两套都容错（A/content 均可、need_context 缺失即 None），非智能模式忽略任何上下文请求。
+//!
+//! 智能模式协议：
 //! - 输入格式 A：`{requests: [{index, Q}]}`
 //! - 正常输出 B：`{result: [{index, A}], need_context: false}`
 //! - 截断请求：`{result: [], need_context: "before"|"after"}`
@@ -88,19 +93,26 @@ const MAX_TOKENS: u32 = 8192;
 const REQUEST_TIMEOUT_SECS: u64 = 180;
 
 /// 提示词路径：EZPDF_SYSTEM_PROMPT_DIR 优先（环境变化只改这一处），
-/// 否则 dev/源码态的仓库根 `system_prompt/`。
-fn prompt_path() -> PathBuf {
+/// 否则 dev/源码态的仓库根 `system_prompt/`；按模式选用对应文件。
+fn prompt_path(smart: bool) -> PathBuf {
+    let file = if smart {
+        "intelli_context.md"
+    } else {
+        "standard_translate.md"
+    };
     if let Ok(dir) = std::env::var("EZPDF_SYSTEM_PROMPT_DIR") {
         if !dir.trim().is_empty() {
-            return PathBuf::from(dir).join("intelli_context.md");
+            return PathBuf::from(dir).join(file);
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../system_prompt/intelli_context.md")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../system_prompt")
+        .join(file)
 }
 
-/// 读系统提示词 + 替换 {{target_language}}；smart=false 时裁掉上下文相关三节
+/// 读系统提示词 + 替换 {{target_language}}（文件按 smart_context 选择：智能/标准两套互不裁剪）
 pub fn load_system_prompt(cfg: &LlmConfig) -> Result<String, String> {
-    let path = prompt_path();
+    let path = prompt_path(cfg.smart_context);
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("读取翻译提示词失败 {}: {e}", path.display()))?;
     let lang = if cfg.target_lang.trim().is_empty() {
@@ -111,42 +123,11 @@ pub fn load_system_prompt(cfg: &LlmConfig) -> Result<String, String> {
     let text = text.replace("{{target_language}}", lang);
     // 兜底（用户 2026-09-14）：提示词被大改成没有 {{target_language}} 占位符时，
     // 仍把目标语言追加进系统提示——保证目标语言一定在提示词里
-    let text = if text.contains(lang) {
+    Ok(if text.contains(lang) {
         text
     } else {
         format!("{text}\n\n目标语言：{lang}。所有译文必须使用该语言。\n")
-    };
-    Ok(if cfg.smart_context {
-        text
-    } else {
-        strip_context_sections(&text)
     })
-}
-
-/// smart=false：按【标题】小节裁掉上下文协议（同一份提示词，不维护第二份）；
-/// 找不到小节标题（用户大改）则原样返回，运行时收到 need_context 会以 type=null 应答。
-fn strip_context_sections(text: &str) -> String {
-    let cut = ["【上下文请求】", "【用户返回上下文格式 C】", "【收到 C 后的规则】"];
-    let mut out = String::new();
-    let mut skipping = false;
-    let mut saw_heading = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        let is_heading = trimmed.starts_with('【') && trimmed.ends_with('】');
-        if is_heading {
-            saw_heading = true;
-            skipping = cut.contains(&trimmed);
-        }
-        if !skipping {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if saw_heading {
-        out
-    } else {
-        text.to_string()
-    }
 }
 
 fn is_translatable(kind: &str, content: &str) -> bool {
@@ -273,7 +254,8 @@ fn parse_reply(raw: &str) -> Option<Reply> {
     if let Some(arr) = v.get("result").and_then(|x| x.as_array()) {
         for item in arr {
             let idx = index_str(item.get("index"))?;
-            let a = match item.get("A") {
+            // 译文键兼容两套提示词：智能模式 `A` / 标准模式 `content`
+            let a = match item.get("A").or_else(|| item.get("content")) {
                 Some(Value::String(s)) => Some(s.clone()),
                 Some(Value::Null) | None => None,
                 Some(other) => Some(other.to_string()),
@@ -452,21 +434,20 @@ pub fn apply_done(doc: &mut BindDoc, done: PageDone, touched: &mut Vec<u32>) {
     }
 }
 
-/// 组上下文应答（协议格式 C）：smart 且请求方向有邻页才提供候选，否则回 `type: null`；
-/// 返回 (发给模型的 C 消息, 待回写 external 的邻页上下文)。日志与轮次文案保持原样。
+/// 组上下文应答（协议格式 C，仅智能模式路径调用）：请求方向有邻页才提供候选，
+/// 否则回 `type: null`；返回 (发给模型的 C 消息, 待回写 external 的邻页上下文)。
 fn context_reply(
     page_index: u32,
     round: usize,
     ms: u128,
     dir: &str,
-    smart: bool,
     before: Option<&(u32, Vec<ContextItem>)>,
     after: Option<&(u32, Vec<ContextItem>)>,
 ) -> (String, Option<(u32, Vec<ContextItem>)>) {
     let snapshot = if dir == "before" { before } else { after };
-    let (neighbor, candidates) = match (smart, snapshot) {
-        (true, Some((n, c))) => (Some(*n), c.clone()),
-        _ => (None, Vec::new()),
+    let (neighbor, candidates) = match snapshot {
+        Some((n, c)) => (Some(*n), c.clone()),
+        None => (None, Vec::new()),
     };
     let c = json!({
         "type": if candidates.is_empty() { Value::Null } else { json!(dir) },
@@ -547,30 +528,31 @@ pub async fn translate_task(
             }
         };
 
-        // 上下文请求：仅 smart 且未应答过时组 C；否则纠正消息逼最终输出
-        if let Some(dir) = reply.need_context.clone() {
-            if context_answered {
-                log(format!("p{page_index} 第{}轮 {ms}ms 重复请求上下文 → 逼最终输出", _round + 1));
+        // 上下文请求：仅智能模式处理（标准模式无此协议，忽略后走 result 校验）
+        if cfg.smart_context {
+            if let Some(dir) = reply.need_context.clone() {
+                if context_answered {
+                    log(format!("p{page_index} 第{}轮 {ms}ms 重复请求上下文 → 逼最终输出", _round + 1));
+                    messages.push(json!({"role": "assistant", "content": raw}));
+                    messages.push(json!({"role": "user", "content": NO_MORE_CONTEXT}));
+                    continue;
+                }
+                context_answered = true;
+                let (c, ctx) = context_reply(
+                    page_index,
+                    _round,
+                    ms,
+                    &dir,
+                    before.as_ref(),
+                    after.as_ref(),
+                );
+                if ctx.is_some() {
+                    context = ctx;
+                }
                 messages.push(json!({"role": "assistant", "content": raw}));
-                messages.push(json!({"role": "user", "content": NO_MORE_CONTEXT}));
+                messages.push(json!({"role": "user", "content": c}));
                 continue;
             }
-            context_answered = true;
-            let (c, ctx) = context_reply(
-                page_index,
-                _round,
-                ms,
-                &dir,
-                cfg.smart_context,
-                before.as_ref(),
-                after.as_ref(),
-            );
-            if ctx.is_some() {
-                context = ctx;
-            }
-            messages.push(json!({"role": "assistant", "content": raw}));
-            messages.push(json!({"role": "user", "content": c}));
-            continue;
         }
 
         // 最终输出：校验 → 返回结果
@@ -663,17 +645,21 @@ mod tests {
     }
 
     #[test]
-    fn strip_context_sections_removes_three_and_keeps_rest() {
-        let text = "前言\n\n【翻译规则】\nq\n\n【上下文请求】\nctx\n\n【用户返回上下文格式 C】\nc\n\n【收到 C 后的规则】\nd\n\n【严格输出约束】\ns\n";
-        let out = strip_context_sections(text);
-        assert!(out.contains("【翻译规则】"));
-        assert!(out.contains("【严格输出约束】"));
-        assert!(!out.contains("【上下文请求】"));
-        assert!(!out.contains("【用户返回上下文格式 C】"));
-        assert!(!out.contains("【收到 C 后的规则】"));
-        // 无小节标题（用户大改）→ 原样返回
-        let raw = "just text\n";
-        assert_eq!(strip_context_sections(raw), raw);
+    fn prompt_files_load_by_mode_and_template_lang() {
+        let smart = cfg(true);
+        let text = load_system_prompt(&smart).unwrap();
+        assert!(text.contains("Simplified Chinese"));
+        assert!(text.contains("need_context")); // 智能协议在文中
+        let plain = cfg(false);
+        let text = load_system_prompt(&plain).unwrap();
+        assert!(text.contains("Simplified Chinese"));
+        assert!(!text.contains("need_context")); // 标准提示词无上下文协议
+        assert!(text.contains("\"content\""));
+        // 目标语言占位符被删时兜底追加
+        let mut custom = cfg(false);
+        custom.target_lang = "Klingon".into();
+        let text = load_system_prompt(&custom).unwrap();
+        assert!(text.contains("Klingon"));
     }
 
     #[test]
@@ -741,6 +727,12 @@ mod tests {
         assert_eq!(r.result.len(), 2);
         assert_eq!(r.result[0], ("0".into(), Some("x".into())));
         assert_eq!(r.result[1], ("1".into(), None));
+        assert!(r.need_context.is_none());
+
+        // 标准提示词形态：content 键、无 need_context
+        let std = "{\"result\":[{\"index\":\"0\",\"content\":\"译\"}]}";
+        let r = parse_reply(std).unwrap();
+        assert_eq!(r.result[0], ("0".into(), Some("译".into())));
         assert!(r.need_context.is_none());
 
         let req = "{\"result\":[],\"need_context\":\"before\"}";
