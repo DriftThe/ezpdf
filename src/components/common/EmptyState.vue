@@ -2,14 +2,12 @@
 defineProps<{
   title: string;
   desc?: string;
-  /** 图标尺寸 */
-  size?: number;
 }>();
 </script>
 
 <template>
   <div class="empty">
-    <div class="empty-icon" :style="{ width: (size ?? 28) + 'px', height: (size ?? 28) + 'px' }" aria-hidden="true">
+    <div class="empty-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
         <path d="M14 3v4h4" />
@@ -36,6 +34,8 @@ defineProps<{
   padding: 24px;
 }
 .empty-icon {
+  width: 28px;
+  height: 28px;
   color: var(--text-3);
   margin-bottom: 4px;
 }

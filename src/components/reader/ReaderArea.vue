@@ -51,7 +51,7 @@ function onScrollRatio(side: Side, ratio: number): void {
   });
 }
 
-function onPageVisible(_side: Side, page: number): void {
+function onPageVisible(page: number): void {
   reader.setVisiblePage(page);
 }
 
@@ -67,46 +67,52 @@ const docError = ref("");
 
 watch(
   () => lib.currentPdfId,
-  async (id, oldId) => {
-    if (oldId) void destroyPdfDoc(oldId);
-    pdfDoc.value = null;
-    docError.value = "";
-    reader.setPdfGeometry(0, 0, 0); // 切书：旧几何失效（pageCount 回退绑定 JSON）
-    reader.setPageSizes([]); // 逐页尺寸一并失效
-    const path = lib.currentPdf?.pdfPath;
-    if (!id || !path) {
-      docState.value = "idle";
-      return;
-    }
-    docState.value = "loading";
-    try {
-      // pin：焦点书 doc 不参与 LRU 淘汰（调度桥后台书最多再占 1 本）
-      const doc = await loadPdfDoc(id, path, true);
-      if (lib.currentPdfId !== id) {
-        void destroyPdfDoc(id); // 竞态：加载完成时书已切走 → 丢弃
-        return;
-      }
-      // 几何上报：真实页数 + 第 1 页尺寸（pt，getViewport scale=1 时 1pt=1px）
-      const page1 = await doc.getPage(1);
-      if (lib.currentPdfId !== id) {
-        void destroyPdfDoc(id);
-        return;
-      }
-      const vp = page1.getViewport({ scale: 1 });
-      reader.setPdfGeometry(doc.numPages, vp.width, vp.height);
-      // 几何就绪后重新装填待跳页：restorePageFor 设置的 jumpTarget 会在几何就绪前
-      // 被提前消费（当时页卡尚未渲染），在此重置才能恢复到记住的阅读位置
-      reader.jumpTarget = reader.currentPage;
-      pdfDoc.value = doc;
-      docState.value = "ready";
-      void measurePageSizes(id, doc); // 后台逐页实测（渐进生效，先按第 1 页尺寸顶住）
-    } catch (error) {
-      if (lib.currentPdfId !== id) return; // 已切书，错误不再相关
-      docError.value = String(error);
-      docState.value = "error";
-    }
+  (id, oldId) => {
+    void openDocument(id, oldId);
   },
 );
+
+/** 切书：销毁旧 doc → 载入新 doc → 上报几何 → 后台量逐页尺寸
+ *  （异步期间用 id 复核，竞态结果丢弃） */
+async function openDocument(id: string | null, oldId: string | null): Promise<void> {
+  if (oldId) void destroyPdfDoc(oldId);
+  pdfDoc.value = null;
+  docError.value = "";
+  reader.setPdfGeometry(0, 0, 0); // 切书：旧几何失效（pageCount 回退绑定 JSON）
+  reader.setPageSizes([]); // 逐页尺寸一并失效
+  const path = lib.currentPdf?.pdfPath;
+  if (!id || !path) {
+    docState.value = "idle";
+    return;
+  }
+  docState.value = "loading";
+  try {
+    // pin：焦点书 doc 不参与 LRU 淘汰（调度桥后台书最多再占 1 本）
+    const doc = await loadPdfDoc(id, path, true);
+    if (lib.currentPdfId !== id) {
+      void destroyPdfDoc(id); // 竞态：加载完成时书已切走 → 丢弃
+      return;
+    }
+    // 几何上报：真实页数 + 第 1 页尺寸（pt，getViewport scale=1 时 1pt=1px）
+    const page1 = await doc.getPage(1);
+    if (lib.currentPdfId !== id) {
+      void destroyPdfDoc(id);
+      return;
+    }
+    const vp = page1.getViewport({ scale: 1 });
+    reader.setPdfGeometry(doc.numPages, vp.width, vp.height);
+    // 几何就绪后重新装填待跳页：restorePageFor 设置的 jumpTarget 会在几何就绪前
+    // 被提前消费（当时页卡尚未渲染），在此重置才能恢复到记住的阅读位置
+    reader.jumpTarget = reader.currentPage;
+    pdfDoc.value = doc;
+    docState.value = "ready";
+    void measurePageSizes(id, doc); // 后台逐页实测（渐进生效，先按第 1 页尺寸顶住）
+  } catch (error) {
+    if (lib.currentPdfId !== id) return; // 已切书，错误不再相关
+    docError.value = String(error);
+    docState.value = "error";
+  }
+}
 
 /**
  * 逐页实测尺寸（后台，分批并发）：页尺寸不一的 PDF（扫描版每页裁剪不同，
@@ -174,7 +180,7 @@ watch(
           :kind="left"
           :doc="pdfDoc"
           @scroll-ratio="(r) => onScrollRatio('left', r)"
-          @page-visible="(p) => onPageVisible('left', p)"
+          @page-visible="onPageVisible"
         />
         <div v-if="right" class="pane-divider" />
         <!-- 右栏 -->
@@ -187,7 +193,7 @@ watch(
           :kind="right"
           :doc="pdfDoc"
           @scroll-ratio="(r) => onScrollRatio('right', r)"
-          @page-visible="(p) => onPageVisible('right', p)"
+          @page-visible="onPageVisible"
         />
       </template>
     </template>

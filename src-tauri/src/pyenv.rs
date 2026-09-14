@@ -179,19 +179,16 @@ fn no_python_report() -> OcrEnvReport {
 /// 跑一次 bootstrap.py（venv python 优先；否则系统 python 兜底）。
 /// 探测自身失败不作为错误抛出——报告即数据（error 字段），前端据此显示引导。
 pub fn probe_blocking(paths: &PyPaths) -> OcrEnvReport {
-    if paths.venv_python.is_file() {
-        return match run_bootstrap(&paths.venv_python, &paths.bootstrap) {
-            Ok(raw) => compose(raw),
-            Err(_) => no_python_report(),
-        };
-    }
-    if let Some(py) = find_system_python() {
-        return match run_bootstrap(&py, &paths.bootstrap) {
-            Ok(raw) => compose(raw),
-            Err(_) => no_python_report(),
-        };
-    }
-    no_python_report()
+    // venv 存在就只信 venv（失败不回退系统 python，避免误报可运行）
+    let python = if paths.venv_python.is_file() {
+        Some(paths.venv_python.clone())
+    } else {
+        find_system_python()
+    };
+    python
+        .and_then(|py| run_bootstrap(&py, &paths.bootstrap).ok())
+        .map(compose)
+        .unwrap_or_else(no_python_report)
 }
 
 pub async fn probe(paths: &PyPaths) -> OcrEnvReport {
@@ -298,7 +295,7 @@ async fn run_streamed(app: &AppHandle, exe: &Path, args: &[&str], cwd: &Path) ->
     Ok(())
 }
 
-async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(r: &mut R, app: &AppHandle) {
+pub(crate) async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(r: &mut R, app: &AppHandle) {
     use tokio::io::AsyncBufReadExt;
     let mut buf = tokio::io::BufReader::new(r);
     let mut line = String::new();

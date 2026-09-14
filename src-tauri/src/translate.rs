@@ -23,6 +23,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
+use crate::parse::truncate;
 use crate::{BindDoc, PageInfo};
 
 /// invoke 传入的 LLM 配置（前端 settings store；dev 期由项目根 auth.cfg 临时填充）
@@ -257,16 +258,21 @@ fn extract_json(raw: &str) -> Option<String> {
     Some(s[start..=end].to_string())
 }
 
+/// index 字段容错：字符串原样 / 数字转字符串；其他类型 None
+fn index_str(v: Option<&Value>) -> Option<String> {
+    match v? {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 fn parse_reply(raw: &str) -> Option<Reply> {
     let v: Value = serde_json::from_str(&extract_json(raw)?).ok()?;
     let mut r = Reply::default();
     if let Some(arr) = v.get("result").and_then(|x| x.as_array()) {
         for item in arr {
-            let idx = match item.get("index") {
-                Some(Value::String(s)) => s.clone(),
-                Some(Value::Number(n)) => n.to_string(),
-                _ => return None,
-            };
+            let idx = index_str(item.get("index"))?;
             let a = match item.get("A") {
                 Some(Value::String(s)) => Some(s.clone()),
                 Some(Value::Null) | None => None,
@@ -281,11 +287,7 @@ fn parse_reply(raw: &str) -> Option<Reply> {
         .filter(|s| *s == "before" || *s == "after")
         .map(String::from);
     r.external = v.get("external").and_then(|x| x.as_str()).map(String::from);
-    r.external_index = v.get("external_index").and_then(|x| match x {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    });
+    r.external_index = index_str(v.get("external_index"));
     Some(r)
 }
 
@@ -348,7 +350,7 @@ async fn chat(client: &reqwest::Client, cfg: &LlmConfig, messages: &[Value]) -> 
         "{}/chat/completions",
         cfg.base_url.trim().trim_end_matches('/')
     );
-    let body = json!({
+    let mut body = json!({
         "model": cfg.model,
         "messages": messages,
         "temperature": 0,
@@ -360,8 +362,8 @@ async fn chat(client: &reqwest::Client, cfg: &LlmConfig, messages: &[Value]) -> 
     // - SiliconFlow（Qwen3.5 默认开思考，content 空、reasoning_content 占 token）：
     //   enable_thinking=false 与 thinking.type=disabled 均生效
     // - 其他端点不加（OpenAI 官方等对未知参数直接 400，兼容优先）
-    let mut body = body;
-    if url.contains("opencode.ai") {
+    let is_zen = url.contains("opencode.ai");
+    if is_zen {
         body["reasoning"] = json!({"enabled": false});
         body["reasoning_effort"] = json!("none");
     } else if url.contains("siliconflow") {
@@ -369,7 +371,7 @@ async fn chat(client: &reqwest::Client, cfg: &LlmConfig, messages: &[Value]) -> 
         body["thinking"] = json!({"type": "disabled"});
     }
     let mut req = client.post(&url).bearer_auth(&cfg.api_key);
-    if url.contains("opencode.ai") {
+    if is_zen {
         req = req.header("x-opencode-session", OPENCODE_SESSION);
     }
     let resp = req
@@ -450,6 +452,48 @@ pub fn apply_done(doc: &mut BindDoc, done: PageDone, touched: &mut Vec<u32>) {
     }
 }
 
+/// 组上下文应答（协议格式 C）：smart 且请求方向有邻页才提供候选，否则回 `type: null`；
+/// 返回 (发给模型的 C 消息, 待回写 external 的邻页上下文)。日志与轮次文案保持原样。
+fn context_reply(
+    page_index: u32,
+    round: usize,
+    ms: u128,
+    dir: &str,
+    smart: bool,
+    before: Option<&(u32, Vec<ContextItem>)>,
+    after: Option<&(u32, Vec<ContextItem>)>,
+) -> (String, Option<(u32, Vec<ContextItem>)>) {
+    let snapshot = if dir == "before" { before } else { after };
+    let (neighbor, candidates) = match (smart, snapshot) {
+        (true, Some((n, c))) => (Some(*n), c.clone()),
+        _ => (None, Vec::new()),
+    };
+    let c = json!({
+        "type": if candidates.is_empty() { Value::Null } else { json!(dir) },
+        "requests": candidates
+            .iter()
+            .map(|c| json!({"index": c.index, "C": c.c}))
+            .collect::<Vec<_>>(),
+    })
+    .to_string();
+    match neighbor {
+        Some(n) if candidates.is_empty() => log(format!(
+            "p{page_index} 第{}轮 {ms}ms 请求 {dir} 上下文 → p{n} 无候选，回 null",
+            round + 1
+        )),
+        Some(n) => log(format!(
+            "p{page_index} 第{}轮 {ms}ms 请求 {dir} 上下文 → p{n} 候选 {} 块",
+            round + 1,
+            candidates.len()
+        )),
+        None => log(format!(
+            "p{page_index} 第{}轮 {ms}ms 请求 {dir} 上下文 → 无候选，回 null",
+            round + 1
+        )),
+    }
+    (c, neighbor.map(|n| (n, candidates)))
+}
+
 /// 翻译单页（无文档依赖）：成功返回结果（含 external 绑定）；失败返回 Err。
 /// requests 为空（空文本/已 external 绑定）→ 直接返回空结果（调用方标记 translated）
 pub async fn translate_task(
@@ -512,42 +556,17 @@ pub async fn translate_task(
                 continue;
             }
             context_answered = true;
-            let (neighbor, candidates) = if cfg.smart_context {
-                let snapshot = if dir == "before" { before.clone() } else { after.clone() };
-                match snapshot {
-                    Some((n, c)) => (Some(n), c),
-                    None => (None, Vec::new()),
-                }
-            } else {
-                (None, Vec::new())
-            };
-            let c = json!({
-                "type": if candidates.is_empty() { Value::Null } else { json!(dir) },
-                "requests": candidates
-                    .iter()
-                    .map(|c| json!({"index": c.index, "C": c.c}))
-                    .collect::<Vec<_>>(),
-            })
-            .to_string();
-            if let Some(n) = neighbor {
-                if candidates.is_empty() {
-                    log(format!(
-                        "p{page_index} 第{}轮 {ms}ms 请求 {dir} 上下文 → p{n} 无候选，回 null",
-                        _round + 1
-                    ));
-                } else {
-                    log(format!(
-                        "p{page_index} 第{}轮 {ms}ms 请求 {dir} 上下文 → p{n} 候选 {} 块",
-                        _round + 1,
-                        candidates.len()
-                    ));
-                }
-                context = Some((n, candidates));
-            } else {
-                log(format!(
-                    "p{page_index} 第{}轮 {ms}ms 请求 {dir} 上下文 → 无候选，回 null",
-                    _round + 1
-                ));
+            let (c, ctx) = context_reply(
+                page_index,
+                _round,
+                ms,
+                &dir,
+                cfg.smart_context,
+                before.as_ref(),
+                after.as_ref(),
+            );
+            if ctx.is_some() {
+                context = ctx;
             }
             messages.push(json!({"role": "assistant", "content": raw}));
             messages.push(json!({"role": "user", "content": c}));
@@ -601,13 +620,6 @@ pub async fn translate_task(
         });
     }
     Err(format!("页 {page_index} 翻译失败：LLM 输出重试耗尽"))
-}
-
-fn truncate(s: &str, cap: usize) -> String {
-    match s.char_indices().nth(cap) {
-        Some((i, _)) => s[..i].to_string(),
-        None => s.to_string(),
-    }
 }
 
 #[cfg(test)]

@@ -7,15 +7,17 @@ import { useReaderStore } from "../../stores/reader";
 const lib = useLibraryStore();
 const reader = useReaderStore();
 
-const total = computed(() => reader.pageCount);
-const finishedSet = computed(() => {
-  const s = new Set<number>();
+const dots = computed(() => {
+  const finished = new Set<number>();
   for (const p of lib.currentPdf?.pages ?? []) {
-    if (p.finished) s.add(p.index);
+    if (p.finished) finished.add(p.index);
   }
-  return s;
+  return Array.from({ length: reader.pageCount }, (_, i) => ({
+    page: i + 1,
+    done: finished.has(i + 1),
+  }));
 });
-const doneCount = computed(() => finishedSet.value.size);
+const doneCount = computed(() => dots.value.filter((d) => d.done).length);
 </script>
 
 <template>
@@ -23,15 +25,15 @@ const doneCount = computed(() => finishedSet.value.size);
     <span class="strip-label">页面</span>
     <div class="strip-dots">
       <button
-        v-for="n in total"
-        :key="n"
+        v-for="dot in dots"
+        :key="dot.page"
         class="dot"
-        :class="[finishedSet.has(n) ? 'done' : '', { current: reader.currentPage === n }]"
-        :title="`第 ${n} 页 · ${finishedSet.has(n) ? '完成' : '待解析'}`"
-        @click="reader.gotoPage(n)"
+        :class="[dot.done ? 'done' : '', { current: reader.currentPage === dot.page }]"
+        :title="`第 ${dot.page} 页 · ${dot.done ? '完成' : '待解析'}`"
+        @click="reader.gotoPage(dot.page)"
       />
     </div>
-    <span class="strip-summary">完成 {{ doneCount }}/{{ total }}</span>
+    <span class="strip-summary">完成 {{ doneCount }}/{{ reader.pageCount }}</span>
   </footer>
 </template>
 

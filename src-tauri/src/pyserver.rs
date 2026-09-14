@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::watch;
 use ts_rs::TS;
 
+use crate::pyenv;
 use crate::pyenv::PyPaths;
 
 #[cfg(windows)]
@@ -161,28 +162,40 @@ pub async fn supervise(app: AppHandle, paths: PyPaths, svc: PyService) {
                     svc.set_status(&app, ServiceStatus::Unknown);
                     break; // 主动停止 / 应用退出：状态复位为未启动，允许再次拉起
                 }
-                crashes += 1;
-                if crashes >= MAX_CRASHES {
-                    svc.set_status(&app, ServiceStatus::Failed);
+                if handle_failure(&app, &svc, &mut crashes, &mut backoff, None).await {
                     break;
                 }
-                svc.set_status(&app, ServiceStatus::Disconnected);
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(BACKOFF_CAP);
             }
             Err(err) => {
-                crashes += 1;
-                if crashes >= MAX_CRASHES {
-                    svc.set_status(&app, ServiceStatus::Failed);
-                    let _ = app.emit("ocr://log", format!("[ezpdf] 服务启动失败: {err}"));
+                if handle_failure(&app, &svc, &mut crashes, &mut backoff, Some(&err)).await {
                     break;
                 }
-                svc.set_status(&app, ServiceStatus::Disconnected);
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(BACKOFF_CAP);
             }
         }
     }
+}
+
+/// 一次启动失败/异常退出后的统一善后：崩溃计数 → 终态或退避等待。
+/// 返回 true = 已达终态（调用方 break）。
+async fn handle_failure(
+    app: &AppHandle,
+    svc: &PyService,
+    crashes: &mut u32,
+    backoff: &mut Duration,
+    err: Option<&str>,
+) -> bool {
+    *crashes += 1;
+    if *crashes >= MAX_CRASHES {
+        svc.set_status(app, ServiceStatus::Failed);
+        if let Some(e) = err {
+            let _ = app.emit("ocr://log", format!("[ezpdf] 服务启动失败: {e}"));
+        }
+        return true;
+    }
+    svc.set_status(app, ServiceStatus::Disconnected);
+    tokio::time::sleep(*backoff).await;
+    *backoff = (*backoff * 2).min(BACKOFF_CAP);
+    false
 }
 
 /// 单次启动：spawn → 逐行读 stdout 等 READY（超时 60s）→ /health 确认 → 持 stdin
@@ -210,23 +223,10 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
     }
 
     // stderr → ocr://log（uvicorn / 引擎日志）
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(mut stderr) = child.stderr.take() {
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
-            let mut buf = BufReader::new(stderr);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match buf.read_line(&mut line).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        let t = line.trim_end();
-                        if !t.is_empty() {
-                            let _ = app2.emit("ocr://log", t.to_string());
-                        }
-                    }
-                }
-            }
+            pyenv::forward_lines(&mut stderr, &app2).await;
         });
     }
 

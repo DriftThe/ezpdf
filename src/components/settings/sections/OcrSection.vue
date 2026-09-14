@@ -4,9 +4,9 @@ import { useParseStore } from "../../../stores/parse";
 
 const parse = useParseStore();
 
-/** 状态位 → 文案 / 状态灯修饰类（"" = 灰色未就绪态）；busy 阶段4 接 OCR 任务后启用 */
+/** 状态位 → 文案 / 状态灯修饰类（"" = 灰色未就绪态） */
 type EnvState = "notready" | "cpu" | "gpu";
-type SvcState = "stopped" | "starting" | "idle" | "busy" | "failed";
+type SvcState = "stopped" | "starting" | "idle" | "failed";
 
 const pythonReady = computed(() => !!parse.envReport?.python);
 const cudaReady = computed(() => !!parse.envReport?.gpu);
@@ -31,9 +31,7 @@ const svcState = computed<SvcState>(() => {
       return "stopped";
   }
 });
-const serviceBusy = computed(
-  () => svcState.value === "starting" || svcState.value === "idle" || svcState.value === "busy",
-);
+const serviceBusy = computed(() => svcState.value === "starting" || svcState.value === "idle");
 
 /** 灯 tooltip 明细（悬停可查具体版本/驱动/缺失项） */
 const pythonTip = computed(() => parse.envReport?.pythonPath ?? "");
@@ -60,10 +58,38 @@ const SVC_LABEL: Record<SvcState, string> = {
   stopped: "未启动",
   starting: "启动中",
   idle: "空闲中",
-  busy: "繁忙中",
   failed: "启动失败",
 };
-const SVC_CLASS: Record<SvcState, string> = { stopped: "", starting: "starting", idle: "ok", busy: "warn", failed: "err" };
+const SVC_CLASS: Record<SvcState, string> = { stopped: "", starting: "starting", idle: "ok", failed: "err" };
+
+/** 五灯（Python/CUDA/环境/模型/服务）：就绪判定在脚本里做，模板只遍历 */
+const lights = computed(() => [
+  {
+    key: "python",
+    label: `Python ${READY_LABEL[pythonReady.value ? "ready" : "notready"]}`,
+    cls: READY_CLASS[pythonReady.value ? "ready" : "notready"],
+    tip: pythonTip.value,
+  },
+  {
+    key: "cuda",
+    label: `CUDA ${READY_LABEL[cudaReady.value ? "ready" : "notready"]}`,
+    cls: READY_CLASS[cudaReady.value ? "ready" : "notready"],
+    tip: cudaTip.value,
+  },
+  { key: "env", label: `环境 ${ENV_LABEL[envState.value]}`, cls: ENV_CLASS[envState.value], tip: envTip.value },
+  {
+    key: "models",
+    label: `模型 ${READY_LABEL[modelsReady.value ? "ready" : "notready"]}`,
+    cls: READY_CLASS[modelsReady.value ? "ready" : "notready"],
+    tip: modelsTip.value,
+  },
+  {
+    key: "service",
+    label: `服务 ${SVC_LABEL[svcState.value]}`,
+    cls: SVC_CLASS[svcState.value],
+    tip: "pyserver 进程状态",
+  },
+]);
 </script>
 
 <template>
@@ -79,20 +105,8 @@ const SVC_CLASS: Record<SvcState, string> = { stopped: "", starting: "starting",
     <div class="set-field">
       <span>服务检查</span>
       <div class="set-field-row">
-        <span class="svc" :class="READY_CLASS[pythonReady ? 'ready' : 'notready']" :title="pythonTip">
-          <span class="svc-dot" />Python {{ READY_LABEL[pythonReady ? "ready" : "notready"] }}
-        </span>
-        <span class="svc" :class="READY_CLASS[cudaReady ? 'ready' : 'notready']" :title="cudaTip">
-          <span class="svc-dot" />CUDA {{ READY_LABEL[cudaReady ? "ready" : "notready"] }}
-        </span>
-        <span class="svc" :class="ENV_CLASS[envState]" :title="envTip">
-          <span class="svc-dot" />环境 {{ ENV_LABEL[envState] }}
-        </span>
-        <span class="svc" :class="READY_CLASS[modelsReady ? 'ready' : 'notready']" :title="modelsTip">
-          <span class="svc-dot" />模型 {{ READY_LABEL[modelsReady ? "ready" : "notready"] }}
-        </span>
-        <span class="svc" :class="SVC_CLASS[svcState]" title="pyserver 进程状态">
-          <span class="svc-dot" />服务 {{ SVC_LABEL[svcState] }}
+        <span v-for="light in lights" :key="light.key" class="svc" :class="light.cls" :title="light.tip">
+          <span class="svc-dot" />{{ light.label }}
         </span>
       </div>
     </div>
@@ -115,9 +129,7 @@ const SVC_CLASS: Record<SvcState, string> = { stopped: "", starting: "starting",
         >
           {{ parse.modelsBusy ? "下载中…" : "下载模型（约1.9GB）" }}
         </button>
-        <button v-if="!serviceBusy" class="set-button" :disabled="parse.serviceStatus === 'starting'" @click="parse.startService()">
-          启动服务
-        </button>
+        <button v-if="!serviceBusy" class="set-button" @click="parse.startService()">启动服务</button>
         <button v-if="serviceBusy" class="set-button" @click="parse.stopService()">停止服务</button>
       </div>
     </div>

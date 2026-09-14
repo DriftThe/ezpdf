@@ -5,9 +5,9 @@ import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 /**
  * 单页 pdfjs canvas，自虚拟化：IntersectionObserver 监听（root=null 视口，上下各扩
  * 一屏缓冲），进入才渲染、滚出即释放位图（width=0）——大 PDF 内存恒定。
- * CSS 尺寸由父级 page-card 决定（canvas width/height 100%），backing store 按
- * zoom×DPR 渲染保证清晰度；zoom 变化先由旧位图 CSS 拉伸顶住，防抖后重渲。
- * 注：backing store 按本页真实 viewport，卡片按第 1 页尺寸——各页同尺寸假设（v1）。
+ * CSS 尺寸由父级 page-card 决定（canvas width/height 100%，逐页真实几何），
+ * backing store 按本页 viewport×zoom×DPR 渲染保证清晰度；zoom 变化先由旧位图
+ * CSS 拉伸顶住，防抖后重渲。
  */
 const props = defineProps<{
   doc: PDFDocumentProxy | null;

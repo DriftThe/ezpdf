@@ -28,11 +28,6 @@ export const TRANSLATED_TYPES: ReadonlySet<string> = new Set([
 /** 覆盖渲染类型集合：送翻类型 + formula（公式由 richText KaTeX 渲染） */
 export const OVERLAY_TYPES: ReadonlySet<string> = new Set([...TRANSLATED_TYPES, "formula"]);
 
-/** 该类型是否送翻（LLM 阶段用） */
-export function isTranslatedType(kind: string): boolean {
-  return TRANSLATED_TYPES.has(kind);
-}
-
 /** 该类型是否在译文栏渲染白底覆盖框 */
 export function isOverlayType(kind: string): boolean {
   return OVERLAY_TYPES.has(kind);

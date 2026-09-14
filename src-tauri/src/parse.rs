@@ -62,21 +62,12 @@ struct OcrBatchResponse {
 
 #[derive(Deserialize)]
 struct OcrPageResponse {
-    #[serde(default)]
-    #[allow(dead_code)]
-    width: u32,
-    #[serde(default)]
-    #[allow(dead_code)]
-    height: u32,
     blocks: Vec<OcrBlockResponse>,
 }
 
 #[derive(Deserialize)]
 struct OcrBlockResponse {
     label: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    score: f64,
     bbox_px: [f64; 4],
     markdown: String,
 }
@@ -155,11 +146,27 @@ fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
         .as_ref()
         .ok_or_else(|| format!("PDF 未绑定结构 JSON: {id}"))?;
     let json_path = resolve_bind_path(root, bind)?;
-    let text = fs::read_to_string(&json_path)
-        .map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
-    let doc: BindDoc = serde_json::from_str(&text)
-        .map_err(|e| format!("Failed when parsing bound JSON: {e}"))?;
+    let doc = crate::read_bind_doc(&json_path)?;
     Ok((json_path, doc))
+}
+
+/// 文档中指定 index 的页快照（updatedPages 回传用）
+fn pages_by_index(doc: &BindDoc, indices: &[u32]) -> Vec<PageInfo> {
+    indices
+        .iter()
+        .filter_map(|i| doc.pages.iter().find(|p| p.index == *i).cloned())
+        .collect()
+}
+
+/// 批量结果摘要（parse_batch / translate_batch 共用）
+fn outcome(id: &str, doc: &BindDoc, updated: Vec<PageInfo>) -> ParseOutcome {
+    ParseOutcome {
+        pdf_id: id.to_string(),
+        book_status: doc.status,
+        finished_pages: doc.pages.iter().filter(|p| p.finished).count() as u32,
+        total_pages: doc.pages.len() as u32,
+        updated_pages: updated,
+    }
 }
 
 /// 解析一批页（OCR）：读索引定位绑定 JSON → POST /ocr/pages（token 头）→
@@ -220,7 +227,7 @@ pub async fn parse_batch(
     }
 
     // 锁内落盘：重读（合并翻译批次同时写入的译文）→ patch → 原子写
-    let (updated, status, finished_pages, total_pages) = {
+    let result = {
         let lock = file_lock(root, id);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let (json_path, mut doc) = load_bind(root, id)?;
@@ -237,23 +244,13 @@ pub async fn parse_batch(
             pages.iter().map(|p| p.index).collect::<Vec<_>>()
         ));
 
-        let updated: Vec<PageInfo> = touched
-            .iter()
-            .filter_map(|i| doc.pages.iter().find(|p| p.index == *i).cloned())
-            .collect();
+        let updated = pages_by_index(&doc, &touched);
         finalize_status(&mut doc);
         write_bind_atomic(&json_path, &doc)?;
-        let finished_pages = doc.pages.iter().filter(|p| p.finished).count() as u32;
-        (updated, doc.status, finished_pages, doc.pages.len() as u32)
+        outcome(id, &doc, updated)
     };
 
-    Ok(ParseOutcome {
-        pdf_id: id.to_string(),
-        book_status: status,
-        finished_pages,
-        total_pages,
-        updated_pages: updated,
-    })
+    Ok(result)
 }
 
 /// 翻译相位分组（隔页并发）：位置 0,2,4… 一相位、1,3,5… 一相位
@@ -346,18 +343,7 @@ pub async fn translate_batch(
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         load_bind(root, id)?
     };
-    let updated: Vec<PageInfo> = touched
-        .iter()
-        .filter_map(|i| doc.pages.iter().find(|p| p.index == *i).cloned())
-        .collect();
-    let finished_pages = doc.pages.iter().filter(|p| p.finished).count() as u32;
-    Ok(ParseOutcome {
-        pdf_id: id.to_string(),
-        book_status: doc.status,
-        finished_pages,
-        total_pages: doc.pages.len() as u32,
-        updated_pages: updated,
-    })
+    Ok(outcome(id, &doc, pages_by_index(&doc, &touched)))
 }
 
 /// 打开书补骨架：pages 为空（lopdf 解析失败的书）时按实测页数重建 1..=N 骨架；
@@ -372,7 +358,8 @@ pub async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus
     Ok(doc.status)
 }
 
-fn build_skeleton(total: u32) -> Vec<PageInfo> {
+/// 1..=N 空页骨架（导入预填充 / 打开书补骨架共用）
+pub(crate) fn build_skeleton(total: u32) -> Vec<PageInfo> {
     (1..=total)
         .map(|i| PageInfo {
             index: i,
@@ -383,7 +370,8 @@ fn build_skeleton(total: u32) -> Vec<PageInfo> {
         .collect()
 }
 
-fn truncate(s: &str, cap: usize) -> &str {
+/// 单行截断到 ≤cap 个字符（日志/错误摘要；按字符边界切，不 panic）
+pub(crate) fn truncate(s: &str, cap: usize) -> &str {
     match s.char_indices().nth(cap) {
         Some((i, _)) => &s[..i],
         None => s,
@@ -397,7 +385,6 @@ mod tests {
     fn ocr_block(label: &str, bbox_px: [f64; 4], markdown: &str) -> OcrBlockResponse {
         OcrBlockResponse {
             label: label.into(),
-            score: 0.9,
             bbox_px,
             markdown: markdown.into(),
         }
