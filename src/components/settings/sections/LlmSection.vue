@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { useParseStore } from "../../../stores/parse";
 import { useSettingsStore } from "../../../stores/settings";
 
 const settings = useSettingsStore();
+const parse = useParseStore();
 </script>
 
 <template>
@@ -23,5 +25,13 @@ const settings = useSettingsStore();
       <span>目标语言</span>
       <input v-model="settings.llm.targetLang" placeholder="zh（简体中文）" />
     </label>
+    <label class="set-check">
+      <input v-model="settings.llm.smartContext" type="checkbox" />
+      <span>智能上下文翻译（跨页截断文本联合翻译）</span>
+    </label>
+    <div class="set-field">
+      <span>日志</span>
+      <pre class="log-box">{{ parse.llmLogs.join("\n") || "暂无日志" }}</pre>
+    </div>
   </div>
 </template>

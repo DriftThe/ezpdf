@@ -28,11 +28,13 @@ testfiles
 PLAN.md
 PLAN-pyserver.md
 PLAN-OCR.md
+PLAN-LLM.md
 /pyserver/.venv/
 /pyserver/models/
 /pyserver/backup/
 /pyserver/app/__pycache__
 /pyserver/app/services/__pycache__
 /pyserver/app/routers/__pycache__
+auth.cfg
 # pdfjs 运行时资源（copy-pdfjs-assets.mjs 产物）
 public/pdfjs/

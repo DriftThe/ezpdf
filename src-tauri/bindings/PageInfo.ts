@@ -2,6 +2,7 @@
 import type { Block } from "./Block";
 
 /**
- * 页：index 从 1 起（与绑定 JSON 一致）；finished 标记该页是否完成处理
+ * 页：index 从 1 起（与绑定 JSON 一致）；finished 标记该页是否完成 OCR，
+ * translated 标记该页是否完成 LLM 翻译（旧 JSON 无此字段默认 false → 自动补翻）
  */
-export type PageInfo = { index: number, finished: boolean, blocks: Array<Block>, };
+export type PageInfo = { index: number, finished: boolean, translated: boolean, blocks: Array<Block>, };

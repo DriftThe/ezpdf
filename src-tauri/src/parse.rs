@@ -1,17 +1,35 @@
 //! OCR 批量解析（阶段4）：前端离屏渲染页图 → 批量调 pyserver /ocr/pages →
-//! px→pt 映射 → 整批一次原子写回绑定 JSON。
+//! px→pt 映射 → 整批一次原子写回绑定 JSON。翻译走独立的 translate_pdf（前端在
+//! OCR 批次返回后立即排队并发，见 PLAN-LLM.md §4）。
 //!
-//! 批次语义（用户拍板）：parse_append 每批 ≤4 页、同一本书；本模块每批恰好
+//! 批次语义（用户拍板）：parse_pdf 每批 ≤4 页、同一本书；本模块每批恰好
 //! 一次读 JSON → 一次批量推理 → 一次 tmp+rename 原子写——崩溃最多丢一批
 //! （≤4 页），JSON 恒为完整一致快照，永不半写。
+//! OCR 与翻译可能并发落盘：锁只包住"读盘 → 改 → 原子写"小段（网络/模型调用在锁外）。
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::translate::{self, LlmConfig};
 use crate::{read_index, resolve_bind_path, BindDoc, Block, PageInfo, PDFStatus};
+
+/// 书级文件锁（键 = root/id）：OCR 批次与翻译批次并发落盘时序列化读改写
+static FILE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn file_lock(root: &str, id: &str) -> Arc<Mutex<()>> {
+    let map = FILE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = format!("{root}/{id}");
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
 /// parse_pdf 批次输入页（前端离屏渲染产物；index 1-based，与绑定 JSON 对齐）
 #[derive(Deserialize, TS)]
@@ -88,18 +106,19 @@ fn map_blocks(blocks: &[OcrBlockResponse], scale: f64) -> Vec<Block> {
         .collect()
 }
 
-/// 把一批 (index, blocks) patch 进 BindDoc：整批 finished=true；
-/// 索引不在骨架内的页静默跳过；返回实际更新页的克隆（供前端增量渲染）
-fn patch_pages(doc: &mut BindDoc, updates: Vec<(u32, Vec<Block>)>) -> Vec<PageInfo> {
-    let mut updated = Vec::new();
+/// 把一批 (index, blocks) patch 进 BindDoc：整批 finished=true、translated=false
+/// （重新 OCR 的页需重翻）；索引不在骨架内的页静默跳过；返回实际更新页的 index
+fn patch_pages(doc: &mut BindDoc, updates: Vec<(u32, Vec<Block>)>) -> Vec<u32> {
+    let mut patched = Vec::new();
     for (index, blocks) in updates {
         if let Some(page) = doc.pages.iter_mut().find(|p| p.index == index) {
             page.blocks = blocks;
             page.finished = true;
-            updated.push(page.clone());
+            page.translated = false;
+            patched.push(index);
         }
     }
-    updated
+    patched
 }
 
 /// 书级状态迁移（Rust 单写者职责）：
@@ -143,8 +162,9 @@ fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
     Ok((json_path, doc))
 }
 
-/// 解析一批页：读索引定位绑定 JSON → 读 BindDoc → POST /ocr/pages（token 头）→
-/// 块映射 + 页 patch → 状态迁移 → 整批一次原子写 → 进度摘要
+/// 解析一批页（OCR）：读索引定位绑定 JSON → POST /ocr/pages（token 头）→
+/// 块映射 + 页 patch → 状态迁移 → 整批一次原子写。翻译由前端随后调 translate_pdf
+/// 并发执行（用户拍板 2026-09-14：pipeline 不再等翻译，翻页隔页并发见 translate_batch）
 pub async fn parse_batch(
     root: &str,
     id: &str,
@@ -159,7 +179,12 @@ pub async fn parse_batch(
         return Err(format!("单批页数超上限: {} > 32", pages.len()));
     }
 
-    let (json_path, mut doc) = load_bind(root, id)?;
+    // 快速失败：书/绑定 JSON 不存在就没必要跑模型
+    {
+        let lock = file_lock(root, id);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = load_bind(root, id)?;
+    }
 
     // 批量推理：reqwest 默认无总超时——引擎懒加载时首个请求以分钟计
     let client = reqwest::Client::new();
@@ -194,15 +219,137 @@ pub async fn parse_batch(
         ));
     }
 
-    let updates: Vec<(u32, Vec<Block>)> = pages
-        .iter()
-        .zip(&ocr.pages)
-        .map(|(p, r)| (p.index, map_blocks(&r.blocks, p.scale)))
-        .collect();
-    let updated = patch_pages(&mut doc, updates);
-    finalize_status(&mut doc);
-    write_bind_atomic(&json_path, &doc)?;
+    // 锁内落盘：重读（合并翻译批次同时写入的译文）→ patch → 原子写
+    let (updated, status, finished_pages, total_pages) = {
+        let lock = file_lock(root, id);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let (json_path, mut doc) = load_bind(root, id)?;
 
+        let updates: Vec<(u32, Vec<Block>)> = pages
+            .iter()
+            .zip(&ocr.pages)
+            .map(|(p, r)| (p.index, map_blocks(&r.blocks, p.scale)))
+            .collect();
+        let total_blocks: usize = updates.iter().map(|(_, b)| b.len()).sum();
+        let touched = patch_pages(&mut doc, updates);
+        translate::log(format!(
+            "OCR 完成 p{:?}：{total_blocks} 块",
+            pages.iter().map(|p| p.index).collect::<Vec<_>>()
+        ));
+
+        let updated: Vec<PageInfo> = touched
+            .iter()
+            .filter_map(|i| doc.pages.iter().find(|p| p.index == *i).cloned())
+            .collect();
+        finalize_status(&mut doc);
+        write_bind_atomic(&json_path, &doc)?;
+        let finished_pages = doc.pages.iter().filter(|p| p.finished).count() as u32;
+        (updated, doc.status, finished_pages, doc.pages.len() as u32)
+    };
+
+    Ok(ParseOutcome {
+        pdf_id: id.to_string(),
+        book_status: status,
+        finished_pages,
+        total_pages,
+        updated_pages: updated,
+    })
+}
+
+/// 翻译相位分组（隔页并发）：位置 0,2,4… 一相位、1,3,5… 一相位
+fn phase_pages(indices: &[u32], phase: usize) -> Vec<u32> {
+    indices
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 2 == phase)
+        .map(|(_, v)| *v)
+        .collect()
+}
+
+/// 只翻译（不 OCR）指定页：供翻译失败重试（finished && !translated）。
+/// 隔页并发（用户拍板 2026-09-14）：位置 0,2,4… 一个相位、1,3,5… 一个相位——
+/// 相位内页互不相邻，上下文候选不会互踩；相位间串行，后相位可见前相位落盘的
+/// external 绑定。页级 catch，全部无进展则不写盘（前端按无进展记 strike）。
+pub async fn translate_batch(
+    root: &str,
+    id: &str,
+    indices: Vec<u32>,
+    llm: &LlmConfig,
+) -> Result<ParseOutcome, String> {
+    if !llm.usable() {
+        return Err("LLM 未配置（baseUrl/apiKey/model 为空）".into());
+    }
+    let prompt = translate::load_system_prompt(llm)?;
+    let client = translate::llm_client()?;
+    translate::log(format!(
+        "重试批次 p{indices:?}（model={} smart={}）",
+        llm.model, llm.smart_context
+    ));
+
+    let mut touched: Vec<u32> = Vec::new();
+    for phase in 0..2 {
+        let phase_pages = phase_pages(&indices, phase);
+        if phase_pages.is_empty() {
+            continue;
+        }
+
+        // 快照（锁内读盘；相位 2 可见相位 1 落盘的 external 绑定）
+        let tasks: Vec<translate::PageTask> = {
+            let lock = file_lock(root, id);
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            let (_, doc) = load_bind(root, id)?;
+            phase_pages
+                .iter()
+                .filter_map(|&i| translate::build_task(&doc, i))
+                .collect()
+        };
+        if tasks.is_empty() {
+            continue;
+        }
+
+        // 并发翻译（锁外；相位内页互不相邻）
+        let mut handles = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let (cfg, prompt, client) = (llm.clone(), prompt.clone(), client.clone());
+            handles.push(tauri::async_runtime::spawn(async move {
+                translate::translate_task(&cfg, &prompt, &client, task).await
+            }));
+        }
+        let mut done_list = Vec::new();
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(done)) => done_list.push(done),
+                Ok(Err(e)) => translate::log(e),
+                Err(e) => translate::log(format!("翻译任务异常退出: {e}")),
+            }
+        }
+        if done_list.is_empty() {
+            continue;
+        }
+
+        // 锁内落盘：重读 → 应用本相位结果（含 external 邻页）→ 原子写
+        let lock = file_lock(root, id);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let (json_path, mut doc) = load_bind(root, id)?;
+        for done in done_list {
+            translate::apply_done(&mut doc, done, &mut touched);
+        }
+        if !touched.is_empty() {
+            write_bind_atomic(&json_path, &doc)?;
+        }
+    }
+
+    touched.sort_unstable();
+    touched.dedup();
+    let (_, doc) = {
+        let lock = file_lock(root, id);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        load_bind(root, id)?
+    };
+    let updated: Vec<PageInfo> = touched
+        .iter()
+        .filter_map(|i| doc.pages.iter().find(|p| p.index == *i).cloned())
+        .collect();
     let finished_pages = doc.pages.iter().filter(|p| p.finished).count() as u32;
     Ok(ParseOutcome {
         pdf_id: id.to_string(),
@@ -230,6 +377,7 @@ fn build_skeleton(total: u32) -> Vec<PageInfo> {
         .map(|i| PageInfo {
             index: i,
             finished: false,
+            translated: false,
             blocks: Vec::new(),
         })
         .collect()
@@ -259,6 +407,7 @@ mod tests {
         PageInfo {
             index,
             finished,
+            translated: false,
             blocks: Vec::new(),
         }
     }
@@ -303,14 +452,14 @@ mod tests {
             loc: [0.0; 4],
             translation: None,
         };
-        let updated = patch_pages(
+        let patched = patch_pages(
             &mut doc,
             vec![(2, vec![blk("b")]), (99, vec![])],
         );
-        assert_eq!(updated.len(), 1);
-        assert_eq!(updated[0].index, 2);
+        assert_eq!(patched, vec![2]);
         assert!(!doc.pages[0].finished);
         assert!(doc.pages[1].finished);
+        assert!(!doc.pages[1].translated); // 新 OCR 的页需重翻
         assert_eq!(doc.pages[1].blocks.len(), 1);
     }
 
@@ -344,5 +493,15 @@ mod tests {
         let pages = build_skeleton(3);
         assert_eq!(pages.iter().map(|p| p.index).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert!(pages.iter().all(|p| !p.finished && p.blocks.is_empty()));
+    }
+
+    #[test]
+    fn phase_pages_stride_two() {
+        assert_eq!(phase_pages(&[1, 2, 3, 4], 0), vec![1, 3]);
+        assert_eq!(phase_pages(&[1, 2, 3, 4], 1), vec![2, 4]);
+        assert_eq!(phase_pages(&[5, 6, 7, 8, 9], 0), vec![5, 7, 9]);
+        assert_eq!(phase_pages(&[5, 6, 7, 8, 9], 1), vec![6, 8]);
+        assert!(phase_pages(&[], 0).is_empty());
+        assert!(phase_pages(&[7], 1).is_empty());
     }
 }

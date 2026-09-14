@@ -123,7 +123,7 @@ const SVC_CLASS: Record<SvcState, string> = { stopped: "", starting: "starting",
     </div>
     <div class="set-field">
       <span>日志</span>
-      <pre class="ocr-log">{{ parse.envLogs.join("\n") || "暂无日志" }}</pre>
+      <pre class="log-box">{{ parse.envLogs.join("\n") || "暂无日志" }}</pre>
     </div>
   </div>
 </template>

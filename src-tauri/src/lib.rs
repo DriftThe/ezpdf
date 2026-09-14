@@ -11,6 +11,7 @@ use ts_rs::TS;
 pub mod parse;
 pub mod pyenv;
 pub mod pyserver;
+pub mod translate;
 
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
@@ -35,7 +36,7 @@ pub struct PDFStruct {
 
 /// 解析状态机（书级）：Pending 未开始处理 / Processing 处理中 / Finished 完成。
 /// OCR 管线接入后维护后两态，当前导入即 Pending。
-#[derive(Deserialize, Serialize, TS)]
+#[derive(Clone, Copy, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "PascalCase")]
 pub enum PDFStatus {
@@ -61,13 +62,16 @@ pub struct Block {
     pub translation: Option<String>,
 }
 
-/// 页：index 从 1 起（与绑定 JSON 一致）；finished 标记该页是否完成处理
+/// 页：index 从 1 起（与绑定 JSON 一致）；finished 标记该页是否完成 OCR，
+/// translated 标记该页是否完成 LLM 翻译（旧 JSON 无此字段默认 false → 自动补翻）
 #[derive(Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct PageInfo {
     pub index: u32,
     pub finished: bool,
+    #[serde(default)]
+    pub translated: bool,
     pub blocks: Vec<Block>,
 }
 
@@ -304,6 +308,7 @@ fn import_one(
             .map(|i| PageInfo {
                 index: i,
                 finished: false,
+                translated: false,
                 blocks: Vec::new(),
             })
             .collect(),
@@ -422,9 +427,10 @@ async fn ocr_stop(svc: tauri::State<'_, pyserver::PyService>) -> Result<(), Stri
     Ok(())
 }
 
-// ---- OCR 解析回路（阶段4）：批量 OCR + 骨架补齐；映射/写回细节在 parse.rs ----
+// ---- OCR 解析回路（阶段4）：批量 OCR + 骨架补齐 + 同批 LLM 翻译；细节在 parse.rs / translate.rs ----
 
-/// parse_append 的后端落点：一批（≤4 页、同书）页图 → 整批推理 → 一次原子写回
+/// parse_append 的后端落点：一批（≤4 页、同书）页图 → 整批 OCR → 一次原子写回；
+/// 翻译由前端随后调 translate_pdf 并发执行（用户拍板：pipeline 不再等翻译）
 #[tauri::command]
 async fn parse_pdf(
     root: &str,
@@ -436,6 +442,17 @@ async fn parse_pdf(
         .ocr_target()
         .ok_or_else(|| "OCR 服务未连接".to_string())?;
     parse::parse_batch(root, id, pages, &base, &token).await
+}
+
+/// 翻译失败页重试（不 OCR）：finished && !translated 的页才处理
+#[tauri::command]
+async fn translate_pdf(
+    root: &str,
+    id: &str,
+    pages: Vec<u32>,
+    llm: translate::LlmConfig,
+) -> Result<parse::ParseOutcome, String> {
+    parse::translate_batch(root, id, pages, &llm).await
 }
 
 /// 打开书补骨架：pdfjs 实测页数回填 pages 为空的绑定 JSON（lopdf 解析失败书）
@@ -454,6 +471,7 @@ pub fn run() {
             println!("[ezpdf] PyPaths = {paths:?}");
             app.manage(paths);
             app.manage(pyserver::PyService::new());
+            translate::init_log(app.handle()); // 翻译日志 → llm://log（LLM 设置页底部）
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -467,6 +485,7 @@ pub fn run() {
             ocr_start,
             ocr_stop,
             parse_pdf,
+            translate_pdf,
             prefill_pages,
         ])
         .build(tauri::generate_context!())

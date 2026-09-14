@@ -216,8 +216,8 @@ textarea {
 .svc.failed {
   color: var(--err);
 }
-/* OCR 设置页：服务日志区（stderr/pip 流式输出） */
-.ocr-log {
+/* 设置页：日志区（OCR 服务 stderr/pip、LLM 翻译链路；流式输出） */
+.log-box {
   margin: 0;
   padding: 8px 10px;
   border: 1px solid var(--border);

@@ -8,6 +8,8 @@ export interface LlmSettings {
   apiKey: string; // 阶段1起改存系统凭据库（keyring）
   model: string;
   targetLang: string;
+  /** 智能上下文翻译：跨页截断文本经 agent loop 请求上下文联合翻译（默认开） */
+  smartContext: boolean;
 }
 
 export interface OcrSettings {
@@ -30,6 +32,36 @@ export interface ParseSettings {
  */
 export type SettingsSection = "llm" | "ocr" | "parse" | "common";
 
+/**
+ * auth.cfg 临时读取（用户拍板 2026-09-14）：LLM 四配置放项目根 auth.cfg（gitignored），
+ * 此处解析后填充 settings.llm。仅 dev 生效——避免 `pnpm tauri build` 把密钥烤进 bundle；
+ * 文件缺失/格式异常一律静默（fresh clone 不能因此挂）。正式方案 = settings.json + keyring。
+ */
+function parseAuthCfg(text: string): Partial<LlmSettings> {
+  const out: Partial<LlmSettings> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*(baseUrl|apiKey|model|targetLang)\s*:\s*"([^"]*)"\s*,?\s*$/.exec(line);
+    if (m) (out as Record<string, string>)[m[1]] = m[2];
+  }
+  return out;
+}
+
+async function fillLlmFromAuthCfg(llm: { value: LlmSettings }): Promise<void> {
+  if (!import.meta.env.DEV) return;
+  const files = import.meta.glob("../../auth.cfg", { query: "?raw", import: "default" }) as Record<
+    string,
+    () => Promise<string>
+  >;
+  const loader = files["../../auth.cfg"];
+  if (!loader) return;
+  try {
+    const parsed = parseAuthCfg(await loader());
+    llm.value = { ...llm.value, ...parsed };
+  } catch {
+    /* auth.cfg 缺失/不可读：保持空配置（翻译整体跳过） */
+  }
+}
+
 export const useSettingsStore = defineStore("settings", () => {
   /** 设置整页是否打开（覆盖 sidebar + reader 视窗，保留顶部工具栏；不卸载原视窗） */
   const pageOpen = ref(false);
@@ -37,11 +69,13 @@ export const useSettingsStore = defineStore("settings", () => {
   const section = ref<SettingsSection>("llm");
 
   const llm = ref<LlmSettings>({
-    baseUrl: "https://api.deepseek.com/v1",
+    baseUrl: "",
     apiKey: "",
-    model: "deepseek-chat",
-    targetLang: "zh",
+    model: "",
+    targetLang: "",
+    smartContext: true,
   });
+  void fillLlmFromAuthCfg(llm);
 
   const ocr = ref<OcrSettings>({
     autoLaunch: true,
