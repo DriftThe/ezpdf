@@ -165,12 +165,15 @@ export const useParseStore = defineStore("parse", () => {
   const standing = ref(false);
   /** 批在途时到达的 wake（翻译链清空/事件）——本批结束后接管，防止丢唤醒 */
   let wakePending = false;
+  /** 上述 pending 是否含外部事件（外部才重置连败预算） */
+  let wakePendingExternal = false;
   /** 批大小（用户拍板：一次 ≤4 页、同书，不足传剩余页） */
   const BATCH_SIZE = 4;
-  /** 首次 + 重试 2 次 = 3 连败 → 本轮跳过该书 */
+  /** 首次 + 重试 2 次 = 3 连败 → 本轮停该类批次 */
   const MAX_ATTEMPTS = 3;
-  /** 书级连败计数；wake 时清零 */
-  const strikes = new Map<string, number>();
+  /** 书级连败计数（OCR / 翻译分开：翻译持续失败只关翻译支路，OCR 照跑；反之亦然）；wake 时清零 */
+  const ocrStrikes = new Map<string, number>();
+  const translateStrikes = new Map<string, number>();
 
   function isRunnable(): boolean {
     return (
@@ -182,16 +185,24 @@ export const useParseStore = defineStore("parse", () => {
     );
   }
 
+  function clearStrikes(): void {
+    ocrStrikes.clear();
+    translateStrikes.clear();
+  }
+
   /** 踢循环：standing=false 时链条自会续跑（重复踢无副作用）；
-   *  服务中途断线杀掉的链条也靠它复活（不要求 standing=true） */
-  function wake(): void {
+   *  服务中途断线杀掉的链条也靠它复活（不要求 standing=true）。
+   *  external=false（翻译链清空的自我续跑）不清连败计数——否则 LLM 坏掉时
+   *  每批次都会白试 3 次翻译；外部事件（开书/导入/连上/恢复）才重置预算 */
+  function wake(external = true): void {
     if (!isTauri || paused.value) return;
     if (parsing.value) {
       wakePending = true; // 在途：本批结束后的 finally 接管，防止丢唤醒
+      wakePendingExternal = wakePendingExternal || external;
       return;
     }
     standing.value = false;
-    strikes.clear();
+    if (external) clearStrikes();
     queueMicrotask(() => void tick());
   }
 
@@ -211,21 +222,27 @@ export const useParseStore = defineStore("parse", () => {
       const book = await pickBook();
       if (!book) {
         standing.value = true; // 一轮扫完无事可做 → 挂起等事件
-        strikes.clear();
+        clearStrikes();
         pushLlmLog("[ui] 一轮扫完：无可处理页 → 挂起");
         notifyLlmMissingOnce();
         return;
       }
       try {
         await processBatch(book);
-        strikes.delete(book.id);
+        (book.kind === "translate" ? translateStrikes : ocrStrikes).delete(book.id);
       } catch (err) {
-        const n = (strikes.get(book.id) ?? 0) + 1;
-        strikes.set(book.id, n);
         const kind = book.kind === "translate" ? "翻译" : "OCR";
+        const map = book.kind === "translate" ? translateStrikes : ocrStrikes;
+        const n = (map.get(book.id) ?? 0) + 1;
+        map.set(book.id, n);
         pushLlmLog(`[ui] ${kind}批次失败(${n}/${MAX_ATTEMPTS}) ${book.name}: ${String(err)}`);
         if (n >= MAX_ATTEMPTS) {
-          toast(`《${book.name}》解析连续失败，本轮跳过`, "warn");
+          toast(
+            book.kind === "translate"
+              ? `《${book.name}》翻译连续失败，本轮暂停其翻译（OCR 照跑）`
+              : `《${book.name}》解析连续失败，本轮跳过`,
+            "warn",
+          );
         } else {
           console.warn(`[parse] 批次失败(${n}/${MAX_ATTEMPTS}) ${book.name}:`, err);
         }
@@ -236,7 +253,8 @@ export const useParseStore = defineStore("parse", () => {
     if (wakePending) {
       wakePending = false;
       standing.value = false;
-      strikes.clear();
+      if (wakePendingExternal) clearStrikes();
+      wakePendingExternal = false;
     }
     if (!standing.value) queueMicrotask(() => void tick());
   }
@@ -246,7 +264,7 @@ export const useParseStore = defineStore("parse", () => {
     name: string;
     state: PDF;
     focused: boolean;
-    /** ocr = 有未 OCR 页优先做；translate = OCR 已完但存在未翻译页 */
+    /** translate = 已 OCR 未翻译页的补翻（优先于新 OCR）；ocr = 未 OCR 页 */
     kind: "ocr" | "translate";
   }
 
@@ -265,9 +283,12 @@ export const useParseStore = defineStore("parse", () => {
   }
 
   /** 选书：聚焦书优先，其余按索引序。逐本 load_pdf 直读绑定 JSON 的
-   *  status/finished/translated 标志位（用户拍板：不加进度查询命令）；
-   *  OCR 未完 → 先 OCR；OCR 完但有未翻译页（且 LLM 已配置）→ 翻译重试支路；
-   *  页数未知空骨架书（待打开补骨架）/ 连败黑名单 → 跳过 */
+   *  status/finished/translated 标志位（用户拍板：不加进度查询命令）。
+   *  补翻优先（2026-09-14 修复）：finished && !translated 的页可能是上一轮
+   *  OCR 落盘后翻译未落盘（重启丢内存配对）或翻译失败后的孤儿——早先要等
+   *  整本 OCR 完才回头补翻，大书等于永不补；现在同书翻译链空闲就立刻补，
+   *  链在途时不抢（OCR 批次已排好翻译，链路自会接续）。翻译连败达上限只关
+   *  该书翻译支路，OCR 照跑（反之亦然） */
   async function pickBook(): Promise<PickTarget | null> {
     const lib = useLibraryStore();
     const index = lib.repoIndex;
@@ -278,15 +299,19 @@ export const useParseStore = defineStore("parse", () => {
       : [...index.pdfs];
     const canTranslate = llmPayload() !== null;
     for (const entry of order) {
-      if ((strikes.get(entry.id) ?? 0) >= MAX_ATTEMPTS) continue;
       const state = await bookState(entry);
       if (!state || state.pages.length === 0) continue;
       const focusedBook = entry.id === lib.currentPdfId;
-      if (state.pages.some(needsOcr)) {
-        return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "ocr" };
-      }
-      if (canTranslate && !translateChains.has(entry.id) && state.pages.some(needsTranslation)) {
+      if (
+        canTranslate &&
+        !translateChains.has(entry.id) &&
+        (translateStrikes.get(entry.id) ?? 0) < MAX_ATTEMPTS &&
+        state.pages.some(needsTranslation)
+      ) {
         return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "translate" };
+      }
+      if ((ocrStrikes.get(entry.id) ?? 0) < MAX_ATTEMPTS && state.pages.some(needsOcr)) {
+        return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "ocr" };
       }
     }
     return null;
@@ -431,10 +456,11 @@ export const useParseStore = defineStore("parse", () => {
     void next.then((noProgress) => {
       if (translateChains.get(bookId) !== next) return;
       translateChains.delete(bookId);
-      // 仍有未翻译页（失败/漏批）→ 唤醒重试支路（strike 机制防打转）；
-      // 后台书无缓存，用 noProgress（整批无进展）兜底
+      // 仍有未翻译页（失败/漏批）→ 唤醒补翻支路（translateStrikes 防打转）；
+      // 后台书无缓存，用 noProgress（整批无进展）兜底。自我续跑用 wake(false)：
+      // 不重置连败预算，避免 LLM 坏掉时每批白试
       const cached = useLibraryStore().pdfs[bookId];
-      if (noProgress || cached?.pages.some(needsTranslation)) wake();
+      if (noProgress || cached?.pages.some(needsTranslation)) wake(false);
     });
   }
 
