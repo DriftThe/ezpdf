@@ -17,9 +17,12 @@ import { useParseStore } from "../../stores/parse";
 const settings = useSettingsStore();
 const parse = useParseStore();
 
-// 启动序列：读 config.json（覆盖 auth.cfg 默认）→ 按「常规」开关自动唤醒 OCR 服务
-onMounted(() => {
-  void settings.ensureLoaded().then(() => parse.autoStartIfEnabled());
+// 启动序列（用户 2026-09-14）：读 config.json（覆盖 auth.cfg 默认）→ 默认置暂停
+// （工具栏显示「启动翻译」；仅当「自动唤醒 OCR + 自动续跑」都开才自动运行）→ 自动唤醒 OCR
+onMounted(async () => {
+  await settings.ensureLoaded();
+  if (!(settings.general.autoLaunch && settings.general.resumeOnStart)) parse.paused = true;
+  void parse.autoStartIfEnabled();
 });
 </script>
 

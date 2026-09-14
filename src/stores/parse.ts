@@ -130,9 +130,9 @@ export const useParseStore = defineStore("parse", () => {
   const stopService = (): Promise<void> => runServiceCommand("ocr_stop");
 
   /** 启动自动唤醒（常规设置 autoLaunch，用户 2026-09-14）：环境/模型全就绪才拉起，
-   *  缺件只记日志不打扰（到 OCR 服务设置页处理） */
+   *  缺件只记日志不打扰（到 OCR 服务设置页一键安装服务） */
   async function autoStartIfEnabled(): Promise<void> {
-    if (!isTauri || !useSettingsStore().ocr.autoLaunch) return;
+    if (!isTauri || !useSettingsStore().general.autoLaunch) return;
     await checkEnv();
     const r = envReport.value;
     const ready = !!r && !!r.python && r.missing.length === 0 && !!r.models?.layout && !!r.models?.vl;
