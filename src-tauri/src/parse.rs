@@ -195,7 +195,7 @@ pub async fn parse_batch(
     let body = serde_json::json!({
         "pages": pages
             .iter()
-            .map(|p| serde_json::json!({ "image_b64": p.image_b64, "scale": p.scale }))
+            .map(|p| serde_json::json!({ "image_b64": p.image_b64 }))
             .collect::<Vec<_>>()
     });
     let resp = client

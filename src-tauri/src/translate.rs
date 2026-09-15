@@ -82,6 +82,11 @@ pub struct LlmConfig {
     pub translate_types: Vec<String>,
 }
 
+/// opencode zen 端点：除 bearer 外还要带会话路由头（PLAN-LLM.md §5）
+fn is_opencode(url: &str) -> bool {
+    url.contains("opencode.ai")
+}
+
 /// 当前唯一支持的线上协议（pi-ai 的 api 字段取值）
 const SUPPORTED_API: &str = "openai-completions";
 
@@ -403,7 +408,7 @@ fn apply_thinking_off(body: &mut Value, url: &str, cfg: &LlmConfig) {
         return;
     }
     // auto：先走实测端点规则
-    if url.contains("opencode.ai") {
+    if is_opencode(&url) {
         // opencode zen（OpenRouter 系）
         body["reasoning"] = json!({"enabled": false});
         body["reasoning_effort"] = json!("none");
@@ -465,7 +470,7 @@ fn chat_request(
     body[token_field] = json!(max_tokens);
     apply_thinking_off(&mut body, &url, cfg);
     let mut req = client.post(&url).bearer_auth(&cfg.api_key);
-    if url.contains("opencode.ai") {
+    if is_opencode(&url) {
         req = req.header("x-opencode-session", OPENCODE_SESSION);
     }
     for (key, value) in &cfg.extra_headers {
@@ -614,7 +619,7 @@ pub async fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, 
     let client = llm_client()?;
     let url = format!("{}/models", base_url.trim().trim_end_matches('/'));
     let mut req = client.get(&url).bearer_auth(api_key);
-    if url.contains("opencode.ai") {
+    if is_opencode(&url) {
         req = req.header("x-opencode-session", OPENCODE_SESSION);
     }
     let resp = req

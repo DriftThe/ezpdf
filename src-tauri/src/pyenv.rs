@@ -64,8 +64,6 @@ pub struct PyPaths {
     pub venv_dir: Option<PathBuf>,
     /// 模型目录（与代码分离）：生产 = ~/.ezpdf/models（升级/重装不丢），dev = pyserver/models
     pub models: PathBuf,
-    /// true = 随包解释器（生产）；false = venv（dev，需自建）
-    pub bundled: bool,
 }
 
 impl PyPaths {
@@ -86,7 +84,6 @@ impl PyPaths {
                     venv_dir: None,
                     models,
                     root,
-                    bundled,
                 });
             }
         }
@@ -109,7 +106,6 @@ impl PyPaths {
             venv_dir,
             models,
             root,
-            bundled,
         })
     }
 }
