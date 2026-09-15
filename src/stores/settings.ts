@@ -20,6 +20,7 @@ import {
 } from "../lib/piModels";
 import { toast } from "../composables/toast";
 import { useLibraryStore } from "./library";
+import { BLOCK_TYPE_OPTIONS, DEFAULT_TRANSLATED_TYPES } from "../lib/blocks";
 import {
   currentLocale,
   defaultTargetLang,
@@ -72,6 +73,8 @@ export interface LlmInvokePayload {
   maxTokensField: string;
   modelReasoning: boolean | null;
   extraHeaders: Record<string, string>;
+  /** 送翻块类型（Rust LlmConfig.translateTypes；空数组 = 用后端内置默认） */
+  translateTypes: string[];
 }
 
 /**
@@ -89,6 +92,12 @@ export interface GeneralSettings {
   theme: ThemeMode;
   /** 界面语言（用户 2026-09-15）：简中 / 繁中 / English；首启按系统语言定初值 */
   lang: AppLocale;
+  /**
+   * 参与翻译的块类型（用户 2026-09-15 可配，见 lib/blocks.ts BLOCK_TYPE_OPTIONS）。
+   * 影响面：只决定「送翻 + 覆盖渲染」的类型集合，未勾选类型原 PDF 像素直出；
+   * 已翻译的页面不会重翻（要重来请用仓库行的「清除解析状态」）。
+   */
+  translateTypes: string[];
 }
 
 /** OCR 服务安装选项（用户 2026-09-14）：一键安装服务时是否走国内镜像源 */
@@ -254,6 +263,7 @@ export const useSettingsStore = defineStore("settings", () => {
     resumeOnStart: true,
     theme: "system",
     lang: currentLocale(),
+    translateTypes: [...DEFAULT_TRANSLATED_TYPES],
   });
 
   const ocr = ref<OcrSettings>({
@@ -302,6 +312,10 @@ export const useSettingsStore = defineStore("settings", () => {
       setLocale(general.value.lang);
       // 目标语言初值（用户 2026-09-15：跟随系统语言；仅从未设置过时填，auth.cfg/旧配置优先）
       if (!llm.value.targetLang.trim()) llm.value.targetLang = defaultTargetLang(general.value.lang);
+      // 送翻类型：过滤非法/过时标签；空集合视为未设置 → 回落内置默认（Rust 侧同样语义）
+      const picked = Array.isArray(general.value.translateTypes) ? general.value.translateTypes : [];
+      const valid = picked.filter((t) => typeof t === "string" && BLOCK_TYPE_OPTIONS.includes(t));
+      general.value.translateTypes = valid.length ? valid : [...DEFAULT_TRANSLATED_TYPES];
       // 供应商预设迁移/补全（旧配置只有 baseUrl+model）：反查目录 → 重算兼容快照
       await ensureCatalog();
       if (
@@ -381,6 +395,7 @@ export const useSettingsStore = defineStore("settings", () => {
       maxTokensField: s.preset.maxTokensField,
       modelReasoning: s.preset.reasoning,
       extraHeaders: s.preset.extraHeaders,
+      translateTypes: [...general.value.translateTypes],
     };
   }
 

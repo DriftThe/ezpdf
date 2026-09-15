@@ -10,7 +10,6 @@ import {
   isUsable,
   providerLabel,
   thinkingHint,
-  usableModels,
 } from "../../../lib/piModels";
 
 const settings = useSettingsStore();
@@ -27,6 +26,10 @@ const hint = computed(() => thinkingHint(settings.llm.preset, settings.llm.think
 const unsupported = computed(
   () => !!settings.llm.preset.api && settings.llm.preset.api !== "openai-completions",
 );
+/** 当前供应商是「协议不支持」那一类（旧配置残留）：下拉里只留一个禁用项显示它 */
+const unsupportedProvider = computed(() =>
+  settings.otherProviders.some((p) => p.id === settings.llm.provider),
+);
 
 function onProvider(e: Event): void {
   settings.applyProvider((e.target as HTMLSelectElement).value);
@@ -40,22 +43,19 @@ function onProvider(e: Event): void {
     <!--
       供应商预设（用户 2026-09-15 整合 pi-ai 目录）：选供应商 → 自动填端点 + 列出预设模型，
       并把「协议 / max tokens 字段 / 关思考参数形态」派生给 Rust 客户端（lib/piModels.ts）。
-      目录里协议不是 openai-completions 的供应商只能识别、不能调用。
+      协议不是 openai-completions 的供应商不列出（客户端只实现了这一种协议，见 docs/protocols.md）；
+      旧配置若正指向这类供应商，只把它作为禁用项显示，避免下拉框空掉。
     -->
     <div class="set-field">
       <span>{{ t("llm.provider") }}</span>
       <span class="set-select-wrap">
         <select class="set-select llm-provider" :value="settings.llm.provider" @change="onProvider">
-          <optgroup :label="t('llm.providerUsable')">
-            <option v-for="p in settings.usableProviders" :key="p.id" :value="p.id">
-              {{ t("llm.providerModels", { name: providerLabel(p.id), count: usableModels(p).length }) }}
-            </option>
-          </optgroup>
-          <optgroup v-if="settings.otherProviders.length" :label="t('llm.providerUnsupported')">
-            <option v-for="p in settings.otherProviders" :key="p.id" :value="p.id">
-              {{ t("llm.providerUnavailable", { name: providerLabel(p.id) }) }}
-            </option>
-          </optgroup>
+          <option v-for="p in settings.usableProviders" :key="p.id" :value="p.id">
+            {{ providerLabel(p.id) }}
+          </option>
+          <option v-if="unsupportedProvider" :value="settings.llm.provider" disabled>
+            {{ t("llm.providerUnavailable", { name: providerLabel(settings.llm.provider) }) }}
+          </option>
           <option :value="CUSTOM_PROVIDER">{{ t("llm.providerCustom") }}</option>
         </select>
         <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">

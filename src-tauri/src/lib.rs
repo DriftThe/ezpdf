@@ -631,6 +631,12 @@ async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus, St
     parse::prefill_pages(root, id, total).await
 }
 
+/// 清除一本书的解析状态（用户 2026-09-15）：重建空骨架、丢弃 OCR 块与译文，PDF 不动
+#[tauri::command]
+fn reset_pdf_state(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
+    parse::reset_pdf_state(root, id, total)
+}
+
 /// LLM 连通性验证 + 关思考策略探测（设置页 API Key 旁「验证」按钮，用户 2026-09-14）
 #[tauri::command]
 async fn verify_llm(llm: translate::LlmConfig) -> Result<translate::LlmVerifyReport, String> {
@@ -682,6 +688,7 @@ pub fn run() {
             parse_pdf,
             translate_pdf,
             prefill_pages,
+            reset_pdf_state,
             verify_llm,
             fetch_llm_models,
             check_update,

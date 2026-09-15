@@ -72,6 +72,17 @@ async function onMove(pdf: PDFStruct, belong: string | null): Promise<void> {
   menuFor.value = null;
   await lib.movePdf(pdf.id, belong);
 }
+
+/** 清除解析状态（用户 2026-09-15）：丢弃 OCR 块与译文、重建空骨架后重新解析 */
+async function onClearState(pdf: PDFStruct): Promise<void> {
+  menuFor.value = null;
+  const ok = await confirmDialog({
+    title: t("repo.clearState"),
+    message: t("repo.confirmClearState", { name: pdf.name }),
+    confirmText: t("common.confirm"),
+  });
+  if (ok) await lib.clearPdfState(pdf);
+}
 </script>
 
 <template>
@@ -136,6 +147,8 @@ async function onMove(pdf: PDFStruct, belong: string | null): Promise<void> {
             {{ t("repo.moveInto", { folder: f }) }}
           </button>
           <div v-if="!row.inFolder && row.targets.length === 0" class="menu-empty">{{ t("repo.noOtherFolders") }}</div>
+          <div class="menu-sep" />
+          <button class="menu-item" @click="onClearState(row.pdf)">{{ t("repo.clearState") }}</button>
         </div>
       </div>
     </li>

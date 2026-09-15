@@ -262,6 +262,27 @@ export const useLibraryStore = defineStore("library", () => {
     return mutateRepoTree("move_pdf", { id, belong });
   }
 
+  /**
+   * 清除解析状态（用户 2026-09-15）：后端重建 1..=N 空骨架（丢弃 OCR 块与译文，
+   * PDF 本体保留）→ 丢掉前端缓存并在当前打开时重读 → 唤醒调度重新 OCR 与翻译。
+   * 页数：当前打开的书用 pdfjs 实测值；其余书传 0，后端沿用 JSON 里已有页数。
+   */
+  async function clearPdfState(pdf: PDFStruct): Promise<boolean> {
+    if (!repoRoot.value) return false;
+    const total = currentPdfId.value === pdf.id ? useReaderStore().pageCount : 0;
+    try {
+      await invoke("reset_pdf_state", { root: repoRoot.value, id: pdf.id, total });
+    } catch (error) {
+      toast(t("library.clearFailed", { err: String(error) }), "error");
+      return false;
+    }
+    delete pdfs.value[pdf.id];
+    if (currentPdfId.value === pdf.id) await selectPdf(pdf); // 重读新骨架（译文栏回未解析态）
+    toast(t("library.clearDone", { name: pdf.name }), "info");
+    useParseStore().wake(); // 状态清零 = 新的可处理书目
+    return true;
+  }
+
   /** 拉取仓库索引；成功才落地状态并持久化路径，失败保留原状（调用方负责提示） */
   async function loadRepo(root: string): Promise<void> {
     const index = await invoke<RepoTree>("gettree_from_config", { root });
@@ -290,5 +311,6 @@ export const useLibraryStore = defineStore("library", () => {
     deleteFolder,
     deletePdf,
     movePdf,
+    clearPdfState,
   };
 });

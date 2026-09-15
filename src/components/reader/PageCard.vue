@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { Directive } from "vue";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useReaderStore } from "../../stores/reader";
+import { useSettingsStore } from "../../stores/settings";
 import type { Block } from "../../types/domain";
 import { isOverlayType } from "../../lib/blocks";
 import { renderRichText } from "../../lib/richText";
@@ -14,7 +15,7 @@ import PdfPageCanvas from "./PdfPageCanvas.vue";
  * 旧版曾按第 1 页尺寸统一假设——页尺寸不一的扫描版 PDF 会整体错位，已改）。
  * 覆盖层体系（不改原 PDF 排版，全部绝对定位）：
  * - 原文栏：全部块虚线框标注（悬浮预览开关控制）；
- * - 译文栏：仅覆盖渲染类型（lib/blocks.ts OVERLAY_TYPES = 送翻 + formula）白底覆盖框，
+ * - 译文栏：仅覆盖渲染类型（lib/blocks.ts isOverlayType = 用户勾选的送翻类型 + formula）白底覆盖框，
  *   框内文字 =
  *   translation ?? content（bypass 期 translation 全 null → 显示原文 content），
  *   字号经 v-fit 自适应：二分找"塞得下"的最大字号，填满且不溢出。
@@ -74,17 +75,12 @@ function rectStyle(r: Rect): Record<string, string> {
 }
 
 /**
- * 译文框内边距按框像素尺寸比例取（用户 2026-09-14）：
- * 固定 padding（2px 4px）在 ~16pt 高的小框里占掉 25%+ 高度，v-fit 只能选到极小字号；
- * 改为比例式（垂直 ≤4px / 水平 ≤6px，各按框尺寸缩放）后小框字号明显变大，大框视觉不变。
- * 注：v-fit 读 computed padding，内联样式同样生效。
+ * 译文框内边距（用户 2026-09-15）：一律 0 —— 覆盖框贴齐 OCR 块矩形，不因 padding
+ * 偏移或吃掉小框高度（此前按框尺寸比例取 0.5~4px / 1~6px，现取消）。
+ * 注：v-fit 读 computed padding（.cover 亦为 0），内联样式同样生效。
  */
 function coverStyle(r: Rect): Record<string, string> {
-  const w = (r.width / 100) * width.value;
-  const h = (r.height / 100) * height.value;
-  const pv = Math.max(0.5, Math.min(4, h * 0.06));
-  const ph = Math.max(1, Math.min(6, w * 0.02));
-  return { ...rectStyle(r), padding: `${pv}px ${ph}px` };
+  return rectStyle(r);
 }
 
 interface CoverRect extends Rect {
@@ -93,10 +89,16 @@ interface CoverRect extends Rect {
 }
 
 /** 译文栏覆盖块：仅覆盖渲染类型且文本非空；内容渲染成富文本（figure 空串等不渲染白框） */
+const settings = useSettingsStore();
+/** 用户勾选的送翻类型（设置→常规）；未勾选的类型不覆盖，原 PDF 像素直出 */
+const overlayTypes = computed(() => new Set(settings.general.translateTypes));
+
 const coverRects = computed<CoverRect[]>(() =>
   rects.value
     .filter(
-      (r) => isOverlayType(r.block.type) && (r.block.translation ?? r.block.content).trim(),
+      (r) =>
+        isOverlayType(r.block.type, overlayTypes.value) &&
+        (r.block.translation ?? r.block.content).trim(),
     )
     .map((r) => ({ ...r, html: renderRichText(r.block.translation ?? r.block.content) })),
 );
@@ -398,7 +400,7 @@ const vFit: Directive<HTMLElement> = {
   border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: 2px;
   overflow: hidden;
-  padding: 2px 4px;
+  padding: 0;
 }
 /* 公式：KaTeX 垂直居中（用户 2026-09-14）；KaTeX display 公式自带 1em 上下
    margin，在 ~16pt 高的公式框里会把内容顶到贴顶、还逼 v-fit 选极小字号——收窄 */

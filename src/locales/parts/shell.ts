@@ -37,6 +37,8 @@ export default defineMessages({
     "repo.confirmDeleteFolderWithPdfs":
       "删除文件夹「{name}」？其中的 {n} 个 PDF 及其解析数据将一并删除，且不可恢复。",
     "repo.confirmDeletePdf": "删除《{name}》？库内 PDF 与解析数据将一并删除，且不可恢复。",
+    "repo.clearState": "清除解析状态",
+    "repo.confirmClearState": "清除《{name}》的解析状态？已提取的内容块与译文将全部丢弃，PDF 本体保留，之后会重新 OCR 与翻译。",
 
     "library.noRepo": "尚未选择仓库",
     "library.noRepoForPdf": "尚未选择仓库，无法查询 PDF",
@@ -49,6 +51,8 @@ export default defineMessages({
     "library.importUnknownSuffix": "；{n} 份页数未知（pages 为空骨架）",
     "library.importPartialUnknown": "已导入 {n} 份，{m} 份页数未知：{reasons}",
     "library.importDone": "已导入 {n} 份 PDF",
+    "library.clearDone": "已清除《{name}》的解析状态，将重新解析",
+    "library.clearFailed": "清除解析状态失败：{err}",
 
     "toolbar.layoutAria": "阅读器布局",
     "toolbar.layoutOtLabel": "原│译",
@@ -116,6 +120,8 @@ export default defineMessages({
     "repo.confirmDeleteFolderWithPdfs":
       "刪除資料夾「{name}」？其中的 {n} 個 PDF 及其解析資料將一併刪除，且不可復原。",
     "repo.confirmDeletePdf": "刪除《{name}》？庫內 PDF 與解析資料將一併刪除，且不可復原。",
+    "repo.clearState": "清除解析狀態",
+    "repo.confirmClearState": "清除《{name}》的解析狀態？已擷取的內容區塊與譯文將全部丟棄，PDF 本體保留，之後會重新 OCR 與翻譯。",
 
     "library.noRepo": "尚未選擇倉庫",
     "library.noRepoForPdf": "尚未選擇倉庫，無法查詢 PDF",
@@ -128,6 +134,8 @@ export default defineMessages({
     "library.importUnknownSuffix": "；{n} 份頁數未知（pages 為空骨架）",
     "library.importPartialUnknown": "已匯入 {n} 份，{m} 份頁數未知：{reasons}",
     "library.importDone": "已匯入 {n} 份 PDF",
+    "library.clearDone": "已清除《{name}》的解析狀態，將重新解析",
+    "library.clearFailed": "清除解析狀態失敗：{err}",
 
     "toolbar.layoutAria": "閱讀器版面",
     "toolbar.layoutOtLabel": "原│譯",
@@ -196,6 +204,9 @@ export default defineMessages({
       "Delete folder “{name}”? Its {n} PDF and parsing data will be deleted too. This cannot be undone. | Delete folder “{name}”? Its {n} PDFs and parsing data will be deleted too. This cannot be undone.",
     "repo.confirmDeletePdf":
       "Delete “{name}”? The PDF in the library and its parsing data will be deleted too. This cannot be undone.",
+    "repo.clearState": "Clear parse state",
+    "repo.confirmClearState":
+      "Clear the parse state of \"{name}\"? All extracted blocks and translations are discarded; the PDF itself is kept and will be OCR'd and translated again.",
 
     "library.noRepo": "No repository selected",
     "library.noRepoForPdf": "No repository selected; cannot load PDF",
@@ -208,6 +219,8 @@ export default defineMessages({
     "library.importUnknownSuffix": "; {n} file with unknown page count (empty pages skeleton) | ; {n} files with unknown page count (empty pages skeleton)",
     "library.importPartialUnknown": "Imported {n} file, {m} with unknown page count: {reasons} | Imported {n} files, {m} with unknown page count: {reasons}",
     "library.importDone": "Imported {n} PDF file | Imported {n} PDF files",
+    "library.clearDone": "Cleared the parse state of \"{name}\"; it will be parsed again",
+    "library.clearFailed": "Failed to clear the parse state: {err}",
 
     "toolbar.layoutAria": "Reader layout",
     "toolbar.layoutOtLabel": "Src│Tgt",

@@ -75,6 +75,11 @@ pub struct LlmConfig {
     /// 模型特有请求头（pi-ai 目录里少数模型有）
     #[serde(default)]
     pub extra_headers: std::collections::BTreeMap<String, String>,
+    /// 参与翻译的块类型（用户 2026-09-15 可配，见 设置→常规）：
+    /// 空 Vec = 内置默认（TRANSLATABLE_TYPES）；非空则只翻列出的类型。
+    /// 只影响尚未翻译的页面（已翻页面在 JSON 里已有译文）。
+    #[serde(default)]
+    pub translate_types: Vec<String>,
 }
 
 /// 当前唯一支持的线上协议（pi-ai 的 api 字段取值）
@@ -107,7 +112,8 @@ pub fn log(msg: impl AsRef<str>) {
     }
 }
 
-/// 送翻类型（与 src/lib/blocks.ts TRANSLATED_TYPES 同步；未知新标签默认不送翻）
+/// 送翻类型默认值（与 src/lib/blocks.ts BLOCK_TYPE_OPTIONS 同步；未知新标签默认不送翻）。
+/// 用户在 设置→常规 改过的集合随 invoke 下发（LlmConfig.translate_types），非空时覆盖本默认。
 const TRANSLATABLE_TYPES: &[&str] = &[
     "text",
     "paragraph_title",
@@ -166,8 +172,14 @@ pub fn load_system_prompt(cfg: &LlmConfig) -> Result<String, String> {
     })
 }
 
-fn is_translatable(kind: &str, content: &str) -> bool {
-    TRANSLATABLE_TYPES.contains(&kind) && !content.trim().is_empty()
+/// 该块是否送翻：类型在允许集合内 + content 非空
+fn is_translatable(cfg: &LlmConfig, kind: &str, content: &str) -> bool {
+    let allowed = if cfg.translate_types.is_empty() {
+        TRANSLATABLE_TYPES.contains(&kind)
+    } else {
+        cfg.translate_types.iter().any(|t| t == kind)
+    };
+    allowed && !content.trim().is_empty()
 }
 
 /// 待翻请求：index 字符串（协议原样）+ 块在页内位置
@@ -180,11 +192,11 @@ struct RequestItem {
 
 /// 收集该页送翻块：送翻类型、content 非空、translation == null
 /// （已由邻页 external 绑定的块自动跳过——用户拍板的"不再翻译该文本框"）
-fn collect_requests(page: &PageInfo) -> Vec<RequestItem> {
+fn collect_requests(cfg: &LlmConfig, page: &PageInfo) -> Vec<RequestItem> {
     page.blocks
         .iter()
         .enumerate()
-        .filter(|(_, b)| is_translatable(&b.kind, &b.content) && b.translation.is_none())
+        .filter(|(_, b)| is_translatable(cfg, &b.kind, &b.content) && b.translation.is_none())
         .enumerate()
         .map(|(i, (pos, b))| RequestItem {
             index: i.to_string(),
@@ -213,7 +225,7 @@ fn neighbor_index(page_index: u32, direction: &str) -> Option<u32> {
 
 /// 邻页边界候选：before 取末尾 ≤N、after 取开头 ≤N 个送翻块（含已翻译块：
 /// 只提供原文参考，外部绑定命中时可覆盖旧值）
-fn context_candidates(doc: &BindDoc, neighbor: u32, direction: &str) -> Vec<ContextItem> {
+fn context_candidates(cfg: &LlmConfig, doc: &BindDoc, neighbor: u32, direction: &str) -> Vec<ContextItem> {
     let Some(page) = doc.pages.iter().find(|p| p.index == neighbor) else {
         return Vec::new();
     };
@@ -221,7 +233,7 @@ fn context_candidates(doc: &BindDoc, neighbor: u32, direction: &str) -> Vec<Cont
         .blocks
         .iter()
         .enumerate()
-        .filter(|(_, b)| is_translatable(&b.kind, &b.content))
+        .filter(|(_, b)| is_translatable(cfg, &b.kind, &b.content))
         .collect();
     if picked.is_empty() {
         return Vec::new();
@@ -654,18 +666,18 @@ pub struct PageDone {
 }
 
 /// 文档快照 → 单页任务；页不存在/未 OCR 完成/已翻译 → None（跳过）
-pub fn build_task(doc: &BindDoc, page_index: u32) -> Option<PageTask> {
+pub fn build_task(cfg: &LlmConfig, doc: &BindDoc, page_index: u32) -> Option<PageTask> {
     let page = doc.pages.iter().find(|p| p.index == page_index)?;
     if !page.finished || page.translated {
         return None;
     }
     Some(PageTask {
         page_index,
-        requests: collect_requests(page),
+        requests: collect_requests(cfg, page),
         before: neighbor_index(page_index, "before")
-            .map(|n| (n, context_candidates(doc, n, "before"))),
+            .map(|n| (n, context_candidates(cfg, doc, n, "before"))),
         after: neighbor_index(page_index, "after")
-            .map(|n| (n, context_candidates(doc, n, "after"))),
+            .map(|n| (n, context_candidates(cfg, doc, n, "after"))),
     })
 }
 
@@ -1058,13 +1070,33 @@ mod tests {
             ],
             false,
         );
-        let reqs = collect_requests(&p);
+        let reqs = collect_requests(&cfg(true), &p);
         assert_eq!(reqs.len(), 2);
         assert_eq!(reqs[0].index, "0");
         assert_eq!(reqs[0].q, "a");
         assert_eq!(reqs[0].block_pos, 0);
         assert_eq!(reqs[1].index, "1");
         assert_eq!(reqs[1].block_pos, 4);
+    }
+
+    /// 送翻类型可配（用户 2026-09-15）：非空集合覆盖内置默认；空集合回落默认
+    #[test]
+    fn translate_types_override_defaults() {
+        let p = page(
+            1,
+            vec![blk("text", "a", None), blk("footer", "f", None), blk("content", "c", None)],
+            false,
+        );
+        let custom = LlmConfig {
+            translate_types: vec!["text".into(), "content".into()],
+            ..cfg(true)
+        };
+        let reqs = collect_requests(&custom, &p);
+        assert_eq!(reqs.len(), 2, "only the listed kinds are sent");
+        assert_eq!(reqs[0].q, "a");
+        assert_eq!(reqs[1].q, "c");
+        let empty = LlmConfig { translate_types: Vec::new(), ..cfg(true) };
+        assert_eq!(collect_requests(&empty, &p).len(), 3, "empty list falls back to defaults");
     }
 
     #[test]
@@ -1086,17 +1118,17 @@ mod tests {
             page(3, vec![blk("text", "p3a", None)], false),
         ]);
         // before（邻页 2）：取末尾 ≤3 个送翻块
-        let b = context_candidates(&d, 2, "before");
+        let b = context_candidates(&cfg(true), &d, 2, "before");
         assert_eq!(b.len(), 3);
         assert_eq!(b[0].c, "t3");
         assert_eq!(b[2].c, "t5");
         // after（邻页 2）：取开头 ≤3 个送翻块
-        let a = context_candidates(&d, 2, "after");
+        let a = context_candidates(&cfg(true), &d, 2, "after");
         assert_eq!(a.len(), 3);
         assert_eq!(a[0].c, "t1");
         assert_eq!(a[2].c, "t3");
         // 越界页
-        assert!(context_candidates(&d, 99, "before").is_empty());
+        assert!(context_candidates(&cfg(true), &d, 99, "before").is_empty());
         assert_eq!(neighbor_index(1, "before"), None);
         assert_eq!(neighbor_index(3, "after"), Some(4));
         assert_eq!(neighbor_index(2, "before"), Some(1));
@@ -1195,10 +1227,10 @@ mod tests {
             page(3, vec![blk("text", "p3", None)], false),
         ]);
         // 未 OCR 完成 → None；已翻译 → None
-        assert!(build_task(&d, 2).is_none());
-        assert!(build_task(&d, 1).is_none());
+        assert!(build_task(&cfg(true), &d, 2).is_none());
+        assert!(build_task(&cfg(true), &d, 1).is_none());
         // 正常页：before 取 p2（虽有块但未送翻候选？p2 有 text 块 → 候选 1），after 取 p4（无页 → 空候选）
-        let t = build_task(&d, 3).unwrap();
+        let t = build_task(&cfg(true), &d, 3).unwrap();
         assert_eq!(t.requests.len(), 1);
         assert_eq!(t.before.as_ref().map(|(n, c)| (*n, c.len())), Some((2, 1)));
         assert_eq!(t.after.as_ref().map(|(n, c)| (*n, c.len())), Some((4, 0)));

@@ -297,7 +297,7 @@ pub async fn translate_batch(
             let (_, doc) = load_bind(root, id)?;
             phase_pages
                 .iter()
-                .filter_map(|&i| translate::build_task(&doc, i))
+                .filter_map(|&i| translate::build_task(llm, &doc, i))
                 .collect()
         };
         if tasks.is_empty() {
@@ -358,6 +358,23 @@ pub async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus
     Ok(doc.status)
 }
 
+/// 清除一本书的解析状态（用户 2026-09-15）：丢弃全部 OCR 块与译文，按页数重建
+/// 1..=N 空骨架并原子写回（PDF 本体不动，译文栏回到未解析态）。
+/// total = 前端 pdfjs 实测页数；为 0（书未打开/取不到）时沿用 JSON 里已有的页数。
+pub fn reset_pdf_state(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
+    let lock = file_lock(root, id);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let (json_path, mut doc) = load_bind(root, id)?;
+    let count = if total > 0 { total } else { doc.pages.len() as u32 };
+    if count == 0 {
+        return Err("page count unknown: open the PDF once before clearing".into());
+    }
+    doc.pages = build_skeleton(count);
+    doc.status = PDFStatus::Pending;
+    write_bind_atomic(&json_path, &doc)?;
+    Ok(doc.status)
+}
+
 /// 1..=N 空页骨架（导入预填充 / 打开书补骨架共用）
 pub(crate) fn build_skeleton(total: u32) -> Vec<PageInfo> {
     (1..=total)
@@ -381,6 +398,55 @@ pub(crate) fn truncate(s: &str, cap: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 清除解析状态（用户 2026-09-15）：整份 JSON 回到 1..=N 空骨架，PDF 不动
+    #[test]
+    fn reset_pdf_state_rebuilds_skeleton() {
+        let root = std::env::temp_dir().join(format!("ezpdf-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bind = "Book-ab12.json";
+        std::fs::write(
+            root.join(".ezrepo"),
+            format!(r#"{{"folders":[],"pdfs":[{{"id":"ab12","name":"Book","bind":"{bind}","belong":null}}]}}"#),
+        )
+        .unwrap();
+        let full = std::fs::canonicalize(&root).unwrap();
+        let path = full.join(bind);
+        // 有内容、已翻译、状态 Finished 的绑定 JSON
+        let doc = BindDoc {
+            status: PDFStatus::Finished,
+            pages: vec![page_for_reset(1), page_for_reset(2)],
+        };
+        write_bind_atomic(&path, &doc).unwrap();
+
+        let status = reset_pdf_state(full.to_str().unwrap(), "ab12", 3).unwrap();
+        assert!(matches!(status, PDFStatus::Pending));
+        let after = crate::read_bind_doc(&path).unwrap();
+        assert_eq!(after.pages.len(), 3, "page count comes from the caller");
+        assert!(after.pages.iter().all(|p| !p.finished && !p.translated && p.blocks.is_empty()));
+
+        // total = 0 → 沿用 JSON 里已有页数
+        let status = reset_pdf_state(full.to_str().unwrap(), "ab12", 0).unwrap();
+        assert!(matches!(status, PDFStatus::Pending));
+        assert_eq!(crate::read_bind_doc(&path).unwrap().pages.len(), 3);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn page_for_reset(index: u32) -> PageInfo {
+        PageInfo {
+            index,
+            finished: true,
+            translated: true,
+            blocks: vec![Block {
+                kind: "text".into(),
+                content: "hello".into(),
+                loc: [0.0; 4],
+                translation: Some("你好".into()),
+            }],
+        }
+    }
 
     fn ocr_block(label: &str, bbox_px: [f64; 4], markdown: &str) -> OcrBlockResponse {
         OcrBlockResponse {
