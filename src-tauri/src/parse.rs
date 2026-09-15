@@ -130,8 +130,8 @@ fn write_bind_atomic(json_path: &Path, doc: &BindDoc) -> Result<(), String> {
     let text = serde_json::to_string_pretty(doc)
         .map_err(|e| format!("Failed when serializing bound JSON: {e}"))?;
     let tmp = json_path.with_extension("json.tmp");
-    fs::write(&tmp, text).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&tmp, json_path).map_err(|e| format!("原子替换绑定 JSON 失败: {e}"))
+    fs::write(&tmp, text).map_err(|e| format!("failed to write temporary file: {e}"))?;
+    fs::rename(&tmp, json_path).map_err(|e| format!("failed to atomically replace bind JSON: {e}"))
 }
 
 /// 读索引定位绑定 JSON 并解析为 BindDoc（parse_batch / prefill_pages 共用入口）
@@ -144,7 +144,7 @@ fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
     let bind = entry
         .bind
         .as_ref()
-        .ok_or_else(|| format!("PDF 未绑定结构 JSON: {id}"))?;
+        .ok_or_else(|| format!("PDF has no bound JSON: {id}"))?;
     let json_path = resolve_bind_path(root, bind)?;
     let doc = crate::read_bind_doc(&json_path)?;
     Ok((json_path, doc))
@@ -180,10 +180,10 @@ pub async fn parse_batch(
     token: &str,
 ) -> Result<ParseOutcome, String> {
     if pages.is_empty() {
-        return Err("OCR 批次为空".into());
+        return Err("OCR batch is empty".into());
     }
     if pages.len() > 32 {
-        return Err(format!("单批页数超上限: {} > 32", pages.len()));
+        return Err(format!("batch page count exceeds limit: {} > 32", pages.len()));
     }
 
     // 快速失败：书/绑定 JSON 不存在就没必要跑模型
@@ -207,20 +207,20 @@ pub async fn parse_batch(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("OCR 服务请求失败: {e}"))?;
+        .map_err(|e| format!("OCR service request failed: {e}"))?;
     let http = resp.status();
     let text = resp
         .text()
         .await
-        .map_err(|e| format!("OCR 服务响应读取失败: {e}"))?;
+        .map_err(|e| format!("failed to read OCR service response: {e}"))?;
     if !http.is_success() {
-        return Err(format!("OCR 服务返回 {http}: {}", truncate(&text, 300)));
+        return Err(format!("OCR service returned {http}: {}", truncate(&text, 300)));
     }
     let ocr: OcrBatchResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("OCR 服务响应解析失败: {e}"))?;
+        .map_err(|e| format!("failed to parse OCR service response: {e}"))?;
     if ocr.pages.len() != pages.len() {
         return Err(format!(
-            "OCR 返回页数不匹配: 请求 {} 返回 {}",
+            "OCR page count mismatch: requested {} got {}",
             pages.len(),
             ocr.pages.len()
         ));
@@ -240,7 +240,7 @@ pub async fn parse_batch(
         let total_blocks: usize = updates.iter().map(|(_, b)| b.len()).sum();
         let touched = patch_pages(&mut doc, updates);
         translate::log(format!(
-            "OCR 完成 p{:?}：{total_blocks} 块",
+            "OCR done p{:?}: {total_blocks} blocks",
             pages.iter().map(|p| p.index).collect::<Vec<_>>()
         ));
 
@@ -274,12 +274,12 @@ pub async fn translate_batch(
     llm: &LlmConfig,
 ) -> Result<ParseOutcome, String> {
     if !llm.usable() {
-        return Err("LLM 未配置（baseUrl/apiKey/model 为空）".into());
+        return Err("LLM not configured (baseUrl/apiKey/model empty)".into());
     }
     let prompt = translate::load_system_prompt(llm)?;
     let client = translate::llm_client()?;
     translate::log(format!(
-        "重试批次 p{indices:?}（model={} smart={}）",
+        "retry batch p{indices:?} (model={} smart={})",
         llm.model, llm.smart_context
     ));
 
@@ -317,7 +317,7 @@ pub async fn translate_batch(
             match handle.await {
                 Ok(Ok(done)) => done_list.push(done),
                 Ok(Err(e)) => translate::log(e),
-                Err(e) => translate::log(format!("翻译任务异常退出: {e}")),
+                Err(e) => translate::log(format!("translation task exited abnormally: {e}")),
             }
         }
         if done_list.is_empty() {

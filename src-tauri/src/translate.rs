@@ -150,7 +150,7 @@ fn prompt_path(smart: bool) -> PathBuf {
 pub fn load_system_prompt(cfg: &LlmConfig) -> Result<String, String> {
     let path = prompt_path(cfg.smart_context);
     let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取翻译提示词失败 {}: {e}", path.display()))?;
+        .map_err(|e| format!("failed to read translation prompt {}: {e}", path.display()))?;
     let lang = if cfg.target_lang.trim().is_empty() {
         "Simplified Chinese"
     } else {
@@ -316,7 +316,7 @@ fn validate_result(
 ) -> Result<Vec<Option<String>>, String> {
     if reply.result.len() != requests.len() {
         return Err(format!(
-            "result 数量不匹配: 请求 {} 返回 {}",
+            "result count mismatch: requested {} got {}",
             requests.len(),
             reply.result.len()
         ));
@@ -325,7 +325,7 @@ fn validate_result(
     for req in requests {
         match reply.result.iter().find(|(i, _)| *i == req.index) {
             Some((_, a)) => out.push(a.clone()),
-            None => return Err(format!("result 缺少 index {}", req.index)),
+            None => return Err(format!("result missing index {}", req.index)),
         }
     }
     Ok(out)
@@ -355,7 +355,7 @@ pub fn llm_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build()
-        .map_err(|e| format!("LLM HTTP 客户端创建失败: {e}"))
+        .map_err(|e| format!("failed to create LLM HTTP client: {e}"))
 }
 
 /// opencode zen 端点要求会话路由头（任意非空值即可）；其他 OpenAI 兼容端点
@@ -429,7 +429,7 @@ fn chat_request(
     // 预设协议不匹配就直接失败（用户 2026-09-15）：与其发出去被 400/乱答，不如说清原因
     if !cfg.api.trim().is_empty() && cfg.api.trim() != SUPPORTED_API {
         return Err(format!(
-            "模型 {} 使用 {} 协议，当前仅支持 OpenAI 兼容端点（{SUPPORTED_API}）",
+            "model {} uses {} protocol; only OpenAI-compatible endpoints ({SUPPORTED_API}) are supported",
             cfg.model,
             cfg.api.trim()
         ));
@@ -472,22 +472,22 @@ async fn chat_raw(
     let resp = chat_request(client, cfg, messages, max_tokens)?
         .send()
         .await
-        .map_err(|e| format!("LLM 请求失败: {e}"))?;
+        .map_err(|e| format!("LLM request failed: {e}"))?;
     let status = resp.status();
     let text = resp
         .text()
         .await
-        .map_err(|e| format!("LLM 响应读取失败: {e}"))?;
+        .map_err(|e| format!("failed to read LLM response: {e}"))?;
     if !status.is_success() {
-        return Err(format!("LLM 返回 {status}: {}", truncate(&text, 300)));
+        return Err(format!("LLM returned {status}: {}", truncate(&text, 300)));
     }
-    let v: Value = serde_json::from_str(&text).map_err(|e| format!("LLM 响应非 JSON: {e}"))?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("LLM response is not JSON: {e}"))?;
     let msg = &v["choices"][0]["message"];
     if msg.is_object() {
         Ok(msg.clone())
     } else {
         Err(format!(
-            "LLM 响应缺少 choices[0].message: {}",
+            "LLM response missing choices[0].message: {}",
             truncate(&text, 200)
         ))
     }
@@ -499,7 +499,7 @@ async fn chat(client: &reqwest::Client, cfg: &LlmConfig, messages: &[Value]) -> 
     msg["content"]
         .as_str()
         .map(String::from)
-        .ok_or_else(|| format!("LLM 响应缺少 choices[0].message.content: {}", truncate(&msg.to_string(), 200)))
+        .ok_or_else(|| format!("LLM response missing choices[0].message.content: {}", truncate(&msg.to_string(), 200)))
 }
 
 // ---- 设置页「验证」按钮（用户 2026-09-14）：连通性检查 + 关思考策略探测 ----
@@ -544,7 +544,7 @@ fn message_thinks(msg: &Value) -> bool {
 /// 预设模型若标记为非思考（pi-ai 目录 reasoning=false）则跳过策略搜索。
 pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
     if !cfg.usable() {
-        return Err("请先填写 Base URL / API Key / 模型".into());
+        return Err("please fill in Base URL / API Key / model first".into());
     }
     let client = llm_client()?;
     let messages = vec![json!({"role": "user", "content": PROBE_PROMPT})];
@@ -559,7 +559,7 @@ pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
             strategy: "none".into(),
             preset_no_thinking,
             message: format!(
-                "连接正常（{}ms）；预设标记为非思考模型，无需关思考参数",
+                "connection OK ({}ms); preset marks this as a non-reasoning model, no thinking-off parameter needed",
                 started.elapsed().as_millis()
             ),
         });
@@ -583,13 +583,13 @@ pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
         LlmVerifyReport {
             strategy: "none".into(),
             preset_no_thinking,
-            message: format!("连接正常（{ms}ms），但尝试后无法关闭思考模式"),
+            message: format!("connection OK ({ms}ms), but thinking mode could not be disabled after probing"),
         }
     } else {
         LlmVerifyReport {
             strategy: strategy.to_string(),
             preset_no_thinking,
-            message: format!("连接正常（{ms}ms），思考关闭策略：{strategy}"),
+            message: format!("connection OK ({ms}ms), thinking-off strategy: {strategy}"),
         }
     })
 }
@@ -597,7 +597,7 @@ pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
 /// 拉取 OpenAI 兼容 /models 列表（模型输入框自动补全；zen 端点补会话头）
 pub async fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
     if base_url.trim().is_empty() || api_key.trim().is_empty() {
-        return Err("请先填写 Base URL / API Key".into());
+        return Err("please fill in Base URL / API Key first".into());
     }
     let client = llm_client()?;
     let url = format!("{}/models", base_url.trim().trim_end_matches('/'));
@@ -608,16 +608,16 @@ pub async fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, 
     let resp = req
         .send()
         .await
-        .map_err(|e| format!("获取模型列表失败: {e}"))?;
+        .map_err(|e| format!("failed to fetch model list: {e}"))?;
     let status = resp.status();
     let text = resp
         .text()
         .await
-        .map_err(|e| format!("获取模型列表失败: {e}"))?;
+        .map_err(|e| format!("failed to fetch model list: {e}"))?;
     if !status.is_success() {
-        return Err(format!("获取模型列表返回 {status}: {}", truncate(&text, 200)));
+        return Err(format!("model list returned {status}: {}", truncate(&text, 200)));
     }
-    let v: Value = serde_json::from_str(&text).map_err(|e| format!("模型列表非 JSON: {e}"))?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("model list is not JSON: {e}"))?;
     let mut ids: Vec<String> = v["data"]
         .as_array()
         .map(|arr| {
@@ -633,7 +633,7 @@ pub async fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, 
 
 const CORRECTION: &str = "上一轮输出无法解析或与 requests 不匹配。请仅输出合法 JSON，且 result 必须与本次输入 requests 的 index 一一对应（A 允许为 null，表示无需翻译）。";
 const NO_MORE_CONTEXT: &str =
-    "已提供上下文，请立即按格式 B 或 D 输出最终翻译，不要再请求上下文。";
+    "已提供过上下文；请立即输出最终译文（格式 B 或 D），不要再申请上下文。";
 
 /// 单页翻译快照：并发任务只读自己的快照，不触碰 &mut BindDoc（避免并发读写文档）；
 /// 上下文候选在快照时一次取好（before/after 各一份），模型请求哪个方向用哪个
@@ -713,16 +713,16 @@ fn context_reply(
     .to_string();
     match neighbor {
         Some(n) if candidates.is_empty() => log(format!(
-            "p{page_index} 第{}轮 {ms}ms 请求 {dir} 上下文 → p{n} 无候选，回 null",
+            "p{page_index} round {} {ms}ms request {dir} context → p{n} no candidates, reply null",
             round + 1
         )),
         Some(n) => log(format!(
-            "p{page_index} 第{}轮 {ms}ms 请求 {dir} 上下文 → p{n} 候选 {} 块",
+            "p{page_index} round {} {ms}ms request {dir} context → p{n} {} candidate blocks",
             round + 1,
             candidates.len()
         )),
         None => log(format!(
-            "p{page_index} 第{}轮 {ms}ms 请求 {dir} 上下文 → 无候选，回 null",
+            "p{page_index} round {} {ms}ms request {dir} context → no candidates, reply null",
             round + 1
         )),
     }
@@ -739,7 +739,7 @@ pub async fn translate_task(
 ) -> Result<PageDone, String> {
     let PageTask { page_index, requests, before, after } = task;
     if requests.is_empty() {
-        log(format!("p{page_index} 无可翻块（空文本/已绑定）→ 标记完成"));
+        log(format!("p{page_index} no translatable blocks (empty text/already bound) → mark done"));
         return Ok(PageDone {
             page_index,
             requests,
@@ -747,7 +747,7 @@ pub async fn translate_task(
             external: None,
         });
     }
-    log(format!("p{page_index} 送翻 {} 块", requests.len()));
+    log(format!("p{page_index} {} blocks queued", requests.len()));
 
     let user_a = json!({
         "requests": requests
@@ -773,7 +773,7 @@ pub async fn translate_task(
             Some(r) => r,
             None => {
                 log(format!(
-                    "p{page_index} 第{}轮 {ms}ms 输出无法解析 → 纠正重试",
+                    "p{page_index} round {} {ms}ms output unparsable → correction retry",
                     _round + 1
                 ));
                 messages.push(json!({"role": "assistant", "content": raw}));
@@ -786,7 +786,7 @@ pub async fn translate_task(
         if cfg.smart_context {
             if let Some(dir) = reply.need_context.clone() {
                 if context_answered {
-                    log(format!("p{page_index} 第{}轮 {ms}ms 重复请求上下文 → 逼最终输出", _round + 1));
+                    log(format!("p{page_index} round {} {ms}ms repeated context request → force final output", _round + 1));
                     messages.push(json!({"role": "assistant", "content": raw}));
                     messages.push(json!({"role": "user", "content": NO_MORE_CONTEXT}));
                     continue;
@@ -814,7 +814,7 @@ pub async fn translate_task(
             Ok(v) => v,
             Err(e) => {
                 log(format!(
-                    "p{page_index} 第{}轮 {ms}ms result 校验失败（{e}）→ 纠正重试",
+                    "p{page_index} round {} {ms}ms result validation failed ({e}) → correction retry",
                     _round + 1
                 ));
                 messages.push(json!({"role": "assistant", "content": raw}));
@@ -824,14 +824,14 @@ pub async fn translate_task(
         };
         let nulls = values.iter().filter(|v| v.is_none()).count();
         log(format!(
-            "p{page_index} 完成：{} 块译文（null {nulls}）",
+            "p{page_index} done: {} translations (null {nulls})",
             values.len() - nulls
         ));
         let external = match context.as_ref() {
             Some((neighbor, candidates)) => match resolve_external(candidates, &reply) {
                 Some((pos, text)) => {
                     log(format!(
-                        "p{page_index} external 回写 p{neighbor}（候选 index {:?}）",
+                        "p{page_index} external write-back to p{neighbor} (candidate index {:?})",
                         reply.external_index
                     ));
                     Some((*neighbor, pos, text))
@@ -839,7 +839,7 @@ pub async fn translate_task(
                 None => {
                     if reply.external_index.is_some() {
                         log(format!(
-                            "p{page_index} external_index {:?} 未命中候选 → 忽略",
+                            "p{page_index} external_index {:?} matched no candidate → ignore",
                             reply.external_index
                         ));
                     }
@@ -855,7 +855,7 @@ pub async fn translate_task(
             external,
         });
     }
-    Err(format!("页 {page_index} 翻译失败：LLM 输出重试耗尽"))
+    Err(format!("page {page_index} translation failed: LLM output retries exhausted"))
 }
 
 #[cfg(test)]

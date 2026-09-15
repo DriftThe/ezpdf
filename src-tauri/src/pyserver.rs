@@ -188,7 +188,7 @@ async fn handle_failure(
     if *crashes >= MAX_CRASHES {
         svc.set_status(app, ServiceStatus::Failed);
         if let Some(e) = err {
-            let _ = app.emit("ocr://log", format!("[ezpdf] 服务启动失败: {e}"));
+            let _ = app.emit("ocr://log", format!("[ezpdf] service start failed: {e}"));
         }
         return true;
     }
@@ -201,7 +201,7 @@ async fn handle_failure(
 /// 单次启动：spawn → 逐行读 stdout 等 READY（超时 60s）→ /health 确认 → 持 stdin
 async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result<tokio::process::Child, String> {
     if !paths.python.is_file() {
-        return Err("服务解释器不存在，请到设置页「一键安装服务」".into());
+        return Err("python interpreter not found; run \"Install service\" in Settings".into());
     }
     let token = fresh_token();
     let mut cmd = tokio::process::Command::new(&paths.python);
@@ -216,7 +216,7 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let mut child = cmd.spawn().map_err(|e| format!("spawn python 失败: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("failed to spawn python: {e}"))?;
 
     // stdin 存入全局状态：select 主分支持有 child，stop() 拿走 stdin 触发 EOF
     if let Some(stdin) = child.stdin.take() {
@@ -232,7 +232,7 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
     }
 
     // stdout 逐行读：READY 行经 oneshot 回报端口，其余行进日志
-    let stdout = child.stdout.take().ok_or("stdout 管道缺失")?;
+    let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Option<u16>>();
     let app3 = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -269,15 +269,15 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
         Ok(Ok(Some(port))) => port,
         Ok(Ok(None)) => {
             let _ = child.start_kill();
-            return Err("进程在 READY 前退出".into());
+            return Err("process exited before READY".into());
         }
         Ok(Err(_)) => {
             let _ = child.start_kill();
-            return Err("stdout 读取失败".into());
+            return Err("failed to read stdout".into());
         }
         Err(_) => {
             let _ = child.start_kill();
-            return Err("启动超时（60s 内未见 READY 行）".into());
+            return Err("startup timeout (no READY line within 60s)".into());
         }
     };
 
@@ -299,5 +299,5 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let _ = child.start_kill();
-    Err("健康检查未通过".into())
+    Err("health check failed".into())
 }

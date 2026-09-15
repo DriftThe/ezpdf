@@ -184,7 +184,7 @@ fn check_relative(rel: &str) -> Result<(), String> {
     if ok {
         Ok(())
     } else {
-        Err(format!("拒绝越界的仓库相对路径: {rel}"))
+        Err(format!("rejected out-of-bounds repo-relative path: {rel}"))
     }
 }
 
@@ -192,11 +192,11 @@ fn check_relative(rel: &str) -> Result<(), String> {
 /// （词法拦截 `../`；canonicalize 再拦截仓库内符号链接逃逸）
 fn resolve_bind_path(root: &str, rel: &str) -> Result<PathBuf, String> {
     check_relative(rel)?;
-    let root_canon = fs::canonicalize(root).map_err(|e| format!("仓库根路径无效: {e}"))?;
+    let root_canon = fs::canonicalize(root).map_err(|e| format!("invalid repo root path: {e}"))?;
     let resolved = fs::canonicalize(root_canon.join(rel))
         .map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
     if !resolved.starts_with(&root_canon) {
-        return Err(format!("拒绝越界的仓库相对路径: {rel}"));
+        return Err(format!("rejected out-of-bounds repo-relative path: {rel}"));
     }
     Ok(resolved)
 }
@@ -283,33 +283,33 @@ fn import_one(
 ) -> Result<(PDFStruct, Option<String>), String> {
     let src = Path::new(src_path);
     if !src.is_file() {
-        return Err("文件不存在".into());
+        return Err("file not found".into());
     }
     let is_pdf = src
         .extension()
         .map(|e| e.to_string_lossy().eq_ignore_ascii_case("pdf"))
         .unwrap_or(false);
     if !is_pdf {
-        return Err("仅支持 PDF 文件".into());
+        return Err("only PDF files are supported".into());
     }
     let name = src
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     if name.is_empty() || name.contains(['/', '\\', ':']) {
-        return Err("文件名无效".into());
+        return Err("invalid file name".into());
     }
 
-    let bytes = fs::read(src).map_err(|e| format!("读取失败: {e}"))?;
+    let bytes = fs::read(src).map_err(|e| format!("failed to read: {e}"))?;
     let id = content_id(&bytes);
     if index.pdfs.iter().any(|p| p.id == id) {
-        return Err("内容与已导入的 PDF 重复".into());
+        return Err("content duplicates an already-imported PDF".into());
     }
 
     // 物理命名 name-id：不同目录导入同名文件也不会互相覆盖
     let pdf_name = format!("{name}-{id}.pdf");
     let json_name = format!("{name}-{id}.json");
-    fs::write(dir.join(&pdf_name), &bytes).map_err(|e| format!("入库失败: {e}"))?;
+    fs::write(dir.join(&pdf_name), &bytes).map_err(|e| format!("failed to store into repo: {e}"))?;
     let page_count = pdf_page_count(&bytes);
     let pages = page_count.map(parse::build_skeleton).unwrap_or_default();
     let doc = BindDoc {
@@ -318,10 +318,10 @@ fn import_one(
     };
     let json_text = serde_json::to_string_pretty(&doc)
         .map_err(|e| format!("Failed when serializing bound JSON: {e}"))?;
-    fs::write(dir.join(&json_name), json_text).map_err(|e| format!("写入绑定 JSON 失败: {e}"))?;
+    fs::write(dir.join(&json_name), json_text).map_err(|e| format!("failed to write bind JSON: {e}"))?;
 
     let warning =
-        page_count.is_none().then(|| "无法解析页数（可能加密或非标准 PDF），pages 预填充跳过".into());
+        page_count.is_none().then(|| "failed to parse page count (possibly encrypted or non-standard PDF); pages prefill skipped".into());
     Ok((
         PDFStruct {
             id,
@@ -387,7 +387,7 @@ fn check_folder_name(name: &str) -> Result<(), String> {
         || name == ".."
         || name.chars().count() > 64;
     if bad {
-        Err("文件夹名无效（不能为空、不能含路径分隔符，最长 64 字符）".into())
+        Err("invalid folder name (must be non-empty, no path separators, max 64 characters)".into())
     } else {
         Ok(())
     }
@@ -407,7 +407,7 @@ fn create_folder(root: &str, name: String) -> Result<RepoTree, String> {
     check_folder_name(&name)?;
     let mut index = read_index(root)?;
     if index.folders.iter().any(|f| f == &name) {
-        return Err(format!("同名文件夹已存在: {name}"));
+        return Err(format!("folder with the same name already exists: {name}"));
     }
     index.folders.push(name);
     write_index(root, &index)?;
@@ -438,7 +438,7 @@ fn delete_folder(root: &str, name: String) -> Result<RepoTree, String> {
         .folders
         .iter()
         .position(|f| f == &name)
-        .ok_or_else(|| format!("文件夹不存在: {name}"))?;
+        .ok_or_else(|| format!("folder does not exist: {name}"))?;
     let victims: Vec<PDFStruct> = index
         .pdfs
         .iter()
@@ -511,14 +511,14 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 #[cfg_attr(dev, allow(dead_code))]
 fn prod_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if cfg!(windows) {
-        let exe = std::env::current_exe().map_err(|e| format!("无法定位应用路径: {e}"))?;
-        let dir = exe.parent().ok_or("无法解析应用目录")?;
+        let exe = std::env::current_exe().map_err(|e| format!("failed to locate application path: {e}"))?;
+        let dir = exe.parent().ok_or("failed to resolve application directory")?;
         return Ok(dir.join("config.json"));
     }
     let home = app
         .path()
         .home_dir()
-        .map_err(|e| format!("无法定位用户主目录: {e}"))?;
+        .map_err(|e| format!("failed to locate user home directory: {e}"))?;
     Ok(home.join(".ezpdf").join("config.json"))
 }
 
@@ -529,21 +529,21 @@ fn load_settings(app: tauri::AppHandle) -> Result<Option<String>, String> {
     match fs::read_to_string(&path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("读取设置失败 {}: {e}", path.display())),
+        Err(e) => Err(format!("failed to read settings {}: {e}", path.display())),
     }
 }
 
 /// 写设置（JSON 校验 + 临时文件原子替换）：退出设置页时前端整份下发
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
-    serde_json::from_str::<serde_json::Value>(&json).map_err(|e| format!("设置 JSON 非法: {e}"))?;
+    serde_json::from_str::<serde_json::Value>(&json).map_err(|e| format!("invalid settings JSON: {e}"))?;
     let path = settings_path(&app)?;
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| format!("创建设置目录失败: {e}"))?;
+        fs::create_dir_all(dir).map_err(|e| format!("failed to create settings directory: {e}"))?;
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, json).map_err(|e| format!("写入设置失败: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("替换设置文件失败: {e}"))?;
+    fs::write(&tmp, json).map_err(|e| format!("failed to write settings: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("failed to replace settings file: {e}"))?;
     Ok(())
 }
 
@@ -610,7 +610,7 @@ async fn parse_pdf(
 ) -> Result<parse::ParseOutcome, String> {
     let (base, token) = svc
         .ocr_target()
-        .ok_or_else(|| "OCR 服务未连接".to_string())?;
+        .ok_or_else(|| "OCR service not connected".to_string())?;
     parse::parse_batch(root, id, pages, &base, &token).await
 }
 

@@ -62,7 +62,7 @@ pub async fn check_update(current: &str) -> Result<UpdateInfo, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
-        .map_err(|e| format!("更新检查客户端创建失败: {e}"))?;
+        .map_err(|e| format!("failed to create update-check client: {e}"))?;
     let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
     let resp = client
         .get(&url)
@@ -70,16 +70,16 @@ pub async fn check_update(current: &str) -> Result<UpdateInfo, String> {
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| format!("检查更新失败: {e}"))?;
+        .map_err(|e| format!("update check failed: {e}"))?;
     let status = resp.status();
     let text = resp
         .text()
         .await
-        .map_err(|e| format!("检查更新失败: {e}"))?;
+        .map_err(|e| format!("update check failed: {e}"))?;
     if !status.is_success() {
-        return Err(format!("检查更新失败: HTTP {status}"));
+        return Err(format!("update check failed: HTTP {status}"));
     }
-    let v: Value = serde_json::from_str(&text).map_err(|e| format!("发布信息非 JSON: {e}"))?;
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("release info is not JSON: {e}"))?;
     let latest = v["tag_name"].as_str().map(|s| s.trim_start_matches('v').to_string());
     let html = v["html_url"].as_str().map(String::from);
     let notes = v["body"].as_str().map(|b| {

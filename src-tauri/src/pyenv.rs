@@ -157,7 +157,7 @@ fn bundled_python(app: &AppHandle) -> Result<PathBuf, String> {
     #[cfg(dev)]
     {
         let _ = app;
-        Err("dev 下没有随包解释器".into())
+        Err("no bundled interpreter under dev".into())
     }
     #[cfg(not(dev))]
     {
@@ -316,7 +316,7 @@ fn no_python_report() -> OcrEnvReport {
         torch_build: None,
         gpu: None,
         models: None,
-        error: Some("未检测到可用的 Python".into()),
+        error: Some("no usable Python detected".into()),
     }
 }
 
@@ -349,9 +349,9 @@ fn run_bootstrap(python: &Path, script: &Path, models: &Path) -> Result<Bootstra
     hide_window(&mut cmd);
     let out = cmd
         .output()
-        .map_err(|e| format!("bootstrap 运行失败: {e}"))?;
+        .map_err(|e| format!("failed to run bootstrap: {e}"))?;
     if !out.status.success() {
-        return Err(format!("bootstrap 退出码 {:?}", out.status.code()));
+        return Err(format!("bootstrap exited with code {:?}", out.status.code()));
     }
     // 逐行倒序找能解析成 JSON 的行（容忍解释器偶发的其他 stdout 输出）
     let text = String::from_utf8_lossy(&out.stdout);
@@ -360,7 +360,7 @@ fn run_bootstrap(python: &Path, script: &Path, models: &Path) -> Result<Bootstra
             return Ok(raw);
         }
     }
-    Err("bootstrap stdout 无法解析".into())
+    Err("cannot parse bootstrap stdout".into())
 }
 
 /// 系统解释器发现：Windows = py -3 → PATH python；Unix = python3 → python
@@ -401,7 +401,7 @@ impl InstallMode {
         match s {
             "cpu" => Ok(Self::Cpu),
             "gpu" => Ok(Self::Gpu),
-            other => Err(format!("未知安装模式: {other}（cpu/gpu）")),
+            other => Err(format!("unknown install mode: {other} (cpu/gpu)")),
         }
     }
 
@@ -499,10 +499,10 @@ async fn run_streamed(
     }
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let mut child = cmd.spawn().map_err(|e| format!("spawn 失败: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
     let (mut out_r, mut err_r) = match (child.stdout.take(), child.stderr.take()) {
         (Some(o), Some(e)) => (o, e),
-        _ => return Err("子进程管道缺失".into()),
+        _ => return Err("child process pipe missing".into()),
     };
     let counter = Arc::new(AtomicU32::new(0));
     let app_out = app.clone();
@@ -520,11 +520,11 @@ async fn run_streamed(
     let status = child
         .wait()
         .await
-        .map_err(|e| format!("子进程等待失败: {e}"))?;
+        .map_err(|e| format!("failed to wait for child process: {e}"))?;
     let _ = t_out.await;
     let _ = t_err.await;
     if !status.success() {
-        return Err(format!("命令失败（{}）", status));
+        return Err(format!("command failed ({status})"));
     }
     Ok(())
 }
@@ -628,7 +628,7 @@ pub async fn install_env(
         emit_log(
             app,
             format!(
-                "[ezpdf] 服务已安装（torch {} 构建满足 {} 选择），跳过安装",
+                "[ezpdf] service already installed (torch {} build satisfies {} selection), skipping install",
                 report.torch_build.as_deref().unwrap_or("?"),
                 mode.label()
             ),
@@ -639,13 +639,13 @@ pub async fn install_env(
     emit_log(
         app,
         format!(
-            "[ezpdf] OCR 服务安装开始（{} 模式{}）",
+            "[ezpdf] OCR service installation started ({} mode{})",
             mode.label(),
-            if use_mirror { "，使用镜像源" } else { "" }
+            if use_mirror { " with mirror" } else { "" }
         ),
     )
     .await;
-    emit_progress(app, "准备", 2).await;
+    emit_progress(app, "preparing", 2).await;
     if !paths.python.is_file() {
         // 服务解释器不存在：Linux 生产 = 用随包解释器在 ~/.ezpdf 建用户级 venv
         // （安装目录只读）；dev = 用系统 python 在 pyserver/ 建 .venv
@@ -653,9 +653,9 @@ pub async fn install_env(
             .chain(std::iter::once(find_system_python()))
             .flatten()
             .find(|p| p.is_file())
-            .ok_or("未检测到 Python，无法创建环境（请先安装 Python 3.10+）")?;
-        let venv_dir = paths.venv_dir.clone().ok_or("缺少 venv 目录配置")?;
-        emit_log(app, format!("[ezpdf] 创建 venv（{}）…", venv_dir.display())).await;
+            .ok_or("no Python detected; cannot create environment (install Python 3.10+ first)")?;
+        let venv_dir = paths.venv_dir.clone().ok_or("venv directory configuration missing")?;
+        emit_log(app, format!("[ezpdf] creating venv ({})…", venv_dir.display())).await;
         run_streamed(
             app,
             &base,
@@ -667,53 +667,53 @@ pub async fn install_env(
         )
         .await?;
         if !paths.python.is_file() {
-            return Err("venv 创建后解释器仍不存在".into());
+            return Err("interpreter still missing after venv creation".into());
         }
     }
     if mode == InstallMode::Gpu {
         let report = probe_blocking(paths);
         let Some(gpu) = report.gpu else {
             return Err(
-                "未检测到 NVIDIA GPU（nvidia-smi 不可用），已停止安装；请更新显卡驱动或改用 CPU 模式"
+                "no NVIDIA GPU detected (nvidia-smi unavailable); installation stopped; update GPU drivers or switch to CPU mode"
                     .into(),
             );
         };
         let cuda = gpu.cuda.map(|c| format!(" / CUDA {c}")).unwrap_or_default();
         emit_log(
             app,
-            format!("[ezpdf] 检测到 GPU: {} / 驱动 {}{}", gpu.name, gpu.driver, cuda),
+            format!("[ezpdf] GPU detected: {} / driver {}{}", gpu.name, gpu.driver, cuda),
         )
         .await;
     }
-    emit_progress(app, "安装基础依赖", 5).await;
+    emit_progress(app, "installing base dependencies", 5).await;
     pip_install(
         app,
         paths,
         "requirements.txt",
         use_mirror,
-        Some(("安装基础依赖".to_string(), 5, 42)),
+        Some(("installing base dependencies".to_string(), 5, 42)),
     )
     .await?;
     let report = probe_blocking(paths);
     if !env_satisfies(&report, mode) {
-        emit_log(app, format!("[ezpdf] 安装 torch（{}）…", mode.label())).await;
+        emit_log(app, format!("[ezpdf] installing torch ({})…", mode.label())).await;
         pip_install(
             app,
             paths,
             mode.variant_file(),
             use_mirror,
-            Some(("安装 torch".to_string(), 45, 72)),
+            Some(("installing torch".to_string(), 45, 72)),
         )
         .await?;
     } else {
         emit_log(
             app,
-            format!("[ezpdf] torch 已是 {} 构建，跳过", report.torch_build.as_deref().unwrap_or("?")),
+            format!("[ezpdf] torch is already the {} build, skipping", report.torch_build.as_deref().unwrap_or("?")),
         )
         .await;
     }
-    emit_progress(app, "环境就绪", 75).await;
-    emit_log(app, "[ezpdf] OCR 环境安装完成".into()).await;
+    emit_progress(app, "environment ready", 75).await;
+    emit_log(app, "[ezpdf] OCR environment installation complete".into()).await;
     Ok(false)
 }
 
@@ -726,12 +726,12 @@ pub async fn download_models(
     use_mirror: bool,
 ) -> Result<(), String> {
     if !paths.python.is_file() {
-        return Err("解释器不存在，请先安装服务".into());
+        return Err("interpreter not found; install the service first".into());
     }
-    emit_log(app, "[ezpdf] 模型下载开始（约 1.9GB，缺哪补哪）".into()).await;
-    emit_progress(app, "补装下载器", 76).await;
+    emit_log(app, "[ezpdf] model download started (about 1.9GB, downloads only what's missing)".into()).await;
+    emit_progress(app, "installing downloader", 76).await;
     pip_install(app, paths, "requirements-download.txt", use_mirror, None).await?;
-    emit_progress(app, "下载模型", 80).await;
+    emit_progress(app, "downloading models", 80).await;
     let hf = if use_mirror {
         "https://hf-mirror.com"
     } else {
@@ -744,10 +744,10 @@ pub async fn download_models(
         &paths.root,
         &paths.models,
         &[("HF_ENDPOINT", hf)],
-        Some(("下载模型".to_string(), 80, 99)),
+        Some(("downloading models".to_string(), 80, 99)),
     )
     .await?;
-    emit_progress(app, "完成", 100).await;
-    emit_log(app, "[ezpdf] 模型下载完成".into()).await;
+    emit_progress(app, "done", 100).await;
+    emit_log(app, "[ezpdf] model download complete".into()).await;
     Ok(())
 }
