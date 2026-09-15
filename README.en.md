@@ -9,8 +9,7 @@
 
 ezpdf first splits every page into content blocks with coordinates via OCR, translates each block with an LLM, and then draws the translation back onto the exact position of the original as an overlay. Terminology, formulas and footers are covered; tables, images and charts keep their original pixels and are never destructively redrawn.
 
-<!-- English screenshot placeholder: replace the line below with ![ezpdf interface](docs/screenshot.en.png) once the image is available. -->
-`docs/screenshot.en.png` — English UI screenshot pending.
+![ezpdf interface](docs/screenshot.en.png)
 
 ## Features
 
