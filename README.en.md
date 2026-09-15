@@ -1,0 +1,141 @@
+# ezpdf
+
+[简体中文](README.md) | English
+
+[![Release](https://img.shields.io/github/v/release/DriftThe/ezpdf?color=4c8bf5)](https://github.com/DriftThe/ezpdf/releases)
+[![License](https://img.shields.io/github/license/DriftThe/ezpdf)](LICENSE)
+
+**A real-time PDF translation reader**: the original text on the left, per-block translations laid over it on the right, translated as you read.
+
+ezpdf first splits every page into content blocks with coordinates via OCR, translates each block with an LLM, and then draws the translation back onto the exact position of the original as an overlay. Terminology, formulas and footers are covered; tables, images and charts keep their original pixels and are never destructively redrawn.
+
+<!-- English screenshot placeholder: replace the line below with ![ezpdf interface](docs/screenshot.en.png) once the image is available. -->
+`docs/screenshot.en.png` — English UI screenshot pending.
+
+## Features
+
+- **Side-by-side view**: original and translation panes stay in sync by page; hovering a block in the original pane previews its translation.
+- **Structure preserved**: overlay rendering driven by layout analysis — nothing is reflowed or redrawn, so the original layout stays intact.
+- **Incremental processing**: pages are queued and processed as an OCR → translate pipeline, so finished pages appear immediately instead of waiting for the whole book.
+- **Formula rendering**: `formula` blocks are rendered with KaTeX, with the font size fitted to the overlay box.
+- **Smart context**: the translation flow embeds a hidden loop that lets the model request surrounding PDF context, keeping terminology and pronouns consistent across page breaks.
+- **Local OCR service**: an embedded Python service (layout analysis + text recognition) with a one-click in-app installer, supporting CPU and GPU (CUDA).
+- **Provider presets**: ships a vendored pi-ai model catalog (31 providers / 969 models) that fills in endpoint, protocol and parameter shape from the chosen provider; any OpenAI-compatible endpoint also works.
+- **Book repository**: any plain folder is a repository holding PDFs plus an `.ezrepo` index; folders, moving, deleting and multi-file import are supported.
+- **Self-drawn interface**: no system title bar — chrome and window controls are drawn by the app; light, dark and follow-system themes.
+
+## How it works
+
+```
+PDF ──pdfjs──▶ page rendering (self-drawn virtual scroll)
+  │
+  └─▶ page image ──▶ local OCR service ──▶ content blocks + coordinates (bound JSON)
+                                            │
+                                            └──▶ LLM translation ──▶ translation overlays
+```
+
+- **Frontend**: Vue 3 + TypeScript + Vite with Pinia for state. Both panes are drawn by `pdfjs-dist` (no pdf-vue3-style viewer).
+- **Backend**: Rust (Tauri 2) handles the repository index, file locks, translation scheduling and the OpenAI-compatible client. PDF binaries never travel through IPC — the frontend reads them directly over the asset protocol.
+- **OCR service**: `pyserver/` (Python + FastAPI) runs a single-instance pipeline — **PP-DocLayoutV3** for layout analysis and **PaddleOCR-VL-1.6** for recognition. Models are downloaded on first use.
+- **Parse state**: each book has one JSON file (`{status, pages[{index, finished, translated, blocks[]}]}`), which is the single source of truth and can be edited by hand.
+
+## Download and install
+
+Get the packages from [Releases](https://github.com/DriftThe/ezpdf/releases):
+
+| Platform | Artifact |
+| --- | --- |
+| Windows | `ezpdf_<version>_x64-setup.exe` (NSIS installer) |
+| Debian / Ubuntu | `ezpdf_<version>_amd64.deb` |
+| Fedora / RHEL | `ezpdf-<version>-1.x86_64.rpm` |
+
+> The installers are not code-signed yet, so Windows shows a SmartScreen prompt on first run. See the roadmap below.
+
+## Getting started
+
+### Use the app
+
+Install and launch `ezpdf`; the first-run walkthrough is in "First run" below.
+
+### Run from source
+
+Prerequisites: Node 20+ and **pnpm**, Rust stable, plus the Tauri 2 build dependencies for your platform (WebView2 on Windows; `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf libayatana-appindicator3-dev` on Linux).
+
+```bash
+pnpm install
+pnpm tauri dev      # desktop app (starts Vite automatically)
+```
+
+Useful commands:
+
+| Command | Purpose |
+| --- | --- |
+| `pnpm tauri dev` | Desktop development mode (restart after Rust changes) |
+| `pnpm dev` | Frontend only (opens in a browser; without a Tauri runtime OCR and translation stay idle) |
+| `pnpm build` | Type check (`vue-tsc --noEmit`) plus frontend build — this is the repo's typecheck command |
+| `pnpm tauri build` | Build installers (NSIS on Windows; add `--bundles deb,rpm` on Linux) |
+| `cd src-tauri && cargo check` / `cargo test` | Rust checks and tests (`cargo test` also regenerates the ts-rs bindings) |
+| `node scripts/sync-pi-models.mjs` | Refresh the vendored pi-ai model catalog (`--latest` to follow the newest release) |
+
+## First run
+
+1. **Create a repository**: click **Select** in the left sidebar and pick a folder (any empty folder works), or reopen a repository you created earlier.
+2. **Import PDFs**: click **Import PDF** and choose files (multiple selection supported). PDFs are copied into the repository and a skeleton JSON is generated next to each one.
+3. **Configure a translation model**: open Settings → **LLM**, choose a **provider** and a **preset model** (or type a model name), enter your **API key**, then click **Verify** to confirm connectivity. The OpenAI-compatible protocol is used by default.
+4. **Install the OCR service**: open Settings → **OCR** and click **Install service**. This installs the Python dependencies (including torch) and downloads the models (~1.9 GB; a China-mainland mirror is available). Once all five status lights are green the service is ready; pick CUDA if you have an NVIDIA GPU.
+5. **Start translating**: the toolbar shows **Start translation** because the app boots paused to save power. Click it once to begin, or enable **Wake the OCR service on launch** and **Resume on launch** under Settings → General for automatic operation.
+6. **Read**: click a book in the sidebar to open the two-pane reader. The toolbar switches between the 原译 / 译原 / 原文 / 译文 layouts and controls zoom and paging; the status bar at the bottom shows overall progress.
+
+> **Do not modify the contents of a repository by hand** — it can break both parsing and rendering.
+
+### Where data lives
+
+| Item | Location |
+| --- | --- |
+| App settings (including the API key) | Windows: `config.json` in the install directory; Linux / macOS: `~/.ezpdf/config.json` |
+| PDFs and parse JSON | Inside the repository folder you chose |
+| Bundled Python environment / models | Linux: `~/.ezpdf/venv`, `~/.ezpdf/models`; Windows: `python/` in the install directory and `~/.ezpdf/models` |
+
+> The API key is stored in `config.json` in plain text — mind the file permissions.
+
+## Roadmap
+
+- **Code signing**: the installers are unsigned. The plan is to apply for [SignPath Foundation](https://signpath.org/)'s free signing for open-source projects (certificate issued to SignPath Foundation, private key held in an HSM); a code signing policy statement will be added here once approved.
+- **AppImage**: not provided yet. An AppImage mounts read-only from a random path, which invalidates the virtual environment derived from the bundled Python runtime; supporting it means copying the interpreter to a stable location (such as `~/.ezpdf/python`) before creating the venv.
+- **Other protocols**: only OpenAI-compatible (`openai-completions`) endpoints can be called today; other protocols are identify-only in the provider catalog.
+
+## Contributing
+
+Issues and pull requests are welcome.
+
+1. Fork the repository and create a feature branch from `main`.
+2. Make sure the following pass before submitting:
+   ```bash
+   pnpm build                      # typecheck + frontend build
+   cd src-tauri && cargo test      # Rust tests + regenerate bindings
+   ```
+   There is no lint or unit-test script yet; those two commands are both the gate and the typecheck.
+3. Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:` / `fix:` / `docs:` …) and explain **why** in the body.
+4. Describe how to reproduce and verify your change in the PR (screenshots are welcome).
+
+Conventions:
+
+- **Do not edit generated files**: `src/lib/piModels.generated.ts`, `src-tauri/bindings/`, `src-tauri/gen/`.
+- **Do not commit secrets**: `auth.cfg` and `config.json` are gitignored, and the build script checks the bundle for leaked keys.
+- New Tauri plugin capabilities must be added to `src-tauri/capabilities/default.json`.
+- Changing the prompt protocol requires keeping `src-tauri/src/translate.rs`'s parser in sync.
+- UI strings live in `src/locales/` in three languages (简体中文 / 繁體中文 / English) — add new strings to all three.
+- Architecture and module design are documented in `AGENTS.md` (Chinese).
+
+## Acknowledgements
+
+- **Baidu PaddlePaddle team**: ezpdf's OCR is built entirely on their open-source work — **PP-DocLayoutV3** for layout analysis and **PaddleOCR-VL-1.6** for text recognition. Thanks also to the **PaddleOCR / PaddleX** projects and their communities.
+- **Mozilla pdf.js** (`pdfjs-dist`): the rendering foundation for both panes.
+- **Tauri**, **Vue 3**, **Vite**, **Pinia**: application shell and interface.
+- **KaTeX**: formula rendering.
+- **vue-i18n**: UI localization.
+- **pi-ai** (Mario Zechner): the vendored model and provider catalog.
+- **python-build-standalone** (Gregory Szorc / Astral): the relocatable Python runtime shipped with the app.
+- And every maintainer of the upstream dependencies.
+
+> Released under the Apache-2.0 license (see [LICENSE](LICENSE)). The models downloaded on first use remain the property of their respective authors; follow their licenses when using them.
