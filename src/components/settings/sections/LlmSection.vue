@@ -1,19 +1,83 @@
 <script setup lang="ts">
+import { computed, onMounted } from "vue";
 import { useParseStore } from "../../../stores/parse";
 import { useSettingsStore } from "../../../stores/settings";
+import {
+  CUSTOM_PROVIDER,
+  contextLabel,
+  costLabel,
+  isUsable,
+  providerLabel,
+  thinkingHint,
+  usableModels,
+} from "../../../lib/piModels";
 
 const settings = useSettingsStore();
 const parse = useParseStore();
+
+// 目录懒加载（~400KB 单独 chunk）：设置页打开 LLM 面板才拉
+onMounted(() => void settings.ensureCatalog());
+
+const isCustom = computed(() => settings.llm.provider === CUSTOM_PROVIDER);
+
+/** 兼容性/关思考说明：预设已定则不需要靠验证按钮慢慢试 */
+const hint = computed(() => thinkingHint(settings.llm.preset, settings.llm.thinkingOff));
+const unsupported = computed(
+  () => !!settings.llm.preset.api && settings.llm.preset.api !== "openai-completions",
+);
+
+function onProvider(e: Event): void {
+  settings.applyProvider((e.target as HTMLSelectElement).value);
+}
 </script>
 
 <template>
   <div class="set-pane">
     <h2 class="set-title">LLM 翻译</h2>
-    <label class="set-field">
+
+    <!--
+      供应商预设（用户 2026-09-15 整合 pi-ai 目录）：选供应商 → 自动填端点 + 列出预设模型，
+      并把「协议 / max tokens 字段 / 关思考参数形态」派生给 Rust 客户端（lib/piModels.ts）。
+      目录里协议不是 openai-completions 的供应商只能识别、不能调用。
+    -->
+    <div class="set-field">
+      <span>供应商</span>
+      <span class="set-select-wrap">
+        <select class="set-select llm-provider" :value="settings.llm.provider" @change="onProvider">
+          <optgroup label="可直连（OpenAI 兼容）">
+            <option v-for="p in settings.usableProviders" :key="p.id" :value="p.id">
+              {{ providerLabel(p.id) }} · {{ usableModels(p).length }} 个模型
+            </option>
+          </optgroup>
+          <optgroup v-if="settings.otherProviders.length" label="协议暂不支持（仅识别）">
+            <option v-for="p in settings.otherProviders" :key="p.id" :value="p.id">
+              {{ providerLabel(p.id) }} · 不可用
+            </option>
+          </optgroup>
+          <option :value="CUSTOM_PROVIDER">自定义（手填 Base URL / 模型）</option>
+        </select>
+        <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
+          <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+      </span>
+    </div>
+
+    <!-- 预设元信息：端点 / Key 环境变量 / 关思考形态 -->
+    <p class="set-hint llm-meta" :class="{ err: unsupported }">
+      <template v-if="!isCustom && settings.presetProvider">
+        <code class="llm-url">{{ settings.llm.baseUrl }}</code>
+        <span v-if="settings.presetProvider.envKeys.length">Key 环境变量：{{ settings.presetProvider.envKeys.join(" / ") }}</span>
+      </template>
+      {{ hint }}
+    </p>
+
+    <label v-if="isCustom" class="set-field">
       <span>API Base URL</span>
       <input v-model="settings.llm.baseUrl" placeholder="https://api.deepseek.com/v1" />
     </label>
-    <!-- API Key + 验证（用户 2026-09-14）：验证按钮检查连通性并探测关闭思考的参数策略 -->
+
+    <!-- API Key + 验证（用户 2026-09-14）：验证按钮检查连通性并探测关闭思考的参数策略；
+         预设已给出关思考形态时无需靠探测（策略仍会回写，作为显式覆盖） -->
     <div class="set-field-row llm-row">
       <label class="set-field">
         <span>API Key</span>
@@ -23,22 +87,55 @@ const parse = useParseStore();
         {{ settings.verifying ? "验证中…" : "验证" }}
       </button>
     </div>
-    <!-- 模型：datalist 补全 + 手动拉取（打开设置自动尝试一次） -->
+
+    <!-- 模型：手填输入（在线列表补全）+ 预设列表（目录内可搜索、带徽章） -->
     <div class="set-field-row llm-row">
       <label class="set-field">
         <span>模型</span>
-        <input v-model="settings.llm.model" list="llm-models" placeholder="deepseek-chat" />
+        <input
+          v-model="settings.llm.model"
+          list="llm-models"
+          placeholder="deepseek-chat"
+          @change="settings.refreshPreset()"
+        />
         <datalist id="llm-models">
           <option v-for="m in settings.modelOptions" :key="m" :value="m" />
         </datalist>
       </label>
       <button class="set-button llm-verify" :disabled="settings.modelsFetching" @click="settings.fetchModels()">
-        {{ settings.modelsFetching ? "获取中…" : "获取模型" }}
+        {{ settings.modelsFetching ? "获取中…" : "获取在线列表" }}
       </button>
     </div>
-    <p class="set-hint">
-      思考模式策略：{{ settings.llm.thinkingOff }}（验证时自动探测；none = 该端点无法关闭思考）。
-    </p>
+
+    <div v-if="!isCustom" class="set-field llm-models-field">
+      <span>预设模型</span>
+      <div class="llm-models">
+        <input v-model="settings.modelQuery" class="llm-search" placeholder="搜索模型 id / 名称…" />
+        <div class="model-list">
+          <button
+            v-for="m in settings.presetModels"
+            :key="m.id"
+            class="model-item"
+            :class="{ active: m.id === settings.llm.model, off: !isUsable(m) }"
+            :title="m.id"
+            @click="settings.applyModel(m.id)"
+          >
+            <span class="mi-name">{{ m.name }}</span>
+            <code class="mi-id">{{ m.id }}</code>
+            <span class="mi-badges">
+              <span v-if="!isUsable(m)" class="badge err">{{ m.api }}</span>
+              <span v-else-if="m.reasoning" class="badge">思考</span>
+              <span v-if="m.input.includes('image')" class="badge">图像</span>
+            </span>
+            <span class="mi-meta">{{ contextLabel(m.contextWindow) }} · {{ costLabel(m) }}</span>
+          </button>
+          <p v-if="!settings.presetModels.length" class="set-hint">
+            {{ settings.catalog ? "没有匹配的模型" : "目录加载中…" }}
+          </p>
+        </div>
+      </div>
+    </div>
+
     <label class="set-field">
       <span>目标语言</span>
       <input v-model="settings.llm.targetLang" placeholder="zh（简体中文）" />
@@ -67,5 +164,110 @@ const parse = useParseStore();
 .llm-verify {
   flex: none;
   margin-bottom: 1px;
+}
+.llm-provider {
+  width: 100%;
+}
+.llm-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: center;
+  margin: 2px 0 10px;
+}
+.llm-meta.err {
+  color: var(--err);
+}
+.llm-url {
+  font-size: 11px;
+  color: var(--text-2);
+  background: var(--bg-hover);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+}
+
+/* 预设模型：搜索 + 可滚动列表（行内是名称/id/徽章/上下文与价格） */
+.llm-models-field {
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: start;
+}
+.llm-models-field > span {
+  padding-top: 6px;
+}
+.llm-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.llm-search {
+  width: 100%;
+}
+.model-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+.model-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.model-item:last-child {
+  border-bottom: none;
+}
+.model-item:hover {
+  background: var(--bg-hover);
+}
+.model-item.active {
+  background: var(--accent-weak);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.model-item.off {
+  opacity: 0.55;
+}
+.mi-name,
+.mi-id {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mi-id {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.mi-badges {
+  display: inline-flex;
+  gap: 4px;
+}
+.badge {
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.badge.err {
+  background: rgba(229, 72, 77, 0.14);
+  color: var(--err);
+}
+.mi-meta {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
 }
 </style>

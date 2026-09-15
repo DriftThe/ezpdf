@@ -9,6 +9,10 @@ export type LlmVerifyReport = {
  */
 strategy: string, 
 /**
+ * 预设标记为非思考模型（此时 strategy 的 "none" 不是问题，前端不告警）
+ */
+presetNoThinking: boolean, 
+/**
  * 展示文案（含耗时与策略说明）
  */
 message: string, };

@@ -32,8 +32,10 @@ use ts_rs::TS;
 use crate::parse::truncate;
 use crate::{BindDoc, PageInfo};
 
-/// invoke 传入的 LLM 配置（前端 settings store；dev 期由项目根 auth.cfg 临时填充）
-#[derive(Debug, Clone, Deserialize)]
+/// invoke 传入的 LLM 配置（前端 settings store；dev 期由项目根 auth.cfg 临时填充）。
+/// 后 8 个字段是 pi-ai 预设目录派生（用户 2026-09-15）：前端选供应商/模型时算好随
+/// invoke 下发，Rust 只按数据施加，不内置目录（明细见 src/lib/piModels.ts）。
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmConfig {
     pub base_url: String,
@@ -43,12 +45,40 @@ pub struct LlmConfig {
     /// 智能上下文翻译开关（默认开，见 LlmSection）
     #[serde(default)]
     pub smart_context: bool,
-    /// 关思考请求参数策略："auto"（默认，按端点 URL 推断）|
+    /// 关思考请求参数策略："auto"（默认，按预设/端点推断）|
     /// "reasoning" | "enable_thinking" | "thinking_type" | "none"。
-    /// 由设置页「验证」按钮探测后写入（用户 2026-09-14）。
+    /// 由设置页「验证」按钮探测后写入（用户 2026-09-14）；显式值优先于预设形态。
     #[serde(default)]
     pub thinking_off: String,
+    /// 预设供应商 id（pi-ai 目录；"" = 自定义）
+    #[serde(default)]
+    pub provider: String,
+    /// 预设协议（pi-ai api 字段；"" = 未知 → 按 OpenAI 兼容处理）。
+    /// 非 "openai-completions" 的模型直接报错——当前客户端只说这一种协议。
+    #[serde(default)]
+    pub api: String,
+    /// pi-ai thinkingFormat（openai | openrouter | deepseek | zai | qwen | qwen-chat-template）
+    #[serde(default)]
+    pub thinking_format: String,
+    /// 预设派生的关思考施加方式（"" = 未知 → 退回端点 URL 规则）
+    #[serde(default)]
+    pub thinking_off_kind: String,
+    /// reasoning_effort 取值（openrouter/openai 形态；None = 无法关闭思考）
+    #[serde(default)]
+    pub thinking_off_value: Option<String>,
+    /// max tokens 字段名（"" = max_tokens；"max_completion_tokens" = 换名，pi-ai compat）
+    #[serde(default)]
+    pub max_tokens_field: String,
+    /// 预设模型是否带思考模式（None = 未知）；false = 无需关思考参数
+    #[serde(default)]
+    pub model_reasoning: Option<bool>,
+    /// 模型特有请求头（pi-ai 目录里少数模型有）
+    #[serde(default)]
+    pub extra_headers: std::collections::BTreeMap<String, String>,
 }
+
+/// 当前唯一支持的线上协议（pi-ai 的 api 字段取值）
+const SUPPORTED_API: &str = "openai-completions";
 
 impl LlmConfig {
     /// 三要素缺失即视为未配置：翻译整体跳过（OCR 不受影响）
@@ -332,56 +362,104 @@ pub fn llm_client() -> Result<reqwest::Client, String> {
 /// 忽略该头。仅在 base_url 命中 opencode.ai 时发送（见 PLAN-LLM.md §5）。
 const OPENCODE_SESSION: &str = "ezpdf";
 
-/// 关思考参数策略（用户 2026-09-14）：显式策略直接施加；"auto"/未知按端点 URL 推断；
-/// "none" 不加任何参数（OpenAI 官方等对未知参数直接 400，兼容优先）。
-/// 实测矩阵见 PLAN-LLM.md §5。
-fn apply_thinking_off(body: &mut Value, url: &str, strategy: &str) {
-    match strategy {
+/// 关思考参数：显式策略 > 实测端点规则 > pi-ai 预设形态（用户 2026-09-15）。
+/// - 显式策略来自设置页「验证」探测（用户 2026-09-14），仍然最优先；
+/// - opencode zen / SiliconFlow 是实测过的硬规则（见 PLAN-LLM.md §5），不交给预设覆盖；
+/// - 预设形态对应 pi-ai openai-completions provider 的 buildParams：deepseek 用
+///   thinking.type、zai/qwen 用 enable_thinking、openrouter 用 reasoning.effort、
+///   openai 仅在目录给了 off 值时才写 reasoning_effort；"none" = 不加参数。
+fn apply_thinking_off(body: &mut Value, url: &str, cfg: &LlmConfig) {
+    match cfg.thinking_off.trim() {
         "reasoning" => {
             body["reasoning"] = json!({"enabled": false});
             body["reasoning_effort"] = json!("none");
+            return;
         }
-        "enable_thinking" => body["enable_thinking"] = json!(false),
+        "enable_thinking" => {
+            body["enable_thinking"] = json!(false);
+            return;
+        }
+        "thinking_type" => {
+            body["thinking"] = json!({"type": "disabled"});
+            return;
+        }
+        "none" => return,
+        _ => {}
+    }
+    // 预设标记为非思考模型：pi-ai 同样不写任何思考参数
+    if cfg.model_reasoning == Some(false) {
+        return;
+    }
+    // auto：先走实测端点规则
+    if url.contains("opencode.ai") {
+        // opencode zen（OpenRouter 系）
+        body["reasoning"] = json!({"enabled": false});
+        body["reasoning_effort"] = json!("none");
+        return;
+    }
+    if url.contains("siliconflow") {
+        // SiliconFlow（Qwen3.5 默认开思考）
+        body["enable_thinking"] = json!(false);
+        body["thinking"] = json!({"type": "disabled"});
+        return;
+    }
+    // auto：pi-ai 预设形态
+    match cfg.thinking_off_kind.trim() {
         "thinking_type" => body["thinking"] = json!({"type": "disabled"}),
-        "none" => {}
-        _ => {
-            // auto：opencode zen（OpenRouter 系）用 reasoning 参数；
-            // SiliconFlow（Qwen3.5 默认开思考）用 enable_thinking + thinking.type
-            if url.contains("opencode.ai") {
-                body["reasoning"] = json!({"enabled": false});
-                body["reasoning_effort"] = json!("none");
-            } else if url.contains("siliconflow") {
-                body["enable_thinking"] = json!(false);
-                body["thinking"] = json!({"type": "disabled"});
-            }
+        "enable_thinking" => body["enable_thinking"] = json!(false),
+        "chat_template_kwargs" => {
+            body["chat_template_kwargs"] = json!({"enable_thinking": false, "preserve_thinking": true});
         }
+        "reasoning_effort" => {
+            let value = cfg.thinking_off_value.clone().unwrap_or_else(|| "none".into());
+            body["reasoning_effort"] = json!(value);
+        }
+        _ => {}
     }
 }
 
-/// OpenAI 兼容 /chat/completions 请求（关思考策略 + zen 路由头），供对话与验证共用
+/// OpenAI 兼容 /chat/completions 请求（协议校验 + max tokens 字段名 + 关思考策略 +
+/// zen 路由头 + 预设模型特有头），供对话与验证共用
 fn chat_request(
     client: &reqwest::Client,
     cfg: &LlmConfig,
     messages: &[Value],
     max_tokens: u32,
-) -> reqwest::RequestBuilder {
+) -> Result<reqwest::RequestBuilder, String> {
+    // 预设协议不匹配就直接失败（用户 2026-09-15）：与其发出去被 400/乱答，不如说清原因
+    if !cfg.api.trim().is_empty() && cfg.api.trim() != SUPPORTED_API {
+        return Err(format!(
+            "模型 {} 使用 {} 协议，当前仅支持 OpenAI 兼容端点（{SUPPORTED_API}）",
+            cfg.model,
+            cfg.api.trim()
+        ));
+    }
     let url = format!(
         "{}/chat/completions",
         cfg.base_url.trim().trim_end_matches('/')
     );
+    // max tokens 字段名：pi-ai compat 判定（标准 OpenAI 系用 max_completion_tokens）
+    let token_field = if cfg.max_tokens_field.trim() == "max_completion_tokens" {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
     let mut body = json!({
         "model": cfg.model,
         "messages": messages,
         "temperature": 0,
-        "max_tokens": max_tokens,
         "stream": false,
     });
-    apply_thinking_off(&mut body, &url, cfg.thinking_off.trim());
+    body[token_field] = json!(max_tokens);
+    apply_thinking_off(&mut body, &url, cfg);
     let mut req = client.post(&url).bearer_auth(&cfg.api_key);
     if url.contains("opencode.ai") {
         req = req.header("x-opencode-session", OPENCODE_SESSION);
     }
-    req.json(&body)
+    for (key, value) in &cfg.extra_headers {
+        req = req.header(key, value);
+    }
+    Ok(req.json(&body))
 }
 
 /// 发一次对话请求，返回 choices[0].message 原始对象（取 content 与思考检测共用）
@@ -391,7 +469,7 @@ async fn chat_raw(
     messages: &[Value],
     max_tokens: u32,
 ) -> Result<Value, String> {
-    let resp = chat_request(client, cfg, messages, max_tokens)
+    let resp = chat_request(client, cfg, messages, max_tokens)?
         .send()
         .await
         .map_err(|e| format!("LLM 请求失败: {e}"))?;
@@ -437,6 +515,8 @@ const PROBE_MAX_TOKENS: u32 = 64;
 pub struct LlmVerifyReport {
     /// 生效策略；"none" = 连通但尝试后仍无法关闭思考（前端 toast 警告）
     pub strategy: String,
+    /// 预设标记为非思考模型（此时 strategy 的 "none" 不是问题，前端不告警）
+    pub preset_no_thinking: bool,
     /// 展示文案（含耗时与策略说明）
     pub message: String,
 }
@@ -460,7 +540,8 @@ fn message_thinks(msg: &Value) -> bool {
         .unwrap_or(true)
 }
 
-/// 验证 LLM：先按 auto 发探测（失败即连通性错误，原样返回），仍在思考则逐个试显式策略
+/// 验证 LLM：先按 auto 发探测（失败即连通性错误，原样返回），仍在思考则逐个试显式策略。
+/// 预设模型若标记为非思考（pi-ai 目录 reasoning=false）则跳过策略搜索。
 pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
     if !cfg.usable() {
         return Err("请先填写 Base URL / API Key / 模型".into());
@@ -472,6 +553,17 @@ pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
     let mut probe = cfg.clone();
     probe.thinking_off = "auto".into();
     let first = chat_raw(&client, &probe, &messages, PROBE_MAX_TOKENS).await?; // 连通性失败 → 直接上报
+    let preset_no_thinking = cfg.model_reasoning == Some(false);
+    if preset_no_thinking {
+        return Ok(LlmVerifyReport {
+            strategy: "none".into(),
+            preset_no_thinking,
+            message: format!(
+                "连接正常（{}ms）；预设标记为非思考模型，无需关思考参数",
+                started.elapsed().as_millis()
+            ),
+        });
+    }
     let mut strategy = if !message_thinks(&first) { "auto" } else { "" };
     if strategy.is_empty() {
         for cand in ["reasoning", "enable_thinking", "thinking_type"] {
@@ -490,11 +582,13 @@ pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
     Ok(if strategy.is_empty() {
         LlmVerifyReport {
             strategy: "none".into(),
+            preset_no_thinking,
             message: format!("连接正常（{ms}ms），但尝试后无法关闭思考模式"),
         }
     } else {
         LlmVerifyReport {
             strategy: strategy.to_string(),
+            preset_no_thinking,
             message: format!("连接正常（{ms}ms），思考关闭策略：{strategy}"),
         }
     })
@@ -802,6 +896,18 @@ mod tests {
             target_lang: "Simplified Chinese".into(),
             smart_context: smart,
             thinking_off: "auto".into(),
+            ..Default::default()
+        }
+    }
+
+    /// 关思考施加的输入：显式策略 + pi-ai 预设形态
+    fn think_cfg(strategy: &str, kind: &str, value: Option<&str>, reasoning: Option<bool>) -> LlmConfig {
+        LlmConfig {
+            thinking_off: strategy.into(),
+            thinking_off_kind: kind.into(),
+            thinking_off_value: value.map(String::from),
+            model_reasoning: reasoning,
+            ..Default::default()
         }
     }
 
@@ -825,32 +931,109 @@ mod tests {
 
     #[test]
     fn thinking_off_strategies_shape_body() {
+        let explicit = |s: &str| think_cfg(s, "", None, None);
         let mut body = json!({});
-        apply_thinking_off(&mut body, "https://x/v1", "reasoning");
+        apply_thinking_off(&mut body, "https://x/v1", &explicit("reasoning"));
         assert_eq!(body["reasoning"]["enabled"], json!(false));
         assert_eq!(body["reasoning_effort"], json!("none"));
 
         let mut body = json!({});
-        apply_thinking_off(&mut body, "https://x/v1", "enable_thinking");
+        apply_thinking_off(&mut body, "https://x/v1", &explicit("enable_thinking"));
         assert_eq!(body["enable_thinking"], json!(false));
 
         let mut body = json!({});
-        apply_thinking_off(&mut body, "https://x/v1", "thinking_type");
+        apply_thinking_off(&mut body, "https://x/v1", &explicit("thinking_type"));
         assert_eq!(body["thinking"]["type"], json!("disabled"));
 
-        // auto 矩阵：zen → reasoning；siliconflow → enable_thinking；未知端点不加参数
+        // auto 矩阵（实测过的端点规则）：zen → reasoning；siliconflow → enable_thinking+thinking
+        let auto = |kind: &str, value: Option<&str>, reasoning: Option<bool>| {
+            think_cfg("auto", kind, value, reasoning)
+        };
         let mut body = json!({});
-        apply_thinking_off(&mut body, "https://zen.opencode.ai/v1", "auto");
+        apply_thinking_off(&mut body, "https://zen.opencode.ai/v1", &auto("", None, None));
         assert_eq!(body["reasoning"]["enabled"], json!(false));
         let mut body = json!({});
-        apply_thinking_off(&mut body, "https://api.siliconflow.cn/v1", "auto");
+        apply_thinking_off(&mut body, "https://api.siliconflow.cn/v1", &auto("", None, None));
+        assert_eq!(body["enable_thinking"], json!(false));
+        assert_eq!(body["thinking"]["type"], json!("disabled"));
+
+        // 未知端点不加参数；显式 none 同样不加
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://api.openai.com/v1", &auto("", None, None));
+        assert!(body.as_object().unwrap().is_empty());
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://api.openai.com/v1", &explicit("none"));
+        assert!(body.as_object().unwrap().is_empty());
+
+        // pi-ai 预设形态（用户 2026-09-15）：deepseek / zai / qwen / openrouter / openai
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://x/v1", &auto("thinking_type", None, Some(true)));
+        assert_eq!(body["thinking"]["type"], json!("disabled"));
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://x/v1", &auto("enable_thinking", None, Some(true)));
         assert_eq!(body["enable_thinking"], json!(false));
         let mut body = json!({});
-        apply_thinking_off(&mut body, "https://api.openai.com/v1", "auto");
-        assert!(body.as_object().unwrap().is_empty());
+        apply_thinking_off(&mut body, "https://x/v1", &auto("chat_template_kwargs", None, Some(true)));
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(false));
         let mut body = json!({});
-        apply_thinking_off(&mut body, "https://api.openai.com/v1", "none");
+        apply_thinking_off(&mut body, "https://x/v1", &auto("reasoning_effort", None, Some(true)));
+        assert_eq!(body["reasoning_effort"], json!("none")); // openrouter 缺省 off = "none"
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://x/v1", &auto("reasoning_effort", Some("low"), Some(true)));
+        assert_eq!(body["reasoning_effort"], json!("low"));
+        // 预设 openai 形态且目录没给 off 值 → 不加参数（与 pi-ai 一致）
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://x/v1", &auto("none", None, Some(true)));
         assert!(body.as_object().unwrap().is_empty());
+        // 预设标记为非思考模型 → 不加参数（即使形态表有值）
+        let mut body = json!({});
+        apply_thinking_off(&mut body, "https://x/v1", &auto("enable_thinking", None, Some(false)));
+        assert!(body.as_object().unwrap().is_empty());
+
+        // 协议不支持：请求直接失败（不进 body 构造）
+        let cfg = LlmConfig {
+            base_url: "https://x/v1".into(),
+            api_key: "k".into(),
+            model: "claude-x".into(),
+            api: "anthropic-messages".into(),
+            ..Default::default()
+        };
+        let err = chat_request(&llm_client().unwrap(), &cfg, &[], 64).unwrap_err();
+        assert!(err.contains("anthropic-messages"), "{err}");
+    }
+
+    #[test]
+    fn max_tokens_field_follows_preset_compat() {
+        let client = llm_client().unwrap();
+        let cfg = LlmConfig {
+            base_url: "https://x/v1".into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            max_tokens_field: "max_completion_tokens".into(),
+            ..Default::default()
+        };
+        let req = chat_request(&client, &cfg, &[], 128).unwrap().build().unwrap();
+        let body: Value = serde_json::from_slice(req.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["max_completion_tokens"], json!(128));
+        assert!(body.get("max_tokens").is_none());
+
+        let cfg = LlmConfig { max_tokens_field: "max_tokens".into(), ..cfg };
+        let req = chat_request(&client, &cfg, &[], 128).unwrap().build().unwrap();
+        let body: Value = serde_json::from_slice(req.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["max_tokens"], json!(128));
+    }
+
+    #[test]
+    fn extra_headers_reach_the_request() {
+        let cfg = LlmConfig {
+            base_url: "https://x/v1".into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            extra_headers: [("x-custom".to_string(), "42".to_string())].into_iter().collect(),
+            ..Default::default()
+        };
+        let req = chat_request(&llm_client().unwrap(), &cfg, &[], 64).unwrap().build().unwrap();
+        assert_eq!(req.headers().get("x-custom").unwrap(), "42");
     }
 
     #[test]

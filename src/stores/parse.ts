@@ -16,17 +16,7 @@ import { loadPdfDoc } from "../composables/usePdfDoc";
 import { renderPageToDataUrl, RENDER_SCALE } from "../lib/pageCapture";
 import { useLibraryStore } from "./library";
 import { useReaderStore } from "./reader";
-import { useSettingsStore } from "./settings";
-
-/** invoke 传给 Rust 的 LLM 配置（translate.rs LlmConfig，serde camelCase） */
-interface LlmPayload {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  targetLang: string;
-  smartContext: boolean;
-  thinkingOff: string;
-}
+import { useSettingsStore, type LlmInvokePayload } from "./settings";
 
 /** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，调度整体静默（同 listen().catch 哲学） */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -268,18 +258,10 @@ export const useParseStore = defineStore("parse", () => {
     kind: "ocr" | "translate";
   }
 
-  /** LLM 三要素齐全才开翻译（否则整条翻译支路关闭，书直接视为无事可做） */
-  function llmPayload(): LlmPayload | null {
-    const s = useSettingsStore().llm;
-    if (!s.baseUrl.trim() || !s.apiKey.trim() || !s.model.trim()) return null;
-    return {
-      baseUrl: s.baseUrl.trim(),
-      apiKey: s.apiKey,
-      model: s.model,
-      targetLang: s.targetLang,
-      smartContext: s.smartContext,
-      thinkingOff: s.thinkingOff,
-    };
+  /** LLM 三要素齐全才开翻译（否则整条翻译支路关闭，书直接视为无事可做）；
+   *  预设兼容性快照（协议/关思考/请求字段）由 settings store 统一拼装 */
+  function llmPayload(): LlmInvokePayload | null {
+    return useSettingsStore().llmInvokePayload();
   }
 
   /** 选书：聚焦书优先，其余按索引序。逐本 load_pdf 直读绑定 JSON 的
