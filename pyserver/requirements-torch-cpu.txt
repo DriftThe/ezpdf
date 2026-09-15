@@ -1,4 +1,6 @@
-# CPU 变体：PyPI 默认构建（~200MB）
-# index-url 由 Rust 按【镜像源开关】显式传入（TUNA 镜像或 PyPI 官方），见 pyenv.rs
+# CPU 变体：CPU wheel 索引的 +cpu 构建（~250MB）
+# index-url 由 Rust 按【镜像源开关 + 平台】显式传入（见 pyenv.rs）：
+#   Linux 必须走 /cpu 索引——PyPI 的 Linux torch 轮子默认捆绑 CUDA（装完 5GB）；
+#   Windows 的 PyPI torch 本来就是 CPU 构建，直接 TUNA/PyPI 即可。
 torch==2.13.0
 torchvision==0.28.0

@@ -65,12 +65,29 @@ def _dep_report() -> tuple[dict[str, str | None], list[str]]:
     return deps, missing
 
 
+def _has_bundled_cuda() -> bool:
+    """PyPI 的 Linux torch 轮子**捆绑 CUDA** 却不带 `+cu` 本地版本号（实测 2.13.0
+    自述 torch.version.cuda=13.0），只能靠随它装进来的 nvidia-* / triton 判断。"""
+    try:
+        for dist in importlib.metadata.distributions():
+            name = (dist.metadata["Name"] or "").lower()
+            if name.startswith("nvidia-") or name == "triton":
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _torch_build(deps: dict[str, str | None]) -> str | None:
-    """torch 构建变体：+cuNNN 后缀 = cuda 构建，否则 = cpu 构建；未装 = None。"""
+    """torch 构建变体：+cuNNN 后缀 = cuda 构建，+cpu = cpu 构建；未装 = None。"""
     version = deps.get("torch")
     if version is None:
         return None
-    return "cuda" if "+cu" in version else "cpu"
+    if "+cu" in version:
+        return "cuda"
+    if "+cpu" in version:
+        return "cpu"
+    return "cuda" if _has_bundled_cuda() else "cpu"
 
 
 def _gpu_report() -> dict | None:

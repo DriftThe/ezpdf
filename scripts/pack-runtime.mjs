@@ -70,12 +70,19 @@ function rmrf(p) {
 
 function dirSize(p) {
   let total = 0;
+  // 硬链接去重：随包 Python 用硬链接复用同一份二进制（bin/python3.12、libpython*.so 等），
+  // tar/deb 只存一份，报体积也应按一份算（否则 Linux 侧会虚报 ~2 倍）
+  const seen = new Set();
   for (const entry of fs.readdirSync(p, { withFileTypes: true, recursive: true })) {
     // fs.readdirSync recursive gives relative paths in entry.parentPath
     const abs = path.join(entry.parentPath ?? p, entry.name);
     try {
       const st = fs.statSync(abs);
-      if (st.isFile()) total += st.size;
+      if (!st.isFile()) continue;
+      const key = `${st.dev}:${st.ino}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      total += st.size;
     } catch {
       /* 忽略竞态删除 */
     }

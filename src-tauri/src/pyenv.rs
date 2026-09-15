@@ -580,8 +580,19 @@ async fn pip_install(
         };
         let extra = if use_mirror { PYPI_MIRROR } else { PYPI_OFFICIAL };
         args.extend(svec(&["--index-url", &index, "--extra-index-url", extra]));
+    } else if req_file.contains("torch-cpu") && !cfg!(windows) {
+        // Linux 的 PyPI torch 轮子默认**捆绑 CUDA**（实测 nvidia-* 2.7GB + triton 0.7GB），
+        // 且元数据版本不带 +cu 后缀，光看版本号骗得过去；CPU 变体必须走 CPU wheel 索引
+        // 才拿得到 +cpu 轮子（~250MB）。Windows 的 PyPI torch 本来就是 CPU 构建。
+        let index = if use_mirror {
+            format!("{TORCH_MIRROR_BASE}/cpu")
+        } else {
+            format!("{TORCH_OFFICIAL_BASE}/cpu")
+        };
+        let extra = if use_mirror { PYPI_MIRROR } else { PYPI_OFFICIAL };
+        args.extend(svec(&["--index-url", &index, "--extra-index-url", extra]));
     } else if use_mirror {
-        // CPU torch 与其余依赖都在 PyPI：镜像 = TUNA（官方 = 默认 PyPI，无需参数）
+        // CPU torch（Windows）与其余依赖都在 PyPI：镜像 = TUNA（官方 = 默认 PyPI，无需参数）
         args.extend(svec(&["--index-url", PYPI_MIRROR]));
     }
     run_streamed(app, &paths.python, &args, &paths.root, &paths.models, &[], progress).await
