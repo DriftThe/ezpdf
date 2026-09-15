@@ -6,9 +6,6 @@ import { useSettingsStore } from "../../../stores/settings";
 import {
   CUSTOM_PROVIDER,
   SUPPORTED_API,
-  contextLabel,
-  costLabel,
-  isUsable,
   providerLabel,
   thinkingHint,
 } from "../../../lib/piModels";
@@ -113,7 +110,7 @@ function onPickLang(e: Event): void {
       </button>
     </div>
 
-    <!-- 模型：手填输入（在线列表补全）+ 预设列表（目录内可搜索、带徽章） -->
+    <!-- 模型：手填输入（「获取在线列表」补全 datalist；命中 pi-ai 目录就走预设快照） -->
     <div class="set-field-row llm-row">
       <label class="set-field">
         <span>{{ t("llm.model") }}</span>
@@ -130,35 +127,6 @@ function onPickLang(e: Event): void {
       <button class="set-button llm-verify" :disabled="settings.modelsFetching" @click="settings.fetchModels()">
         {{ settings.modelsFetching ? t("llm.fetching") : t("llm.fetchModels") }}
       </button>
-    </div>
-
-    <div v-if="!isCustom" class="set-field llm-models-field">
-      <span>{{ t("llm.presetModels") }}</span>
-      <div class="llm-models">
-        <input v-model="settings.modelQuery" class="llm-search" :placeholder="t('llm.modelSearchPlaceholder')" />
-        <div class="model-list">
-          <button
-            v-for="m in settings.presetModels"
-            :key="m.id"
-            class="model-item"
-            :class="{ active: m.id === settings.llm.model, off: !isUsable(m) }"
-            :title="m.id"
-            @click="settings.applyModel(m.id)"
-          >
-            <span class="mi-name">{{ m.name }}</span>
-            <code class="mi-id">{{ m.id }}</code>
-            <span class="mi-badges">
-              <span v-if="!isUsable(m)" class="badge err">{{ m.api }}</span>
-              <span v-else-if="m.reasoning" class="badge">{{ t("llm.badgeReasoning") }}</span>
-              <span v-if="m.input.includes('image')" class="badge">{{ t("llm.badgeImage") }}</span>
-            </span>
-            <span class="mi-meta">{{ contextLabel(m.contextWindow) }} · {{ costLabel(m) }}</span>
-          </button>
-          <p v-if="!settings.presetModels.length" class="set-hint">
-            {{ settings.catalog ? t("llm.noMatchModels") : t("llm.catalogLoading") }}
-          </p>
-        </div>
-      </div>
     </div>
 
     <div class="set-field">
@@ -221,90 +189,5 @@ function onPickLang(e: Event): void {
   background: var(--bg-hover);
   padding: 1px 6px;
   border-radius: var(--radius-sm);
-}
-
-/* 预设模型：搜索 + 可滚动列表（行内是名称/id/徽章/上下文与价格） */
-.llm-models-field {
-  grid-template-columns: 110px minmax(0, 1fr);
-  align-items: start;
-}
-.llm-models-field > span {
-  padding-top: 6px;
-}
-.llm-models {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.llm-search {
-  width: 100%;
-}
-.model-list {
-  max-height: 260px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-panel);
-}
-.model-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto auto;
-  gap: 8px;
-  align-items: center;
-  width: 100%;
-  padding: 5px 10px;
-  border: none;
-  border-bottom: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-1);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-.model-item:last-child {
-  border-bottom: none;
-}
-.model-item:hover {
-  background: var(--bg-hover);
-}
-.model-item.active {
-  background: var(--accent-weak);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.model-item.off {
-  opacity: 0.55;
-}
-.mi-name,
-.mi-id {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.mi-id {
-  font-size: 11px;
-  color: var(--text-3);
-}
-.mi-badges {
-  display: inline-flex;
-  gap: 4px;
-}
-.badge {
-  font-size: 10px;
-  line-height: 1.5;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--bg-hover);
-  color: var(--text-2);
-  white-space: nowrap;
-}
-.badge.err {
-  background: rgba(229, 72, 77, 0.14);
-  color: var(--err);
-}
-.mi-meta {
-  font-size: 11px;
-  color: var(--text-3);
-  white-space: nowrap;
 }
 </style>

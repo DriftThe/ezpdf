@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import type { LlmVerifyReport } from "../../src-tauri/bindings/LlmVerifyReport";
 import type { UpdateInfo } from "../../src-tauri/bindings/UpdateInfo";
-import type { PiModel, PiProvider } from "../lib/piModels.generated";
+import type { PiProvider } from "../lib/piModels.generated";
 import {
   CUSTOM_PROVIDER,
   EMPTY_PRESET,
@@ -234,8 +234,6 @@ export const useSettingsStore = defineStore("settings", () => {
 
   /** pi-ai 目录（懒加载；null = 未加载——纯浏览器模式不加载） */
   const catalog = ref<PiProvider[] | null>(null);
-  /** 模型搜索词（设置页 UI 状态） */
-  const modelQuery = ref("");
 
   /** 目录加载（幂等；非 Tauri/加载失败都静默：预设不可用时手填 Base URL 仍能跑） */
   let catalogPromise: Promise<PiProvider[] | null> | null = null;
@@ -264,15 +262,6 @@ export const useSettingsStore = defineStore("settings", () => {
   const presetProvider = computed<PiProvider | null>(() =>
     findProvider(catalog.value ?? [], llm.value.provider),
   );
-  /** 当前预设供应商的可用模型（按搜索词过滤） */
-  const presetModels = computed<PiModel[]>(() => {
-    const provider = presetProvider.value;
-    if (!provider) return [];
-    const q = modelQuery.value.trim().toLowerCase();
-    return provider.models.filter(
-      (m) => !q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
-    );
-  });
 
   /** LLM 验证/模型拉取进行中（按钮防重入 + 文案） */
   const verifying = ref(false);
@@ -405,14 +394,6 @@ export const useSettingsStore = defineStore("settings", () => {
       if (first) llm.value.model = first.id;
     }
     const model = findModel(catalog.value ?? [], id, llm.value.model) ?? provider.models[0];
-    if (model) llm.value.baseUrl = model.baseUrl;
-    syncPreset();
-  }
-
-  /** 选预设模型：同步该模型端点（同一供应商可能有多个端点）+ 重算快照 */
-  function applyModel(modelId: string): void {
-    llm.value.model = modelId;
-    const model = findModel(catalog.value ?? [], llm.value.provider, modelId);
     if (model) llm.value.baseUrl = model.baseUrl;
     syncPreset();
   }
@@ -606,11 +587,9 @@ export const useSettingsStore = defineStore("settings", () => {
     updateBusy,
     updateText,
     catalog,
-    modelQuery,
     usableProviders,
     otherProviders,
     presetProvider,
-    presetModels,
     openPage,
     save,
     setRepoPath,
@@ -618,7 +597,6 @@ export const useSettingsStore = defineStore("settings", () => {
     setLang,
     ensureCatalog,
     applyProvider,
-    applyModel,
     refreshPreset,
     llmInvokePayload,
     verifyLlm,

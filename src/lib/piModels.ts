@@ -208,9 +208,9 @@ export function thinkingHint(compat: LlmPresetCompat, strategy: string): string 
     return t("pi.thinkingHintIncompatible", { api: compat.api });
   }
   if (compat.reasoning === false) return t("pi.thinkingHintNoReasoning");
-  if (compat.thinkingOffKind === "none") {
-    return t("pi.thinkingHintNoParam");
-  }
+  // 预设没给出关思考参数：不做预警（用户 2026-09-15）——后端验证按钮会按四种形态逐个探测
+  // 并把手感正确的那种写进 config；实在关不掉才 toast 警告
+  if (compat.thinkingOffKind === "none") return "";
   const kind = compat.thinkingOffKind || t("pi.thinkingKindUnknown");
   const fmt = compat.thinkingFormat
     ? t("pi.thinkingHintFormatSuffix", { fmt: compat.thinkingFormat })

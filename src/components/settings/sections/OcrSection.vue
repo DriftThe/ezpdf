@@ -142,7 +142,7 @@ const lights = computed(() => [
     <div class="set-field">
       <span>{{ t("ocr.mode") }}</span>
       <span class="set-select-wrap">
-        <select v-model="settings.ocr.mode" class="set-select" :title="t('ocr.modeHint')">
+        <select v-model="settings.ocr.mode" class="set-select">
           <option value="local">{{ t("ocr.modeLocal") }}</option>
           <option value="online">{{ t("ocr.modeOnline") }}</option>
         </select>
@@ -151,7 +151,6 @@ const lights = computed(() => [
         </svg>
       </span>
     </div>
-    <p class="set-hint">{{ t("ocr.modeHint") }}</p>
 
     <!-- 在线模式：地址框 + 右侧「测试」（只探活，不改连接状态）+ 启动服务完成登记 -->
     <template v-if="online">
@@ -164,7 +163,6 @@ const lights = computed(() => [
           </button>
         </div>
       </div>
-      <p class="set-hint">{{ t("ocr.urlHint") }}</p>
       <!-- 服务端公布的单批页数（点「测试」或连接后出现；每次 OCR 请求前会重新握手） -->
       <p v-if="parse.onlineHealth" class="set-hint batch-hint">
         {{ t("ocr.batchHint", { batch: parse.onlineHealth.maxBatchPages }) }}
@@ -228,7 +226,8 @@ const lights = computed(() => [
         <button v-if="serviceBusy" class="set-button" @click="parse.stopService()">{{ t("ocr.stopService") }}</button>
       </div>
     </div>
-    <div class="set-field">
+    <!-- 日志只在本地托管模式显示（用户 2026-09-15）：在线服务的日志在服务端自己那边 -->
+    <div v-if="!online" class="set-field">
       <span>{{ t("settings.log") }}</span>
       <pre class="log-box">{{ parse.envLogs.join("\n") || t("settings.noLogs") }}</pre>
     </div>
