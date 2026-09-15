@@ -116,7 +116,7 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
           unparsed: row.pdf.bind === null,
           nested: row.inFolder,
         }"
-        :title="row.pdf.bind === null ? t('repo.unparsedName', { name: row.pdf.name }) : row.pdf.id"
+        :title="row.pdf.bind === null ? t('repo.unparsedName', { name: row.pdf.name }) : row.pdf.name"
         @click="lib.selectPdf(row.pdf)"
       >
         <span class="pdf-glyph" aria-hidden="true">
