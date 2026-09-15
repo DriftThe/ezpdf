@@ -717,8 +717,13 @@ mod tests {
         assert!(check_relative("../foo.json").is_err());
         assert!(check_relative("sub/../../foo.json").is_err());
         assert!(check_relative("/abs/foo.json").is_err());
-        assert!(check_relative(r"C:\evil\foo.json").is_err());
-        assert!(check_relative(r"a-..\..\evil.pdf").is_err());
+        // Windows 盘符前缀/反斜杠只在 Windows 上构成越界：Unix 里 `\` 是普通字符，
+        // 这类值等于「仓库内一个奇怪文件名」，出不了仓库，不适用同一断言
+        #[cfg(windows)]
+        {
+            assert!(check_relative(r"C:\evil\foo.json").is_err());
+            assert!(check_relative(r"a-..\..\evil.pdf").is_err());
+        }
     }
 
     #[test]

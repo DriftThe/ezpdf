@@ -45,7 +45,11 @@ function targetFor() {
 }
 
 const TARGET = targetFor();
-const PY_ASSET = `cpython-${PY_VERSION}+${PY_TAG}-${TARGET.triple}-install_only.tar.gz`;
+/** 用 stripped 变体：未 strip 的 Linux 运行时里 libpython3.12.so.1.0 就 209MB、
+ *  bin/python3.12 又 98MB（Windows 侧则是 .pdb）；strip 只去调试符号不影响运行，
+ *  已在两个平台上用「解释器自检 + 建 venv」验证过。 */
+const PY_VARIANT = "install_only_stripped";
+const PY_ASSET = `cpython-${PY_VERSION}+${PY_TAG}-${TARGET.triple}-${PY_VARIANT}.tar.gz`;
 const ASSET_ENC = encodeURIComponent(PY_ASSET);
 const MIRRORS = [
   `https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/${PY_TAG}/${ASSET_ENC}`,
