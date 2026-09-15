@@ -44,7 +44,7 @@ def _decode_image(payload: str) -> Image.Image:
         image = Image.open(io.BytesIO(raw))
         return image.convert("RGB")
     except (binascii.Error, ValueError, OSError) as exc:
-        raise HTTPException(status_code=400, detail=f"无法解码图片: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"failed to decode image: {exc}") from exc
 
 
 def _region_json(r: RegionResult) -> dict:
@@ -63,7 +63,7 @@ async def ocr_page(req: PageRequest) -> dict:
     try:
         result = await run_in_threadpool(engine.recognize, image)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"OCR 推理失败: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"OCR inference failed: {exc}") from exc
     return {
         "width": result.width,
         "height": result.height,
@@ -78,7 +78,7 @@ async def ocr_pages(req: PagesBatchRequest) -> dict:
     try:
         results = await run_in_threadpool(engine.recognize_batch, images)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"OCR 批量推理失败: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"OCR batch inference failed: {exc}") from exc
     return {
         "elapsed": round(results[0].elapsed_seconds, 3),
         "pages": [

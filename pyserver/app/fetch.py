@@ -39,12 +39,12 @@ def main() -> int:
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
-        print("[fetch] huggingface_hub 未安装（应由 ocr_download_models 先装 requirements-download.txt）", flush=True)
+        print("[fetch] huggingface_hub not installed (ocr_download_models should install requirements-download.txt first)", flush=True)
         return 2
 
     missing = [name for name in REPOS if not complete(MODELS_DIR / name)]
     if not missing:
-        print("[fetch] 两模型目录均完整，无需下载", flush=True)
+        print("[fetch] both model directories complete, nothing to download", flush=True)
         return 0
 
     for name in missing:
@@ -55,14 +55,14 @@ def main() -> int:
         try:
             snapshot_download(repo_id=repo, local_dir=target, max_workers=4)
         except Exception as exc:
-            print(f"[fetch] {repo} 下载失败: {type(exc).__name__}: {exc}", flush=True)
+            print(f"[fetch] {repo} download failed: {type(exc).__name__}: {exc}", flush=True)
             return 1
         if not complete(target):
-            print(f"[fetch] {repo} 下载完成但校验不通过（缺 config/权重文件）", flush=True)
+            print(f"[fetch] {repo} download finished but verification failed (missing config/weight file)", flush=True)
             return 1
-        print(f"[fetch] {repo} 完成", flush=True)
+        print(f"[fetch] {repo} complete", flush=True)
 
-    print("[fetch] 全部模型就绪", flush=True)
+    print("[fetch] all models ready", flush=True)
     return 0
 
 

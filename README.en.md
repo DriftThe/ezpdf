@@ -21,7 +21,8 @@ ezpdf first splits every page into content blocks with coordinates via OCR, tran
 - **Smart context**: the translation flow embeds a hidden loop that lets the model request surrounding PDF context, keeping terminology and pronouns consistent across page breaks.
 - **Local OCR service**: an embedded Python service (layout analysis + text recognition) with a one-click in-app installer, supporting CPU and GPU (CUDA).
 - **Provider presets**: ships a vendored pi-ai model catalog (31 providers / 969 models) that fills in endpoint, protocol and parameter shape from the chosen provider; any OpenAI-compatible endpoint also works.
-- **Book repository**: any plain folder is a repository holding PDFs plus an `.ezrepo` index; folders, moving, deleting and multi-file import are supported.
+- **Book repository**: any plain folder is a repository holding PDFs plus an `.ezrepo` index; folders, moving, deleting and multi-file import are supported, and a book's parse state can be cleared in one click to parse it again.
+- **Controllable scope**: pick which block types are translated (text, titles, footnotes, footers, …) under Settings → General. Unchecked types are neither translated nor covered — the original PDF pixels stay. Changes apply only to pages that are not translated yet.
 - **Self-drawn interface**: no system title bar — chrome and window controls are drawn by the app; light, dark and follow-system themes.
 
 ## How it works
@@ -84,9 +85,11 @@ Useful commands:
 3. **Configure a translation model**: open Settings → **LLM**, choose a **provider** and a **preset model** (or type a model name), enter your **API key**, then click **Verify** to confirm connectivity. The OpenAI-compatible protocol is used by default.
 4. **Install the OCR service**: open Settings → **OCR** and click **Install service**. This installs the Python dependencies (including torch) and downloads the models (~1.9 GB; a China-mainland mirror is available). Once all five status lights are green the service is ready; pick CUDA if you have an NVIDIA GPU.
 5. **Start translating**: the toolbar shows **Start translation** because the app boots paused to save power. Click it once to begin, or enable **Wake the OCR service on launch** and **Resume on launch** under Settings → General for automatic operation.
-6. **Read**: click a book in the sidebar to open the two-pane reader. The toolbar switches between the 原译 / 译原 / 原文 / 译文 layouts and controls zoom and paging; the status bar at the bottom shows overall progress.
+6. **Read**: click a book in the sidebar to open the two-pane reader. The toolbar switches between four layouts (original│translation, translation│original, original only, translation only) and controls zoom and paging; the status bar at the bottom shows overall progress.
 
 > **Do not modify the contents of a repository by hand** — it can break both parsing and rendering.
+
+> **Changing the target language or the translated block types does not re-translate pages that are already done.** Use **Clear parse state** in that book's row menu to drop its blocks and translations and parse it again.
 
 ### Where data lives
 
@@ -102,7 +105,7 @@ Useful commands:
 
 - **Code signing**: the installers are unsigned. The plan is to apply for [SignPath Foundation](https://signpath.org/)'s free signing for open-source projects (certificate issued to SignPath Foundation, private key held in an HSM); a code signing policy statement will be added here once approved.
 - **AppImage**: not provided yet. An AppImage mounts read-only from a random path, which invalidates the virtual environment derived from the bundled Python runtime; supporting it means copying the interpreter to a stable location (such as `~/.ezpdf/python`) before creating the venv.
-- **Other protocols**: only OpenAI-compatible (`openai-completions`) endpoints can be called today; other protocols are identify-only in the provider catalog.
+- **Other protocols**: only OpenAI-compatible (`openai-completions`) endpoints can be called, so providers speaking other protocols are no longer listed in the provider dropdown (a saved config pointing at one shows as a disabled entry). See [`docs/protocols.md`](docs/protocols.md) for why, and what adding one would take.
 
 ## Contributing
 
