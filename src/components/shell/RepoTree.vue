@@ -128,6 +128,12 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
           </svg>
         </span>
         <span class="row-name pdf-name">{{ row.pdf.name }}</span>
+        <button class="row-btn" :title="t('repo.clearState')" @click.stop="onClearState(row.pdf)">
+          <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13 8a5 5 0 1 1-1.6-3.7" />
+            <path d="M13 2.5V5h-2.5" />
+          </svg>
+        </button>
         <button class="row-btn" :title="t('repo.moveToFolder')" @click.stop="toggleMenu(row.pdf.id)">
           <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
             <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 2h4.5A1.5 1.5 0 0 1 14 6.5v5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5z" />
@@ -147,8 +153,6 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
             {{ t("repo.moveInto", { folder: f }) }}
           </button>
           <div v-if="!row.inFolder && row.targets.length === 0" class="menu-empty">{{ t("repo.noOtherFolders") }}</div>
-          <div class="menu-sep" />
-          <button class="menu-item" @click="onClearState(row.pdf)">{{ t("repo.clearState") }}</button>
         </div>
       </div>
     </li>
