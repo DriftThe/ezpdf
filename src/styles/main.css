@@ -357,6 +357,8 @@ textarea {
   position: relative;
   display: inline-flex;
   align-items: center;
+  /* grid 子项默认 stretch：不写就会被拉满整列，绝对定位的箭头会飞到最右端 */
+  justify-self: start;
 }
 .set-select {
   appearance: none;
