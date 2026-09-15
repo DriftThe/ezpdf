@@ -218,7 +218,7 @@ struct ContextItem {
 fn neighbor_index(page_index: u32, direction: &str) -> Option<u32> {
     match direction {
         "before" => (page_index > 1).then(|| page_index - 1),
-        "after" => Some(page_index + 1),
+        "after" => page_index.checked_add(1), // 畸形 JSON 的 u32::MAX 不该 panic
         _ => None,
     }
 }

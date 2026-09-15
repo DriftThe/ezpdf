@@ -166,12 +166,19 @@ fn read_index(root: &str) -> Result<RepoTree, String> {
     serde_json::from_str(&text).map_err(|e| format!("Failed when reading string: {e}"))
 }
 
+/// 原子写文本：临时文件 + rename（Windows 的 rename = 覆盖已存在目标）。
+/// 索引 / 绑定 JSON / 设置三处共用——半截文件比写失败更难收拾。
+pub(crate) fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, text).map_err(|e| format!("failed to write temporary file: {e}"))?;
+    fs::rename(&tmp, path).map_err(|e| format!("failed to replace file: {e}"))
+}
+
 /// 回写仓库索引（pretty JSON）
 fn write_index(root: &str, index: &RepoTree) -> Result<(), String> {
     let text = serde_json::to_string_pretty(index)
         .map_err(|e| format!("Failed when serializing .ezrepo: {e}"))?;
-    fs::write(Path::new(root).join(".ezrepo"), text)
-        .map_err(|e| format!("Failed when writing .ezrepo: {e}"))
+    write_text_atomic(&Path::new(root).join(".ezrepo"), &text)
 }
 
 /// 仓库相对路径词法校验：非空、无绝对路径/盘符前缀/`..`（允许 `./`）。
@@ -311,7 +318,10 @@ fn import_one(
     let json_name = format!("{name}-{id}.json");
     fs::write(dir.join(&pdf_name), &bytes).map_err(|e| format!("failed to store into repo: {e}"))?;
     let page_count = pdf_page_count(&bytes);
-    let pages = page_count.map(parse::build_skeleton).unwrap_or_default();
+    let pages = match page_count {
+        Some(n) => parse::build_skeleton(n)?,
+        None => Vec::new(), // 解析失败（如加密）：空骨架，打开书时再补
+    };
     let doc = BindDoc {
         status: PDFStatus::Pending,
         pages,
@@ -351,6 +361,11 @@ async fn import_pdf(
         match import_one(dir, belong.as_deref(), src, &index) {
             Ok((entry, page_warning)) => {
                 if let Some(b) = &entry.belong {
+                    // 与 move_pdf 同样校验（逻辑标签也要合法：过长的名字会毁掉索引）
+                    if let Err(reason) = check_folder_name(b) {
+                        failed.push(ImportFailure { path: src.clone(), reason });
+                        continue;
+                    }
                     ensure_folder(&mut index, b);
                 }
                 index.pdfs.push(entry.clone());
@@ -533,18 +548,21 @@ fn load_settings(app: tauri::AppHandle) -> Result<Option<String>, String> {
     }
 }
 
+/// 设置文件上限：正常 config.json 只有几 KB；挡住前端失控时的超大写入
+const MAX_SETTINGS_BYTES: usize = 8 * 1024 * 1024;
+
 /// 写设置（JSON 校验 + 临时文件原子替换）：退出设置页时前端整份下发
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
+    if json.len() > MAX_SETTINGS_BYTES {
+        return Err(format!("settings payload too large: {} bytes", json.len()));
+    }
     serde_json::from_str::<serde_json::Value>(&json).map_err(|e| format!("invalid settings JSON: {e}"))?;
     let path = settings_path(&app)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("failed to create settings directory: {e}"))?;
     }
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, json).map_err(|e| format!("failed to write settings: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("failed to replace settings file: {e}"))?;
-    Ok(())
+    write_text_atomic(&path, &json)
 }
 
 // ---- OCR 服务（阶段2.5）：环境报告 / 环境安装 / 生命周期。探测与安装细节在 pyenv.rs，

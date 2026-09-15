@@ -8,7 +8,6 @@
 //! OCR 与翻译可能并发落盘：锁只包住"读盘 → 改 → 原子写"小段（网络/模型调用在锁外）。
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -129,9 +128,7 @@ fn finalize_status(doc: &mut BindDoc) {
 fn write_bind_atomic(json_path: &Path, doc: &BindDoc) -> Result<(), String> {
     let text = serde_json::to_string_pretty(doc)
         .map_err(|e| format!("Failed when serializing bound JSON: {e}"))?;
-    let tmp = json_path.with_extension("json.tmp");
-    fs::write(&tmp, text).map_err(|e| format!("failed to write temporary file: {e}"))?;
-    fs::rename(&tmp, json_path).map_err(|e| format!("failed to atomically replace bind JSON: {e}"))
+    crate::write_text_atomic(json_path, &text)
 }
 
 /// 读索引定位绑定 JSON 并解析为 BindDoc（parse_batch / prefill_pages 共用入口）
@@ -276,6 +273,16 @@ pub async fn translate_batch(
     if !llm.usable() {
         return Err("LLM not configured (baseUrl/apiKey/model empty)".into());
     }
+    // 每页 = 一次付费 LLM 请求（两相位并发跑）：限页数与去重，别让前端的错参数放大成并发风暴
+    let mut indices = indices;
+    indices.sort_unstable();
+    indices.dedup();
+    if indices.is_empty() {
+        return Err("translate batch is empty".into());
+    }
+    if indices.len() > 32 {
+        return Err(format!("batch page count exceeds limit: {} > 32", indices.len()));
+    }
     let prompt = translate::load_system_prompt(llm)?;
     let client = translate::llm_client()?;
     translate::log(format!(
@@ -353,7 +360,7 @@ pub async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus
     if !doc.pages.is_empty() || total == 0 {
         return Ok(doc.status);
     }
-    doc.pages = build_skeleton(total);
+    doc.pages = build_skeleton(total)?;
     write_bind_atomic(&json_path, &doc)?;
     Ok(doc.status)
 }
@@ -369,22 +376,29 @@ pub fn reset_pdf_state(root: &str, id: &str, total: u32) -> Result<PDFStatus, St
     if count == 0 {
         return Err("page count unknown: open the PDF once before clearing".into());
     }
-    doc.pages = build_skeleton(count);
+    doc.pages = build_skeleton(count)?;
     doc.status = PDFStatus::Pending;
     write_bind_atomic(&json_path, &doc)?;
     Ok(doc.status)
 }
 
+/// 页数上限：正常 PDF 远低于此；畸形/恶意文件（或前端传错）不能让我们分配巨型 Vec——
+/// release 下 panic=abort，OOM 会直接杀掉进程
+pub(crate) const MAX_PAGES: u32 = 20_000;
+
 /// 1..=N 空页骨架（导入预填充 / 打开书补骨架共用）
-pub(crate) fn build_skeleton(total: u32) -> Vec<PageInfo> {
-    (1..=total)
+pub(crate) fn build_skeleton(total: u32) -> Result<Vec<PageInfo>, String> {
+    if total > MAX_PAGES {
+        return Err(format!("page count out of range: {total} > {MAX_PAGES}"));
+    }
+    Ok((1..=total)
         .map(|i| PageInfo {
             index: i,
             finished: false,
             translated: false,
             blocks: Vec::new(),
         })
-        .collect()
+        .collect())
 }
 
 /// 单行截断到 ≤cap 个字符（日志/错误摘要；按字符边界切，不 panic）
@@ -543,9 +557,12 @@ mod tests {
 
     #[test]
     fn build_skeleton_fills_1_to_n() {
-        let pages = build_skeleton(3);
+        let pages = build_skeleton(3).unwrap();
         assert_eq!(pages.iter().map(|p| p.index).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert!(pages.iter().all(|p| !p.finished && p.blocks.is_empty()));
+        // 上限：畸形页数一律拒绝，不分配巨型 Vec
+        assert!(build_skeleton(MAX_PAGES).is_ok());
+        assert!(build_skeleton(MAX_PAGES + 1).is_err());
     }
 
     #[test]

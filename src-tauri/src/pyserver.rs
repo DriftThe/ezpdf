@@ -73,23 +73,23 @@ impl PyService {
     }
 
     pub fn status(&self) -> ServiceStatus {
-        self.0.status.lock().unwrap().clone()
+        self.0.status.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn set_status(&self, app: &AppHandle, status: ServiceStatus) {
-        *self.0.status.lock().unwrap() = status.clone();
+        *self.0.status.lock().unwrap_or_else(|e| e.into_inner()) = status.clone();
         let _ = app.emit("ocr://status", status);
     }
 
     fn set_endpoint(&self, base: String, token: String) {
-        *self.0.endpoint.lock().unwrap() = Some(base);
-        *self.0.token.lock().unwrap() = token;
+        *self.0.endpoint.lock().unwrap_or_else(|e| e.into_inner()) = Some(base);
+        *self.0.token.lock().unwrap_or_else(|e| e.into_inner()) = token;
     }
 
     /// OCR 调用取用点（阶段4）：握手成功后的 (base, token)；未连接 → None
     pub fn ocr_target(&self) -> Option<(String, String)> {
-        let base = self.0.endpoint.lock().unwrap().clone()?;
-        let token = self.0.token.lock().unwrap().clone();
+        let base = self.0.endpoint.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+        let token = self.0.token.lock().unwrap_or_else(|e| e.into_inner()).clone();
         Some((base, token))
     }
 
@@ -98,7 +98,7 @@ impl PyService {
     pub fn stop(&self) {
         self.0.stopping.store(true, Ordering::SeqCst);
         let _ = self.0.stop_tx.send(true);
-        drop(self.0.stdin.lock().unwrap().take()); // EOF → python 自灭
+        drop(self.0.stdin.lock().unwrap_or_else(|e| e.into_inner()).take()); // EOF → python 自灭
     }
 
     /// 门控：Starting/Connected 期间忽略重复 ocr_start；Unknown/Disconnected/Failed 可拉起
@@ -220,7 +220,7 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
 
     // stdin 存入全局状态：select 主分支持有 child，stop() 拿走 stdin 触发 EOF
     if let Some(stdin) = child.stdin.take() {
-        *svc.0.stdin.lock().unwrap() = Some(stdin);
+        *svc.0.stdin.lock().unwrap_or_else(|e| e.into_inner()) = Some(stdin);
     }
 
     // stderr → ocr://log（uvicorn / 引擎日志）
