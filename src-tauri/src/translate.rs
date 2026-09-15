@@ -80,6 +80,16 @@ pub struct LlmConfig {
     /// 只影响尚未翻译的页面（已翻页面在 JSON 里已有译文）。
     #[serde(default)]
     pub translate_types: Vec<String>,
+    /// 是否启用翻译（用户 2026-09-15，设置→LLM 首项）：false = 不请求 LLM，
+    /// 把送翻块的 content 直接当作 translation 落盘并标记页面完成（见 apply_bypass）。
+    /// 老配置没有这个键 → true（保持原行为）。
+    #[serde(default = "translate_enabled_default")]
+    pub translate_enabled: bool,
+}
+
+/// 缺省 true：只有显式关掉翻译才走 bypass 路径
+fn translate_enabled_default() -> bool {
+    true
 }
 
 /// opencode zen 端点：除 bearer 外还要带会话路由头（PLAN-LLM.md §5）
@@ -686,6 +696,29 @@ pub fn build_task(cfg: &LlmConfig, doc: &BindDoc, page_index: u32) -> Option<Pag
     })
 }
 
+/// 翻译禁用路径的落盘（锁内调用，用户 2026-09-15）：把送翻块的 content 直接写成
+/// translation 并标记页面 translated，返回是否有变更。
+///
+/// 语义要点：**不是**留 null。null 表示"待翻译"，重新打开翻译后会被回翻；这里要的是
+/// "这批 OCR 已处理完、内容即原文"的终态，所以译文列必须落值。
+/// 送翻块集合与联网路径完全一致（is_translatable + translation 为空），非送翻类型
+/// （image/table 等）保持 null——它们本来就没有覆盖框。
+pub fn apply_bypass(doc: &mut BindDoc, page_index: u32, cfg: &LlmConfig) -> bool {
+    let Some(page) = doc.pages.iter_mut().find(|p| p.index == page_index) else {
+        return false;
+    };
+    if !page.finished || page.translated {
+        return false;
+    }
+    for block in page.blocks.iter_mut() {
+        if block.translation.is_none() && is_translatable(cfg, &block.kind, &block.content) {
+            block.translation = Some(block.content.clone());
+        }
+    }
+    page.translated = true; // 页级标记也算进展：整页无送翻块时不该被反复重试
+    true
+}
+
 /// 结果落盘（锁内调用）：写页译文 + translated 标记 + external 邻页块；
 /// touched 收集实际变更页（含被 external 补写的邻页，供 updatedPages 回传）
 pub fn apply_done(doc: &mut BindDoc, done: PageDone, touched: &mut Vec<u32>) {
@@ -1082,6 +1115,28 @@ mod tests {
         assert_eq!(reqs[0].block_pos, 0);
         assert_eq!(reqs[1].index, "1");
         assert_eq!(reqs[1].block_pos, 4);
+    }
+
+    /// 翻译禁用路径（用户 2026-09-15）：原文当译文落盘、页标记完成；
+    /// 非送翻类型保持 null（它们本来就没有覆盖框），已翻页不动
+    #[test]
+    fn apply_bypass_copies_content_and_marks_done() {
+        let mut d = doc(vec![page(
+            1,
+            vec![blk("text", "原文", None), blk("table", "表格", None), blk("text", "已译", Some("旧"))],
+            false,
+        )]);
+        assert!(apply_bypass(&mut d, 1, &cfg(true)));
+        let p = &d.pages[0];
+        assert_eq!(p.blocks[0].translation.as_deref(), Some("原文"));
+        assert_eq!(p.blocks[1].translation, None, "table is not a translate type");
+        assert_eq!(p.blocks[2].translation.as_deref(), Some("旧"), "existing translation is kept");
+        assert!(p.translated);
+        // 幂等：已翻页再跑不产生变更
+        assert!(!apply_bypass(&mut d, 1, &cfg(true)));
+        // 未 OCR 完成的页不处理
+        let mut pending = doc(vec![PageInfo { finished: false, ..page(1, vec![blk("text", "x", None)], false) }]);
+        assert!(!apply_bypass(&mut pending, 1, &cfg(true)));
     }
 
     /// 送翻类型可配（用户 2026-09-15）：非空集合覆盖内置默认；空集合回落默认

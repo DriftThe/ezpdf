@@ -270,9 +270,6 @@ pub async fn translate_batch(
     indices: Vec<u32>,
     llm: &LlmConfig,
 ) -> Result<ParseOutcome, String> {
-    if !llm.usable() {
-        return Err("LLM not configured (baseUrl/apiKey/model empty)".into());
-    }
     // 每页 = 一次付费 LLM 请求（两相位并发跑）：限页数与去重，别让前端的错参数放大成并发风暴
     let mut indices = indices;
     indices.sort_unstable();
@@ -282,6 +279,13 @@ pub async fn translate_batch(
     }
     if indices.len() > 32 {
         return Err(format!("batch page count exceeds limit: {} > 32", indices.len()));
+    }
+    // 翻译被用户关掉（2026-09-15）：不碰网络，原文当译文落盘并标记完成
+    if !llm.translate_enabled {
+        return bypass_batch(root, id, &indices, llm);
+    }
+    if !llm.usable() {
+        return Err("LLM not configured (baseUrl/apiKey/model empty)".into());
     }
     let prompt = translate::load_system_prompt(llm)?;
     let client = translate::llm_client()?;
@@ -345,6 +349,40 @@ pub async fn translate_batch(
 
     touched.sort_unstable();
     touched.dedup();
+    let (_, doc) = {
+        let lock = file_lock(root, id);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        load_bind(root, id)?
+    };
+    Ok(outcome(id, &doc, pages_by_index(&doc, &touched)))
+}
+
+/// 翻译禁用路径（用户 2026-09-15）：不碰网络/提示词，逐页把原文复制成译文并标记完成，
+/// 一次原子写。前端调度链与联网路径完全一致（都是 translate_pdf），只有这里分流。
+fn bypass_batch(
+    root: &str,
+    id: &str,
+    indices: &[u32],
+    llm: &LlmConfig,
+) -> Result<ParseOutcome, String> {
+    let touched = {
+        let lock = file_lock(root, id);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let (json_path, mut doc) = load_bind(root, id)?;
+        let mut touched: Vec<u32> = Vec::new();
+        for &i in indices {
+            if translate::apply_bypass(&mut doc, i, llm) {
+                touched.push(i);
+            }
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        if !touched.is_empty() {
+            write_bind_atomic(&json_path, &doc)?;
+            translate::log(format!("translation disabled: copied OCR text for p{touched:?}"));
+        }
+        touched
+    };
     let (_, doc) = {
         let lock = file_lock(root, id);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
