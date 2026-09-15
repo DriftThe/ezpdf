@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
+import { useI18n } from "vue-i18n";
 import { useParseStore } from "../../../stores/parse";
 import { useSettingsStore } from "../../../stores/settings";
 import {
@@ -14,6 +15,7 @@ import {
 
 const settings = useSettingsStore();
 const parse = useParseStore();
+const { t } = useI18n();
 
 // 目录懒加载（~400KB 单独 chunk）：设置页打开 LLM 面板才拉
 onMounted(() => void settings.ensureCatalog());
@@ -33,7 +35,7 @@ function onProvider(e: Event): void {
 
 <template>
   <div class="set-pane">
-    <h2 class="set-title">LLM 翻译</h2>
+    <h2 class="set-title">{{ t("llm.title") }}</h2>
 
     <!--
       供应商预设（用户 2026-09-15 整合 pi-ai 目录）：选供应商 → 自动填端点 + 列出预设模型，
@@ -41,20 +43,20 @@ function onProvider(e: Event): void {
       目录里协议不是 openai-completions 的供应商只能识别、不能调用。
     -->
     <div class="set-field">
-      <span>供应商</span>
+      <span>{{ t("llm.provider") }}</span>
       <span class="set-select-wrap">
         <select class="set-select llm-provider" :value="settings.llm.provider" @change="onProvider">
-          <optgroup label="可直连（OpenAI 兼容）">
+          <optgroup :label="t('llm.providerUsable')">
             <option v-for="p in settings.usableProviders" :key="p.id" :value="p.id">
-              {{ providerLabel(p.id) }} · {{ usableModels(p).length }} 个模型
+              {{ t("llm.providerModels", { name: providerLabel(p.id), count: usableModels(p).length }) }}
             </option>
           </optgroup>
-          <optgroup v-if="settings.otherProviders.length" label="协议暂不支持（仅识别）">
+          <optgroup v-if="settings.otherProviders.length" :label="t('llm.providerUnsupported')">
             <option v-for="p in settings.otherProviders" :key="p.id" :value="p.id">
-              {{ providerLabel(p.id) }} · 不可用
+              {{ t("llm.providerUnavailable", { name: providerLabel(p.id) }) }}
             </option>
           </optgroup>
-          <option :value="CUSTOM_PROVIDER">自定义（手填 Base URL / 模型）</option>
+          <option :value="CUSTOM_PROVIDER">{{ t("llm.providerCustom") }}</option>
         </select>
         <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
           <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
@@ -66,13 +68,13 @@ function onProvider(e: Event): void {
     <p class="set-hint llm-meta" :class="{ err: unsupported }">
       <template v-if="!isCustom && settings.presetProvider">
         <code class="llm-url">{{ settings.llm.baseUrl }}</code>
-        <span v-if="settings.presetProvider.envKeys.length">Key 环境变量：{{ settings.presetProvider.envKeys.join(" / ") }}</span>
+        <span v-if="settings.presetProvider.envKeys.length">{{ t("llm.envKeys", { keys: settings.presetProvider.envKeys.join(" / ") }) }}</span>
       </template>
       {{ hint }}
     </p>
 
     <label v-if="isCustom" class="set-field">
-      <span>API Base URL</span>
+      <span>{{ t("llm.baseUrl") }}</span>
       <input v-model="settings.llm.baseUrl" placeholder="https://api.deepseek.com/v1" />
     </label>
 
@@ -80,18 +82,18 @@ function onProvider(e: Event): void {
          预设已给出关思考形态时无需靠探测（策略仍会回写，作为显式覆盖） -->
     <div class="set-field-row llm-row">
       <label class="set-field">
-        <span>API Key</span>
-        <input v-model="settings.llm.apiKey" type="password" placeholder="阶段1起存储于系统凭据库" />
+        <span>{{ t("llm.apiKey") }}</span>
+        <input v-model="settings.llm.apiKey" type="password" :placeholder="t('llm.apiKeyPlaceholder')" />
       </label>
       <button class="set-button llm-verify" :disabled="settings.verifying" @click="settings.verifyLlm()">
-        {{ settings.verifying ? "验证中…" : "验证" }}
+        {{ settings.verifying ? t("llm.verifying") : t("llm.verify") }}
       </button>
     </div>
 
     <!-- 模型：手填输入（在线列表补全）+ 预设列表（目录内可搜索、带徽章） -->
     <div class="set-field-row llm-row">
       <label class="set-field">
-        <span>模型</span>
+        <span>{{ t("llm.model") }}</span>
         <input
           v-model="settings.llm.model"
           list="llm-models"
@@ -103,14 +105,14 @@ function onProvider(e: Event): void {
         </datalist>
       </label>
       <button class="set-button llm-verify" :disabled="settings.modelsFetching" @click="settings.fetchModels()">
-        {{ settings.modelsFetching ? "获取中…" : "获取在线列表" }}
+        {{ settings.modelsFetching ? t("llm.fetching") : t("llm.fetchModels") }}
       </button>
     </div>
 
     <div v-if="!isCustom" class="set-field llm-models-field">
-      <span>预设模型</span>
+      <span>{{ t("llm.presetModels") }}</span>
       <div class="llm-models">
-        <input v-model="settings.modelQuery" class="llm-search" placeholder="搜索模型 id / 名称…" />
+        <input v-model="settings.modelQuery" class="llm-search" :placeholder="t('llm.modelSearchPlaceholder')" />
         <div class="model-list">
           <button
             v-for="m in settings.presetModels"
@@ -124,29 +126,29 @@ function onProvider(e: Event): void {
             <code class="mi-id">{{ m.id }}</code>
             <span class="mi-badges">
               <span v-if="!isUsable(m)" class="badge err">{{ m.api }}</span>
-              <span v-else-if="m.reasoning" class="badge">思考</span>
-              <span v-if="m.input.includes('image')" class="badge">图像</span>
+              <span v-else-if="m.reasoning" class="badge">{{ t("llm.badgeReasoning") }}</span>
+              <span v-if="m.input.includes('image')" class="badge">{{ t("llm.badgeImage") }}</span>
             </span>
             <span class="mi-meta">{{ contextLabel(m.contextWindow) }} · {{ costLabel(m) }}</span>
           </button>
           <p v-if="!settings.presetModels.length" class="set-hint">
-            {{ settings.catalog ? "没有匹配的模型" : "目录加载中…" }}
+            {{ settings.catalog ? t("llm.noMatchModels") : t("llm.catalogLoading") }}
           </p>
         </div>
       </div>
     </div>
 
     <label class="set-field">
-      <span>目标语言</span>
-      <input v-model="settings.llm.targetLang" placeholder="zh（简体中文）" />
+      <span>{{ t("llm.targetLang") }}</span>
+      <input v-model="settings.llm.targetLang" :placeholder="t('llm.targetLangPlaceholder')" />
     </label>
     <label class="set-check">
       <input v-model="settings.llm.smartContext" type="checkbox" />
-      <span>智能上下文翻译（跨页截断文本联合翻译）</span>
+      <span>{{ t("llm.smartContext") }}</span>
     </label>
     <div class="set-field">
-      <span>日志</span>
-      <pre class="log-box">{{ parse.llmLogs.join("\n") || "暂无日志" }}</pre>
+      <span>{{ t("settings.log") }}</span>
+      <pre class="log-box">{{ parse.llmLogs.join("\n") || t("settings.noLogs") }}</pre>
     </div>
   </div>
 </template>

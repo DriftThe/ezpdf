@@ -2,6 +2,7 @@
 // 定位：LLM 设置页的「供应商 / 模型预设」数据源 + 给 Rust 客户端的协议适配快照。
 // 运行时网络请求仍在 Rust（translate.rs，OpenAI 兼容），这里只提供目录与元数据。
 import type { PiModel, PiProvider } from "./piModels.generated";
+import { currentLocale, t } from "./i18n";
 
 /** 当前 Rust 客户端唯一支持的协议（其他协议只在 UI 里「可识别」，不可用） */
 export const SUPPORTED_API = "openai-completions";
@@ -47,6 +48,41 @@ export const PROVIDER_LABELS: Record<string, string> = {
   "github-copilot": "GitHub Copilot",
 };
 
+/** 英文供应商显示名（生成目录的 PiProvider 无 name 字段，这里补齐；en 界面用） */
+const PROVIDER_LABELS_EN: Record<string, string> = {
+  "opencode-go": "OpenCode Zen (Go plan)",
+  opencode: "OpenCode Zen",
+  deepseek: "DeepSeek",
+  zai: "Z.ai GLM",
+  "moonshotai-cn": "Moonshot (China)",
+  moonshotai: "Moonshot",
+  xiaomi: "Xiaomi MiMo",
+  "xiaomi-token-plan-cn": "Xiaomi MiMo (China token plan)",
+  "xiaomi-token-plan-sgp": "Xiaomi MiMo (Singapore token plan)",
+  "xiaomi-token-plan-ams": "Xiaomi MiMo (Amsterdam token plan)",
+  "minimax-cn": "MiniMax (China)",
+  minimax: "MiniMax",
+  "kimi-coding": "Kimi Coding",
+  openrouter: "OpenRouter (aggregator)",
+  huggingface: "Hugging Face (aggregator)",
+  cerebras: "Cerebras",
+  groq: "Groq",
+  xai: "xAI Grok",
+  mistral: "Mistral",
+  fireworks: "Fireworks",
+  "vercel-ai-gateway": "Vercel AI Gateway (aggregator)",
+  "cloudflare-workers-ai": "Cloudflare Workers AI",
+  "cloudflare-ai-gateway": "Cloudflare AI Gateway (aggregator)",
+  openai: "OpenAI",
+  "openai-codex": "OpenAI Codex",
+  anthropic: "Anthropic Claude",
+  google: "Google Gemini",
+  "google-vertex": "Google Vertex AI",
+  "azure-openai-responses": "Azure OpenAI",
+  "amazon-bedrock": "Amazon Bedrock",
+  "github-copilot": "GitHub Copilot",
+};
+
 /** 排序权重：常用/可直连的国内可达服务排前面（未列出的按显示名排序） */
 const PROVIDER_PRIORITY = [
   "opencode-go",
@@ -67,6 +103,7 @@ const PROVIDER_PRIORITY = [
 ];
 
 export function providerLabel(id: string): string {
+  if (currentLocale() === "en") return PROVIDER_LABELS_EN[id] ?? id;
   return PROVIDER_LABELS[id] ?? id;
 }
 
@@ -168,14 +205,17 @@ export function presetCompat(model: PiModel | null): LlmPresetCompat {
 /** 关思考说明文案（设置页；预设已定则不再需要验证按钮探测） */
 export function thinkingHint(compat: LlmPresetCompat, strategy: string): string {
   if (compat.api && compat.api !== SUPPORTED_API) {
-    return `该模型使用 ${compat.api} 协议，当前版本只能识别、不能调用（仅 OpenAI 兼容协议可用）`;
+    return t("pi.thinkingHintIncompatible", { api: compat.api });
   }
-  if (compat.reasoning === false) return "预设模型无思考模式，无需关思考参数";
+  if (compat.reasoning === false) return t("pi.thinkingHintNoReasoning");
   if (compat.thinkingOffKind === "none") {
-    return "预设未提供关闭思考的参数（该模型可能默认思考且无法关闭；翻译可能失败，可换模型）";
+    return t("pi.thinkingHintNoParam");
   }
-  const kind = compat.thinkingOffKind || "未知（自定义端点靠验证探测）";
-  return `关思考参数：${kind}${compat.thinkingFormat ? `（pi-ai ${compat.thinkingFormat} 格式）` : ""}；验证策略：${strategy || "auto"}`;
+  const kind = compat.thinkingOffKind || t("pi.thinkingKindUnknown");
+  const fmt = compat.thinkingFormat
+    ? t("pi.thinkingHintFormatSuffix", { fmt: compat.thinkingFormat })
+    : "";
+  return t("pi.thinkingHintDetail", { kind, fmt, strategy: strategy || "auto" });
 }
 
 /** 上下文窗口（K/M 缩写） */
@@ -186,6 +226,6 @@ export function contextLabel(tokens: number): string {
 
 /** 价格（美元/百万 token；免费 = 免费） */
 export function costLabel(model: PiModel): string {
-  if (!model.cost) return "免费";
+  if (!model.cost) return t("pi.free");
   return `$${model.cost.in}/$${model.cost.out}`;
 }

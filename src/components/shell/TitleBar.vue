@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ThemeToggle from "./ThemeToggle.vue";
 
@@ -9,6 +10,7 @@ import ThemeToggle from "./ThemeToggle.vue";
  * 拖动：整条挂 `data-tauri-drag-region`（按钮不挂，权限见 capabilities）；双击切换最大化。
  * 浏览器 dev（无 Tauri）下按钮静默无效。
  */
+const { t } = useI18n();
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const win = isTauri ? getCurrentWindow() : null;
 const maximized = ref(false);
@@ -43,12 +45,12 @@ function close(): void {
     <span class="app-name" data-tauri-drag-region>ezpdf</span>
     <div class="bar-drag" data-tauri-drag-region />
     <ThemeToggle />
-    <button class="win-btn" title="最小化" @click="minimize">
+    <button class="win-btn" :title="t('shell.minimize')" @click="minimize">
       <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
         <path d="M0.5 5h9" stroke="currentColor" stroke-width="1.1" />
       </svg>
     </button>
-    <button class="win-btn" :title="maximized ? '还原' : '最大化'" @click="toggleMaximize">
+    <button class="win-btn" :title="maximized ? t('shell.restore') : t('shell.maximize')" @click="toggleMaximize">
       <svg v-if="!maximized" viewBox="0 0 10 10" width="10" height="10" fill="none" aria-hidden="true">
         <rect x="0.8" y="0.8" width="8.4" height="8.4" stroke="currentColor" stroke-width="1.1" />
       </svg>
@@ -57,7 +59,7 @@ function close(): void {
         <path d="M2.6 2.6V0.8h6.6v6.6H7.4" stroke="currentColor" stroke-width="1.1" />
       </svg>
     </button>
-    <button class="win-btn close" title="关闭" @click="close">
+    <button class="win-btn close" :title="t('common.close')" @click="close">
       <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
         <path d="M0.8 0.8l8.4 8.4M9.2 0.8L0.8 9.2" stroke="currentColor" stroke-width="1.1" />
       </svg>

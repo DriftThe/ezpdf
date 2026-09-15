@@ -4,7 +4,8 @@ import App from "./App.vue";
 import "./styles/main.css";
 import "katex/dist/katex.min.css";
 import { initTheme } from "./composables/theme";
+import { i18n } from "./lib/i18n";
 
-const app = createApp(App).use(createPinia());
+const app = createApp(App).use(createPinia()).use(i18n);
 initTheme(); // 主题在挂载前应用（首帧不闪变）
 app.mount("#app");

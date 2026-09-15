@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useLibraryStore } from "../../stores/library";
 import { useReaderStore } from "../../stores/reader";
@@ -23,6 +24,7 @@ const emit = defineEmits<{
 
 const lib = useLibraryStore();
 const reader = useReaderStore();
+const { t } = useI18n();
 
 /** 渲染页列表：1..numPages（Pending 书也有全部页卡，块覆盖层为空） */
 const pageNumbers = computed(() =>
@@ -175,8 +177,8 @@ defineExpose({ scrollToRatio, scrollToPage });
 <template>
   <section class="pane" :class="kind">
     <header class="pane-head">
-      <span class="pane-title">{{ kind === "original" ? "原文" : "译文" }}</span>
-      <span class="pane-hint">{{ kind === "original" ? "虚线框为 OCR 提取块" : "译文逐块覆盖渲染" }}</span>
+      <span class="pane-title">{{ t(kind === "original" ? "reader.original" : "reader.translation") }}</span>
+      <span class="pane-hint">{{ t(kind === "original" ? "reader.originalHint" : "reader.translationHint") }}</span>
     </header>
     <div ref="scrollEl" class="pane-scroll" @scroll="onScroll">
       <div class="page-col">

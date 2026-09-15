@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import { useLibraryStore } from "../../stores/library";
 import { useParseStore } from "../../stores/parse";
 import { useReaderStore } from "../../stores/reader";
 import { useSettingsStore } from "../../stores/settings";
 import type { LayoutMode } from "../../types/domain";
 
+const { t } = useI18n();
 const lib = useLibraryStore();
 const parse = useParseStore();
 const reader = useReaderStore();
@@ -13,21 +15,21 @@ const settings = useSettingsStore();
 
 const hasPdf = computed(() => !!lib.currentPdf);
 
-const layoutOptions: Array<{ value: LayoutMode; label: string; title: string }> = [
-  { value: "ot", label: "原│译", title: "左原文 · 右译文" },
-  { value: "to", label: "译│原", title: "左译文 · 右原文" },
-  { value: "o", label: "原文", title: "仅显示原文" },
-  { value: "t", label: "译文", title: "仅显示译文" },
-];
+const layoutOptions = computed<Array<{ value: LayoutMode; label: string; title: string }>>(() => [
+  { value: "ot", label: t("toolbar.layoutOtLabel"), title: t("toolbar.layoutOtTitle") },
+  { value: "to", label: t("toolbar.layoutToLabel"), title: t("toolbar.layoutToTitle") },
+  { value: "o", label: t("toolbar.layoutOLabel"), title: t("toolbar.layoutOTitle") },
+  { value: "t", label: t("toolbar.layoutTLabel"), title: t("toolbar.layoutTTitle") },
+]);
 
 const svcText = computed(
   () =>
     ({
-      unknown: "未连接",
-      starting: "启动中",
-      connected: "已连接",
-      disconnected: "已断开",
-      failed: "启动失败",
+      unknown: t("toolbar.svcUnknown"),
+      starting: t("toolbar.svcStarting"),
+      connected: t("toolbar.svcConnected"),
+      disconnected: t("toolbar.svcDisconnected"),
+      failed: t("toolbar.svcFailed"),
     })[parse.serviceStatus],
 );
 
@@ -45,7 +47,7 @@ function onFitWidthClick(): void {
 <template>
   <header class="toolbar">
     <!-- 侧栏开关 -->
-    <button class="icon-btn" :disabled="settings.pageOpen" :title="lib.sidebarOpen ? '收起侧栏' : '展开侧栏'" @click="lib.toggleSidebar">
+    <button class="icon-btn" :disabled="settings.pageOpen" :title="lib.sidebarOpen ? t('toolbar.collapseSidebar') : t('toolbar.expandSidebar')" @click="lib.toggleSidebar">
       <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
         <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
       </svg>
@@ -54,7 +56,7 @@ function onFitWidthClick(): void {
     <span class="divider" />
 
     <!-- 布局切换 -->
-    <div class="seg" role="group" aria-label="阅读器布局">
+    <div class="seg" role="group" :aria-label="t('toolbar.layoutAria')">
       <button
         v-for="opt in layoutOptions"
         :key="opt.value"
@@ -71,16 +73,16 @@ function onFitWidthClick(): void {
 
     <!-- 缩放：百分比显示实际比例；点击在适应宽度与 100% 间切换 -->
     <div class="zoom">
-      <button class="icon-btn" title="缩小" @click="reader.zoomOut">−</button>
+      <button class="icon-btn" :title="t('toolbar.zoomOut')" @click="reader.zoomOut">−</button>
       <button
         class="zoom-val"
-        :title="reader.fitMode === 'width' ? '适应宽度中 · 点击恢复 100%' : '点击适应宽度'"
+        :title="reader.fitMode === 'width' ? t('toolbar.fitWidthActive') : t('toolbar.clickFitWidth')"
         @click="reader.toggleFit"
       >
         {{ Math.round(reader.effectiveZoom * 100) }}%
       </button>
-      <button class="icon-btn" title="放大" @click="reader.zoomIn">＋</button>
-      <button class="icon-btn fit-btn" title="适应宽度" :class="{ active: reader.fitMode === 'width' }" @click="onFitWidthClick">
+      <button class="icon-btn" :title="t('toolbar.zoomIn')" @click="reader.zoomIn">＋</button>
+      <button class="icon-btn fit-btn" :title="t('toolbar.fitWidth')" :class="{ active: reader.fitMode === 'width' }" @click="onFitWidthClick">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
           <path d="M1.5 5V2.5H4M12 2.5h2.5V5M14.5 11v2.5H12M4 13.5H1.5V11" />
           <path d="M4.5 8h7" />
@@ -92,7 +94,7 @@ function onFitWidthClick(): void {
 
     <!-- 页码导航 -->
     <div class="pagenav">
-      <button class="icon-btn" title="上一页" :disabled="!hasPdf || reader.currentPage <= 1" @click="reader.stepPage(-1)">‹</button>
+      <button class="icon-btn" :title="t('toolbar.prevPage')" :disabled="!hasPdf || reader.currentPage <= 1" @click="reader.stepPage(-1)">‹</button>
       <span class="page-ind">
         <input
           class="page-input"
@@ -104,31 +106,31 @@ function onFitWidthClick(): void {
         />
         <span class="page-total">/ {{ reader.pageCount || "–" }}</span>
       </span>
-      <button class="icon-btn" title="下一页" :disabled="!hasPdf || reader.currentPage >= reader.pageCount" @click="reader.stepPage(1)">›</button>
+      <button class="icon-btn" :title="t('toolbar.nextPage')" :disabled="!hasPdf || reader.currentPage >= reader.pageCount" @click="reader.stepPage(1)">›</button>
     </div>
 
     <span class="divider" />
 
     <!-- 悬浮预览开关 -->
-    <label class="switch" title="在原文文本块上悬浮显示译文">
+    <label class="switch" :title="t('toolbar.hoverPreviewTitle')">
       <input v-model="reader.hoverPreview" type="checkbox" />
       <span class="track"><span class="thumb" /></span>
-      悬浮预览
+      {{ t("toolbar.hoverPreview") }}
     </label>
 
     <span class="spacer" />
 
     <!-- 暂停/启动：驱动调度回路（OCR 批次与翻译链都不再提交新任务） -->
-    <button class="btn ghost" :class="{ warn: parse.paused }" title="暂停/启动解析与翻译调度" @click="parse.togglePaused">
-      {{ parse.paused ? "▶ 启动翻译" : "⏸ 暂停翻译" }}
+    <button class="btn ghost" :class="{ warn: parse.paused }" :title="t('toolbar.pauseResumeTitle')" @click="parse.togglePaused">
+      {{ parse.paused ? t("toolbar.startTranslation") : t("toolbar.pauseTranslation") }}
     </button>
 
     <!-- OCR 服务状态 -->
-    <span class="svc" :class="parse.serviceStatus" title="OCR 服务连接状态">
+    <span class="svc" :class="parse.serviceStatus" :title="t('toolbar.svcTitle')">
       <span class="svc-dot" />{{ svcText }}
     </span>
 
-    <button class="icon-btn" title="设置" @click="settings.openPage">
+    <button class="icon-btn" :title="t('toolbar.settings')" @click="settings.openPage">
       <!-- 标准齿轮（原"圆 + 放射线"看起来像浅色模式太阳图标，用户 2026-09-14 要求更换） -->
       <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3" />

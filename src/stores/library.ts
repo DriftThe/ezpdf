@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import type { ImportOutcome, PDF, PDFId, RepoGroup, RepoTree } from "../types/domain";
 import type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
 import { toast } from "../composables/toast";
+import { t } from "../lib/i18n";
 import { useReaderStore } from "./reader";
 import { useParseStore } from "./parse";
 import { useSettingsStore } from "./settings";
@@ -13,16 +14,31 @@ import { invoke } from "@tauri-apps/api/core";
 function formatImportOutcome(outcome: ImportOutcome): { text: string; kind: "warn" | "info" } {
   if (outcome.failed.length > 0) {
     const reasons = outcome.failed.map((f) => f.reason).join("；");
-    const warn = outcome.warnings.length > 0 ? `；${outcome.warnings.length} 份页数未知（pages 为空骨架）` : "";
-    return { text: `已导入 ${outcome.imported.length} 份，失败 ${outcome.failed.length} 份：${reasons}${warn}`, kind: "warn" };
-  }
-  if (outcome.warnings.length > 0) {
+    const warn =
+      outcome.warnings.length > 0
+        ? t("library.importUnknownSuffix", { n: outcome.warnings.length })
+        : "";
     return {
-      text: `已导入 ${outcome.imported.length} 份，${outcome.warnings.length} 份页数未知：${outcome.warnings.map((f) => f.reason).join("；")}`,
+      text: t("library.importFailed", {
+        n: outcome.imported.length,
+        m: outcome.failed.length,
+        reasons,
+        warn,
+      }),
       kind: "warn",
     };
   }
-  return { text: `已导入 ${outcome.imported.length} 份 PDF`, kind: "info" };
+  if (outcome.warnings.length > 0) {
+    return {
+      text: t("library.importPartialUnknown", {
+        n: outcome.imported.length,
+        m: outcome.warnings.length,
+        reasons: outcome.warnings.map((f) => f.reason).join("；"),
+      }),
+      kind: "warn",
+    };
+  }
+  return { text: t("library.importDone", { n: outcome.imported.length }), kind: "info" };
 }
 
 export const useLibraryStore = defineStore("library", () => {
@@ -79,7 +95,7 @@ export const useLibraryStore = defineStore("library", () => {
 
     if (!pdfs.value[key]) {
       if (!repoRoot.value) {
-        toast("尚未选择仓库，无法查询 PDF", "warn");
+        toast(t("library.noRepoForPdf"), "warn");
         return;
       }
       // ---- 阶段1 IPC：凭稳定 id 向后端查询 PDF 实体（Rust 端 load_pdf）----
@@ -120,7 +136,7 @@ export const useLibraryStore = defineStore("library", () => {
     const repoPath = await open({
       directory: true,
       multiple: false,
-      title: "选择仓库根目录",
+      title: t("library.chooseRepoTitle"),
     });
     if (repoPath === null) return;
     let created: boolean;
@@ -132,7 +148,7 @@ export const useLibraryStore = defineStore("library", () => {
     }
     try {
       await loadRepo(repoPath);
-      toast(created ? "已创建新仓库" : "已打开现有仓库");
+      toast(t(created ? "library.repoCreated" : "library.repoOpened"));
     } catch (error) {
       toast(String(error), "error");
     }
@@ -149,7 +165,7 @@ export const useLibraryStore = defineStore("library", () => {
     try {
       await loadRepo(root);
     } catch (error) {
-      toast(`自动打开上次仓库失败：${String(error)}`, "warn");
+      toast(t("library.autoOpenFailed", { error: String(error) }), "warn");
       void settings.setRepoPath(null);
     }
   }
@@ -165,11 +181,11 @@ export const useLibraryStore = defineStore("library", () => {
    */
   async function importPdf(belong: string | null = null): Promise<void> {
     if (importing.value) {
-      toast("导入中，请稍后", "warn");
+      toast(t("library.importingBusy"), "warn");
       return;
     }
     if (!repoRoot.value) {
-      toast("尚未选择仓库", "warn");
+      toast(t("library.noRepo"), "warn");
       return;
     }
     const picked = await open({
@@ -220,7 +236,7 @@ export const useLibraryStore = defineStore("library", () => {
   /** 新建文件夹（名由调用方输入；重名/非法名后端拒绝 → toast） */
   function createFolder(name: string): Promise<boolean> {
     if (!repoRoot.value) {
-      toast("尚未选择仓库", "warn");
+      toast(t("library.noRepo"), "warn");
       return Promise.resolve(false);
     }
     return mutateRepoTree("create_folder", { name });

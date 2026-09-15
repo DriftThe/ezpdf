@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import { useLibraryStore } from "../../stores/library";
 import { useReaderStore } from "../../stores/reader";
+
+const { t } = useI18n();
 
 /** 页级状态点阵：pdfjs 实测页数为总量，完成态按 1-based 页号从绑定 JSON 查表 */
 const lib = useLibraryStore();
@@ -22,18 +25,18 @@ const doneCount = computed(() => dots.value.filter((d) => d.done).length);
 
 <template>
   <footer v-if="lib.currentPdf" class="strip">
-    <span class="strip-label">页面</span>
+    <span class="strip-label">{{ t("page.label") }}</span>
     <div class="strip-dots">
       <button
         v-for="dot in dots"
         :key="dot.page"
         class="dot"
         :class="[dot.done ? 'done' : '', { current: reader.currentPage === dot.page }]"
-        :title="`第 ${dot.page} 页 · ${dot.done ? '完成' : '待解析'}`"
+        :title="t('page.dotTitle', { page: dot.page, status: t(dot.done ? 'page.done' : 'page.pending') })"
         @click="reader.gotoPage(dot.page)"
       />
     </div>
-    <span class="strip-summary">完成 {{ doneCount }}/{{ reader.pageCount }}</span>
+    <span class="strip-summary">{{ t("page.progress", { done: doneCount, total: reader.pageCount }) }}</span>
   </footer>
 </template>
 

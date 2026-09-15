@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import type { PDFStruct } from "../../../src-tauri/bindings/PDFStruct";
 import { useLibraryStore } from "../../stores/library";
 import { confirmDialog } from "../../composables/confirm";
 
 defineOptions({ name: "RepoTree" });
 
+const { t } = useI18n();
 const lib = useLibraryStore();
 const collapsed = ref<Set<string>>(new Set());
 /** 打开的 PDF 行操作菜单（id）；点击树任意处关闭 */
@@ -49,9 +51,9 @@ function toggleMenu(id: string): void {
 async function onDeleteFolder(row: FolderRow): Promise<void> {
   const message =
     row.count > 0
-      ? `删除文件夹「${row.name}」？其中的 ${row.count} 个 PDF 及其解析数据将一并删除，且不可恢复。`
-      : `删除文件夹「${row.name}」？`;
-  if (await confirmDialog({ title: "删除文件夹", message, confirmText: "删除" })) {
+      ? t("repo.confirmDeleteFolderWithPdfs", { name: row.name, n: row.count })
+      : t("repo.confirmDeleteFolder", { name: row.name });
+  if (await confirmDialog({ title: t("repo.deleteFolder"), message, confirmText: t("common.delete") })) {
     await lib.deleteFolder(row.name);
   }
 }
@@ -59,9 +61,9 @@ async function onDeleteFolder(row: FolderRow): Promise<void> {
 async function onDeletePdf(pdf: PDFStruct): Promise<void> {
   menuFor.value = null;
   const ok = await confirmDialog({
-    title: "删除 PDF",
-    message: `删除《${pdf.name}》？库内 PDF 与解析数据将一并删除，且不可恢复。`,
-    confirmText: "删除",
+    title: t("repo.deletePdf"),
+    message: t("repo.confirmDeletePdf", { name: pdf.name }),
+    confirmText: t("common.delete"),
   });
   if (ok) await lib.deletePdf(pdf);
 }
@@ -81,14 +83,14 @@ async function onMove(pdf: PDFStruct, belong: string | null): Promise<void> {
           <svg viewBox="0 0 8 8" width="10" height="10"><path d="M2 1l4 3-4 3z" fill="currentColor" /></svg>
         </span>
         <span class="row-name folder-name">{{ row.name }}</span>
-        <button class="row-btn" title="导入 PDF 到此文件夹" :disabled="lib.importing" @click.stop="lib.importPdf(row.name)">
+        <button class="row-btn" :title="t('repo.importToFolder')" :disabled="lib.importing" @click.stop="lib.importPdf(row.name)">
           <svg viewBox="0 0 10 10" width="20" height="20" aria-hidden="true">
             <path d="M5 1.2v7.6M1.2 5h7.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
           </svg>
         </button>
         <button
           class="row-btn"
-          :title="row.count > 0 ? '删除文件夹（连同其中 PDF）' : '删除文件夹'"
+          :title="row.count > 0 ? t('repo.deleteFolderWithPdfs') : t('repo.deleteFolder')"
           @click.stop="onDeleteFolder(row)"
         >
           <svg viewBox="0 0 14 14" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
@@ -105,7 +107,7 @@ async function onMove(pdf: PDFStruct, belong: string | null): Promise<void> {
           unparsed: row.pdf.bind === null,
           nested: row.inFolder,
         }"
-        :title="row.pdf.bind === null ? `${row.pdf.name}（未解析）` : row.pdf.id"
+        :title="row.pdf.bind === null ? t('repo.unparsedName', { name: row.pdf.name }) : row.pdf.id"
         @click="lib.selectPdf(row.pdf)"
       >
         <span class="pdf-glyph" aria-hidden="true">
@@ -115,25 +117,25 @@ async function onMove(pdf: PDFStruct, belong: string | null): Promise<void> {
           </svg>
         </span>
         <span class="row-name pdf-name">{{ row.pdf.name }}</span>
-        <button class="row-btn" title="移动到文件夹" @click.stop="toggleMenu(row.pdf.id)">
+        <button class="row-btn" :title="t('repo.moveToFolder')" @click.stop="toggleMenu(row.pdf.id)">
           <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
             <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 2h4.5A1.5 1.5 0 0 1 14 6.5v5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5z" />
             <path d="M6 9.5h4.5M8.5 7.5l2 2-2 2" />
           </svg>
         </button>
-        <button class="row-btn" title="从仓库删除" @click.stop="onDeletePdf(row.pdf)">
+        <button class="row-btn" :title="t('repo.deleteFromRepo')" @click.stop="onDeletePdf(row.pdf)">
           <svg viewBox="0 0 14 14" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
             <path d="M2.5 3.5h9M5.5 3.5V2h3v1.5M3.5 3.5l.6 8h5.8l.6-8M6 6v3.5M8 6v3.5" />
           </svg>
         </button>
         <!-- 移动菜单：目标目录 + 移出到根 -->
         <div v-if="menuFor === row.pdf.id" class="row-menu" @click.stop>
-          <button v-if="row.inFolder" class="menu-item" @click="onMove(row.pdf, null)">移出到仓库根目录</button>
+          <button v-if="row.inFolder" class="menu-item" @click="onMove(row.pdf, null)">{{ t("repo.moveOut") }}</button>
           <div v-if="row.inFolder && row.targets.length > 0" class="menu-sep" />
           <button v-for="f in row.targets" :key="f" class="menu-item" @click="onMove(row.pdf, f)">
-            移入「{{ f }}」
+            {{ t("repo.moveInto", { folder: f }) }}
           </button>
-          <div v-if="!row.inFolder && row.targets.length === 0" class="menu-empty">暂无其他文件夹</div>
+          <div v-if="!row.inFolder && row.targets.length === 0" class="menu-empty">{{ t("repo.noOtherFolders") }}</div>
         </div>
       </div>
     </li>

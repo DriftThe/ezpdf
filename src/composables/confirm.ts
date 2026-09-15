@@ -1,4 +1,5 @@
 import { ref } from "vue";
+import { t } from "../lib/i18n";
 
 /**
  * 自绘确认框（用户 2026-09-14）：替代 plugin-dialog 的系统 ask——系统弹窗
@@ -32,8 +33,8 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
   settleConfirm(false); // 单实例：先取消未决请求
   return new Promise<boolean>((resolve) => {
     pendingConfirm.value = {
-      confirmText: "删除",
-      cancelText: "取消",
+      confirmText: t("common.delete"),
+      cancelText: t("common.cancel"),
       danger: true,
       ...opts,
       resolve,

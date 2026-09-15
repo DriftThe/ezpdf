@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useLibraryStore } from "../../stores/library";
 import { useReaderStore } from "../../stores/reader";
@@ -16,6 +17,7 @@ type Side = "left" | "right";
 
 const lib = useLibraryStore();
 const reader = useReaderStore();
+const { t } = useI18n();
 
 const left = computed<PaneKind | null>(() => {
   switch (reader.layout) {
@@ -164,15 +166,15 @@ watch(
     <template v-if="lib.currentPdf">
       <!-- 文档级加载/错误态（取数失败两栏都无事可做） -->
       <div v-if="docState === 'error'" class="pane-slot">
-        <EmptyState title="PDF 加载失败" :desc="docError" />
+        <EmptyState :title="t('reader.loadFailed')" :desc="docError" />
       </div>
       <div v-else-if="docState === 'loading'" class="pane-slot">
-        <EmptyState title="加载中…" desc="正在读取 PDF 文件" />
+        <EmptyState :title="t('common.loading')" :desc="t('reader.loadingDesc')" />
       </div>
       <template v-else>
         <!-- 左栏 -->
         <div v-if="left && isTranslationPending(left)" class="pane-slot">
-          <EmptyState title="该文件还未解析" desc="解析完成后此处将渲染译文" />
+          <EmptyState :title="t('reader.notParsed')" :desc="t('reader.notParsedDesc')" />
         </div>
         <ReaderPane
           v-else-if="left"
@@ -185,7 +187,7 @@ watch(
         <div v-if="right" class="pane-divider" />
         <!-- 右栏 -->
         <div v-if="right && isTranslationPending(right)" class="pane-slot">
-          <EmptyState title="该文件还未解析" desc="解析完成后此处将渲染译文" />
+          <EmptyState :title="t('reader.notParsed')" :desc="t('reader.notParsedDesc')" />
         </div>
         <ReaderPane
           v-else-if="right"
@@ -197,8 +199,8 @@ watch(
         />
       </template>
     </template>
-    <EmptyState v-else title="未打开任何PDF" desc="从左侧选择或导入一份 PDF 开始阅读">
-      <button class="btn primary" :disabled="lib.importing" @click="lib.importPdf()">{{ lib.importing ? "导入中" : "导入 PDF" }}</button>
+    <EmptyState v-else :title="t('reader.noPdf')" :desc="t('reader.noPdfDesc')">
+      <button class="btn primary" :disabled="lib.importing" @click="lib.importPdf()">{{ t(lib.importing ? "reader.importing" : "reader.importPdf") }}</button>
     </EmptyState>
   </div>
 </template>

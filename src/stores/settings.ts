@@ -20,6 +20,15 @@ import {
 } from "../lib/piModels";
 import { toast } from "../composables/toast";
 import { useLibraryStore } from "./library";
+import {
+  currentLocale,
+  defaultTargetLang,
+  detectLocale,
+  isAppLocale,
+  setLocale,
+  t,
+} from "../lib/i18n";
+import type { AppLocale } from "../locales";
 
 /** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，持久化整体静默 */
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -78,6 +87,8 @@ export interface GeneralSettings {
   autoLaunch: boolean;
   resumeOnStart: boolean;
   theme: ThemeMode;
+  /** 界面语言（用户 2026-09-15）：简中 / 繁中 / English；首启按系统语言定初值 */
+  lang: AppLocale;
 }
 
 /** OCR 服务安装选项（用户 2026-09-14）：一键安装服务时是否走国内镜像源 */
@@ -236,12 +247,13 @@ export const useSettingsStore = defineStore("settings", () => {
   /** 当前应用版本 + 更新检查状态（常规设置页展示；启动静默检查一次） */
   const appVersion = ref("");
   const updateBusy = ref(false);
-  const updateText = ref("未检查");
+  const updateText = ref(t("update.notChecked"));
 
   const general = ref<GeneralSettings>({
     autoLaunch: true,
     resumeOnStart: true,
     theme: "system",
+    lang: currentLocale(),
   });
 
   const ocr = ref<OcrSettings>({
@@ -267,22 +279,29 @@ export const useSettingsStore = defineStore("settings", () => {
       }
       try {
         const text = await invoke<string | null>("load_settings");
-        if (!text) return;
-        const cfg = JSON.parse(text) as PersistedConfig;
-        // preset 是嵌套对象：浅合并会整份替换，单独逐字段校验
-        const patch: Record<string, unknown> = isRecord(cfg.llm) ? { ...cfg.llm } : {};
-        delete patch.preset;
-        mergeSection(llm.value, patch);
-        mergePreset(llm.value.preset, cfg.llm?.preset);
-        // 旧版迁移：ocr.autoLaunch / parse.resumeOnStart → general（先落旧值，新节覆盖）
-        if (typeof cfg.ocr?.autoLaunch === "boolean") general.value.autoLaunch = cfg.ocr.autoLaunch;
-        if (typeof cfg.parse?.resumeOnStart === "boolean") general.value.resumeOnStart = cfg.parse.resumeOnStart;
-        mergeSection(general.value, cfg.general);
-        mergeSection(ocr.value, cfg.ocr); // installMirror（autoLaunch 键不在目标对象上，被忽略）
-        if (typeof cfg.repo === "string" && cfg.repo.trim()) repoPath.value = cfg.repo;
+        // 无配置文件（首次启动）：不能在这里 return——下面的语言/目标语言默认值还要补
+        if (text) {
+          const cfg = JSON.parse(text) as PersistedConfig;
+          // preset 是嵌套对象：浅合并会整份替换，单独逐字段校验
+          const patch: Record<string, unknown> = isRecord(cfg.llm) ? { ...cfg.llm } : {};
+          delete patch.preset;
+          mergeSection(llm.value, patch);
+          mergePreset(llm.value.preset, cfg.llm?.preset);
+          // 旧版迁移：ocr.autoLaunch / parse.resumeOnStart → general（先落旧值，新节覆盖）
+          if (typeof cfg.ocr?.autoLaunch === "boolean") general.value.autoLaunch = cfg.ocr.autoLaunch;
+          if (typeof cfg.parse?.resumeOnStart === "boolean") general.value.resumeOnStart = cfg.parse.resumeOnStart;
+          mergeSection(general.value, cfg.general);
+          mergeSection(ocr.value, cfg.ocr); // installMirror（autoLaunch 键不在目标对象上，被忽略）
+          if (typeof cfg.repo === "string" && cfg.repo.trim()) repoPath.value = cfg.repo;
+        }
       } catch (e) {
         console.warn("[settings] config.json 读取失败，使用默认值:", e);
       }
+      // 界面语言：配置值非法（手改坏/旧字段）回落系统检测；配置优先于 localStorage 镜像
+      if (!isAppLocale(general.value.lang)) general.value.lang = detectLocale();
+      setLocale(general.value.lang);
+      // 目标语言初值（用户 2026-09-15：跟随系统语言；仅从未设置过时填，auth.cfg/旧配置优先）
+      if (!llm.value.targetLang.trim()) llm.value.targetLang = defaultTargetLang(general.value.lang);
       // 供应商预设迁移/补全（旧配置只有 baseUrl+model）：反查目录 → 重算兼容快照
       await ensureCatalog();
       if (
@@ -397,7 +416,7 @@ export const useSettingsStore = defineStore("settings", () => {
       await doSave();
       pageOpen.value = false;
     } catch (e) {
-      toast(`设置保存失败：${String(e)}`, "error");
+      toast(t("settings.saveFailed", { error: String(e) }), "error");
     }
   }
 
@@ -423,12 +442,24 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
+  /** 界面语言切换（用户 2026-09-15）：即时生效 + 即时持久化（localStorage 镜像由 i18n.ts 维护） */
+  async function setLang(locale: AppLocale): Promise<void> {
+    general.value.lang = locale;
+    setLocale(locale);
+    if (!isTauri) return;
+    try {
+      await doSave();
+    } catch (e) {
+      console.warn("[settings] 界面语言持久化失败:", e);
+    }
+  }
+
   /** 验证 LLM（用户 2026-09-14）：连通性 + 关思考策略探测；策略回写 thinkingOff */
   async function verifyLlm(): Promise<void> {
     if (verifying.value) return;
     const payload = llmInvokePayload();
     if (!payload) {
-      toast("请先填写 Base URL / API Key / 模型", "warn");
+      toast(t("llm.fillAllRequired"), "warn");
       return;
     }
     verifying.value = true;
@@ -439,7 +470,7 @@ export const useSettingsStore = defineStore("settings", () => {
       const warn = report.strategy === "none" && !report.presetNoThinking;
       toast(report.message, warn ? "warn" : "info");
     } catch (e) {
-      toast(`验证失败：${String(e)}`, "error");
+      toast(t("llm.verifyFailed", { error: String(e) }), "error");
     } finally {
       verifying.value = false;
     }
@@ -450,15 +481,15 @@ export const useSettingsStore = defineStore("settings", () => {
     if (modelsFetching.value) return;
     const { baseUrl, apiKey } = llm.value;
     if (!baseUrl.trim() || !apiKey.trim()) {
-      if (!silent) toast("请先填写 Base URL / API Key", "warn");
+      if (!silent) toast(t("llm.fillBaseKey"), "warn");
       return;
     }
     modelsFetching.value = true;
     try {
       modelOptions.value = await invoke<string[]>("fetch_llm_models", { baseUrl, apiKey });
-      if (!silent) toast(`已获取 ${modelOptions.value.length} 个模型`);
+      if (!silent) toast(t("llm.modelsFetched", { count: modelOptions.value.length }));
     } catch (e) {
-      toast(`获取模型列表失败：${String(e)}`, "error");
+      toast(t("llm.fetchModelsFailed", { error: String(e) }), "error");
     } finally {
       modelsFetching.value = false;
     }
@@ -473,14 +504,14 @@ export const useSettingsStore = defineStore("settings", () => {
       const info = await invoke<UpdateInfo>("check_update");
       appVersion.value = info.current;
       if (info.newer && info.latest) {
-        updateText.value = `发现新版本 v${info.latest}`;
-        toast(`发现新版本 v${info.latest}（当前 v${info.current}），可到 GitHub Releases 下载`, "info");
+        updateText.value = t("update.found", { latest: info.latest });
+        toast(t("update.foundToast", { latest: info.latest, current: info.current }), "info");
       } else {
-        updateText.value = `已是最新（v${info.current}）`;
+        updateText.value = t("update.upToDate", { current: info.current });
       }
     } catch (e) {
-      updateText.value = "检查失败（仓库暂无发布或网络不可达）";
-      if (manual) toast(`检查更新失败：${String(e)}`, "warn");
+      updateText.value = t("update.failed");
+      if (manual) toast(t("update.failedToast", { error: String(e) }), "warn");
     } finally {
       updateBusy.value = false;
     }
@@ -509,6 +540,7 @@ export const useSettingsStore = defineStore("settings", () => {
     save,
     setRepoPath,
     setTheme,
+    setLang,
     ensureCatalog,
     applyProvider,
     applyModel,

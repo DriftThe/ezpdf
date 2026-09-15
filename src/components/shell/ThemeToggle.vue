@@ -1,18 +1,24 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import { useSettingsStore, type ThemeMode } from "../../stores/settings";
 
 /**
  * 主题切换（用户 2026-09-14）：点击按 浅色 → 深色 → 跟随系统 轮换，
  * 图标即当前模式，悬停 title 说明。持久化在 settings.general.theme（config.json）。
  */
+const { t } = useI18n();
 const settings = useSettingsStore();
 
 const ORDER: ThemeMode[] = ["light", "dark", "system"];
-const LABEL: Record<ThemeMode, string> = { light: "浅色", dark: "深色", system: "跟随系统" };
+const LABEL_KEY: Record<ThemeMode, string> = {
+  light: "shell.themeLight",
+  dark: "shell.themeDark",
+  system: "shell.themeSystem",
+};
 
 const mode = computed(() => settings.general.theme);
-const title = computed(() => `主题：${LABEL[mode.value]}（点击切换）`);
+const title = computed(() => t("shell.themeTitle", { mode: t(LABEL_KEY[mode.value]) }));
 
 function cycle(): void {
   const next = ORDER[(ORDER.indexOf(mode.value) + 1) % ORDER.length];

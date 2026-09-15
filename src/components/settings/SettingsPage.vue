@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, type Component } from "vue";
+import { useI18n } from "vue-i18n";
 import { useSettingsStore, type SettingsSection } from "../../stores/settings";
 import LlmSection from "./sections/LlmSection.vue";
 import OcrSection from "./sections/OcrSection.vue";
 import CommonSection from "./sections/CommonSection.vue";
 
 const settings = useSettingsStore();
+const { t } = useI18n();
 
 /**
  * 设置子项注册表（新增子项三步，见 stores/settings.ts 的 SettingsSection 处注释）：
@@ -13,9 +15,9 @@ const settings = useSettingsStore();
  */
 type SectionDef = { label: string; comp: Component };
 const SECTIONS: Record<SettingsSection, SectionDef> = {
-  llm: { label: "LLM 翻译", comp: LlmSection },
-  ocr: { label: "OCR 服务", comp: OcrSection },
-  common: { label: "常规", comp: CommonSection },
+  llm: { label: "settings.section.llm", comp: LlmSection },
+  ocr: { label: "settings.section.ocr", comp: OcrSection },
+  common: { label: "settings.section.common", comp: CommonSection },
 };
 /** Object.entries 的键是 string，收窄回 SettingsSection 供导航绑定 */
 const navList = Object.entries(SECTIONS) as Array<[SettingsSection, SectionDef]>;
@@ -33,11 +35,11 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
     <!-- 左列：返回 + 子项导航（复用 sidebar 条目呈现） -->
     <aside class="sp-nav">
       <!-- 退出即保存：返回按钮直接触发保存（持久化阶段1接入） -->
-      <button class="btn ghost back-btn" title="保存并返回" @click="settings.save">
+      <button class="btn ghost back-btn" :title="t('settings.backTitle')" @click="settings.save">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
           <path d="M10 3L5 8l5 5" />
         </svg>
-        返回
+        {{ t("settings.back") }}
       </button>
 
       <nav class="sp-items">
@@ -48,7 +50,7 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
           :class="{ active: settings.section === id }"
           @click="settings.section = id"
         >
-          {{ def.label }}
+          {{ t(def.label) }}
         </button>
       </nav>
     </aside>

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { nextTick, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { useLibraryStore } from "../../stores/library";
 import { toast } from "../../composables/toast";
 import RepoTree from "./RepoTree.vue";
 import EmptyState from "../common/EmptyState.vue";
 
+const { t } = useI18n();
 const lib = useLibraryStore();
 
 /** 新增文件夹：侧栏内联输入（不弹系统框，避免打断）——后端只加逻辑分组 */
@@ -14,7 +16,7 @@ const folderInput = ref<HTMLInputElement | null>(null);
 
 function onNewFolder(): void {
   if (!lib.repoRoot) {
-    toast("尚未选择仓库", "warn");
+    toast(t("library.noRepo"), "warn");
     return;
   }
   folderOpen.value = true;
@@ -26,7 +28,7 @@ async function confirmNewFolder(): Promise<void> {
   const name = folderName.value.trim();
   if (!name) return;
   if (await lib.createFolder(name)) {
-    toast(`已创建文件夹「${name}」`);
+    toast(t("repo.folderCreated", { name }));
     folderOpen.value = false;
     folderName.value = "";
   }
@@ -42,13 +44,13 @@ function cancelNewFolder(): void {
   <aside class="sidebar" :class="{ closed: !lib.sidebarOpen }">
     <div class="side-inner">
     <div class="side-tabs">
-      <button class="tab active">仓库</button>
+      <button class="tab active">{{ t("repo.tab") }}</button>
       <!-- <button class="tab" @click="onOfflineTab">离线</button> -->
     </div>
 
     <div class="side-actions">
-      <button class="btn primary grow" :disabled="lib.importing || !lib.repoRoot" @click="lib.importPdf()">{{ lib.importing ? "导入中" : "导入 PDF" }}</button>
-      <button class="btn grow" :disabled="!lib.repoRoot" @click="onNewFolder">新增文件夹</button>
+      <button class="btn primary grow" :disabled="lib.importing || !lib.repoRoot" @click="lib.importPdf()">{{ lib.importing ? t("repo.importing") : t("repo.importPdf") }}</button>
+      <button class="btn grow" :disabled="!lib.repoRoot" @click="onNewFolder">{{ t("repo.newFolder") }}</button>
     </div>
 
     <div v-if="folderOpen" class="side-new-folder">
@@ -56,18 +58,18 @@ function cancelNewFolder(): void {
         ref="folderInput"
         v-model="folderName"
         class="folder-input"
-        placeholder="文件夹名"
+        :placeholder="t('repo.folderName')"
         @keydown.enter="confirmNewFolder"
         @keydown.esc="cancelNewFolder"
       />
-      <button class="btn primary sm" :disabled="!folderName.trim()" @click="confirmNewFolder">创建</button>
-      <button class="btn ghost sm" @click="cancelNewFolder">取消</button>
+      <button class="btn primary sm" :disabled="!folderName.trim()" @click="confirmNewFolder">{{ t("repo.create") }}</button>
+      <button class="btn ghost sm" @click="cancelNewFolder">{{ t("common.cancel") }}</button>
     </div>
 
     <div class="side-body">
       <RepoTree v-if="lib.repoRoot" />
-      <EmptyState v-else title="未选择仓库" desc="选择一个文件夹作为 PDF 仓库">
-        <button class="btn primary" @click="lib.chooseRepoRoot">选择仓库目录</button>
+      <EmptyState v-else :title="t('repo.emptyTitle')" :desc="t('repo.emptyDesc')">
+        <button class="btn primary" @click="lib.chooseRepoRoot">{{ t("repo.chooseRepo") }}</button>
       </EmptyState>
     </div>
 
@@ -80,7 +82,7 @@ function cancelNewFolder(): void {
         </span>
         <span class="root-path">{{ lib.repoRoot }}</span>
         <!-- 重新选择仓库（用户 2026-09-14）：系统目录选择器 -->
-        <button class="btn ghost sm root-pick" title="重新选择仓库" @click="lib.chooseRepoRoot">选择</button>
+        <button class="btn ghost sm root-pick" :title="t('repo.reselect')" @click="lib.chooseRepoRoot">{{ t("repo.select") }}</button>
       </div>
     </div>
     </div>
