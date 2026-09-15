@@ -145,7 +145,18 @@ def main() -> int:
     try:
         report = probe()
     except Exception as exc:  # 探测自身崩溃也必须吐 JSON，且以成功码退出（报告即数据）
-        report = {"error": f"{type(exc).__name__}: {exc}"}
+        # 契约仍是完整报告：缺字段会让 Rust 侧反序列化失败，真正的原因就到不了界面
+        report = {
+            "python": None,
+            "python_path": None,
+            "in_venv": False,
+            "deps": {},
+            "missing": [],
+            "torch_build": None,
+            "gpu": None,
+            "models": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     print(json.dumps(report, ensure_ascii=False))
     return 0
 

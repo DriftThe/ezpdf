@@ -235,8 +235,12 @@ fn hide_window(_cmd: &mut StdCommand) {}
 struct BootstrapRaw {
     python: Option<String>,
     python_path: Option<String>,
+    /// 探测脚本自身崩溃时只会吐 {"error": ...}：其余字段给默认值，别把原因弄丢
+    #[serde(default)]
     in_venv: bool,
+    #[serde(default)]
     deps: BTreeMap<String, Option<String>>,
+    #[serde(default)]
     missing: Vec<String>,
     torch_build: Option<String>,
     gpu: Option<BootstrapGpu>,
@@ -306,7 +310,9 @@ fn compose(raw: BootstrapRaw) -> OcrEnvReport {
     }
 }
 
-fn no_python_report() -> OcrEnvReport {
+/// 探测拿不到结果时的空报告：error 文案分「没有解释器」和「脚本自己失败」两种，
+/// 后者必须带上真实原因，否则界面只会说"没找到 Python"，与事实不符。
+fn failed_report(error: String) -> OcrEnvReport {
     OcrEnvReport {
         python: None,
         python_path: None,
@@ -316,7 +322,7 @@ fn no_python_report() -> OcrEnvReport {
         torch_build: None,
         gpu: None,
         models: None,
-        error: Some("no usable Python detected".into()),
+        error: Some(error),
     }
 }
 
@@ -330,17 +336,23 @@ pub fn probe_blocking(paths: &PyPaths) -> OcrEnvReport {
         .find(|p| p.is_file())
         .cloned()
         .or_else(find_system_python);
-    python
-        .and_then(|py| run_bootstrap(&py, &paths.bootstrap, &paths.models).ok())
-        .map(compose)
-        .unwrap_or_else(no_python_report)
+    match python {
+        Some(py) => match run_bootstrap(&py, &paths.bootstrap, &paths.models) {
+            Ok(raw) => compose(raw),
+            Err(e) => {
+                println!("[pyenv] bootstrap failed: {e}");
+                failed_report(format!("environment probe failed: {e}"))
+            }
+        },
+        None => failed_report("no usable Python detected".into()),
+    }
 }
 
 pub async fn probe(paths: &PyPaths) -> OcrEnvReport {
     let p = paths.clone();
     tauri::async_runtime::spawn_blocking(move || probe_blocking(&p))
         .await
-        .unwrap_or_else(|_| no_python_report())
+        .unwrap_or_else(|e| failed_report(format!("environment probe task failed: {e}")))
 }
 
 fn run_bootstrap(python: &Path, script: &Path, models: &Path) -> Result<BootstrapRaw, String> {
