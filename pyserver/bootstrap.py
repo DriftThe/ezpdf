@@ -4,6 +4,8 @@
     python bootstrap.py          # stdout 单行 JSON（Rust 解析）
     python bootstrap.py | python -m json.tool   # 人工查看
 
+模型目录取 EZPDF_MODELS_DIR（生产 = ~/.ezpdf/models），未设时用 <脚本目录>/models。
+
 输出契约（供 Rust 的 ocr_env_report 合成前端状态灯数据）：
     {
       "python": "3.12.10", "python_path": "...", "in_venv": true,
@@ -38,8 +40,9 @@ DEPS: list[tuple[str, str]] = [
     ("torch", "torch"),
 ]
 
-# 模型目录约定：pyserver/models/<dir>；完整 = config.json + preprocessor_config.json + 任一权重文件
-MODEL_ROOT = Path(__file__).resolve().parent / "models"
+# 模型目录约定：EZPDF_MODELS_DIR 覆盖（生产 = ~/.ezpdf/models），默认 <pyserver>/models；
+# 完整 = config.json + preprocessor_config.json + 任一权重文件
+MODEL_ROOT = Path(os.environ.get("EZPDF_MODELS_DIR") or (Path(__file__).resolve().parent / "models"))
 MODEL_DIRS: dict[str, str] = {"layout": "PP-DocLayoutV3", "vl": "PaddleOCR-VL-1.6"}
 WEIGHT_EXTS = (".safetensors", ".bin", ".pth", ".pt", ".msgpack")
 
