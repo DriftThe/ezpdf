@@ -3,6 +3,7 @@ import { onMounted } from "vue";
 import Sidebar from "./Sidebar.vue";
 import Toasts from "./Toasts.vue";
 import TitleBar from "./TitleBar.vue";
+import WindowResizeEdges from "./WindowResizeEdges.vue";
 import ConfirmDialog from "../common/ConfirmDialog.vue";
 import ReaderToolbar from "../toolbar/ReaderToolbar.vue";
 import ReaderArea from "../reader/ReaderArea.vue";
@@ -46,6 +47,7 @@ onMounted(async () => {
       </main>
       <SettingsPage />
     </div>
+    <WindowResizeEdges />
     <Toasts />
     <ConfirmDialog />
   </div>
