@@ -180,8 +180,13 @@ function mergePreset(target: LlmPresetCompat, patch: unknown): void {
       }
       continue;
     }
-    if (key === "thinkingOffValue" || key === "reasoning") {
-      if (v === null || typeof v === typeof target[key]) target[key] = v as never;
+    // 可空字段默认值是 null，不能用 typeof 比对（typeof null === "object"），按实际类型校验
+    if (key === "thinkingOffValue") {
+      if (v === null || typeof v === "string") target.thinkingOffValue = v;
+      continue;
+    }
+    if (key === "reasoning") {
+      if (v === null || typeof v === "boolean") target.reasoning = v;
       continue;
     }
     if (typeof v === typeof target[key]) target[key] = v as never;
