@@ -104,7 +104,7 @@ export const useParseStore = defineStore("parse", () => {
       const r = envReport.value;
       const modelsReady = !!r?.models?.layout && !!r?.models?.vl;
       if (!modelsReady) {
-        if (alreadyEnv) pushLlmLog(t("log.envInstalledModelsOnly"));
+        if (alreadyEnv) pushLlmLog("[ui] environment already installed, only fetching models");
         await invoke("ocr_download_models", { useMirror });
         await checkEnv();
         toast(t("toast.serviceInstallDone"), "info");
@@ -144,13 +144,18 @@ export const useParseStore = defineStore("parse", () => {
     return health;
   }
 
-  /** 健康报告 → 一行可读文案（toast / 日志共用） */
+  /** 健康报告 → 本地化文案（toast 用） */
   function healthDetail(h: ParseServiceHealth): string {
     return t("ocr.healthDetail", {
       pid: h.pid ?? "?",
       ms: h.elapsedMs,
       batch: h.maxBatchPages,
     });
+  }
+
+  /** 健康报告 → 英文一行摘要（日志用；Rust/Python 侧日志同样一律英文） */
+  function healthLine(h: ParseServiceHealth): string {
+    return `pid ${h.pid ?? "-"} ${h.elapsedMs}ms max_batch_pages=${h.maxBatchPages}`;
   }
 
   /** 在线模式连接（探活通过才登记为 OCR 目标）；失败抛错，调用方决定 toast 还是日志 */
@@ -167,8 +172,8 @@ export const useParseStore = defineStore("parse", () => {
       return;
     }
     try {
-      const detail = healthDetail(await connectOnline(useSettingsStore().ocr.url));
-      pushLlmLog(t("log.onlineConnected", { detail }));
+      const h = await connectOnline(useSettingsStore().ocr.url);
+      pushLlmLog(`[ui] online parse service connected: ${healthLine(h)}`);
     } catch (e) {
       toast(String(e), "error");
     }
@@ -179,12 +184,12 @@ export const useParseStore = defineStore("parse", () => {
    *  顺便把服务端公布的批大小显示出来（地址下方 hint） */
   async function testRemote(): Promise<void> {
     try {
-      const detail = healthDetail(await handshakeOnline());
-      pushLlmLog(t("log.onlineProbeOk", { detail }));
-      toast(t("toast.parseServiceOk", { detail }), "info");
+      const h = await handshakeOnline();
+      pushLlmLog(`[ui] online parse service health check ok: ${healthLine(h)}`);
+      toast(t("toast.parseServiceOk", { detail: healthDetail(h) }), "info");
     } catch (e) {
       onlineHealth.value = null;
-      pushLlmLog(t("log.onlineProbeFailed", { error: String(e) }));
+      pushLlmLog(`[ui] online parse service health check failed: ${String(e)}`);
       toast(String(e), "error");
     }
   }
@@ -197,10 +202,10 @@ export const useParseStore = defineStore("parse", () => {
     if (!isTauri || !settings.general.autoLaunch) return;
     if (settings.ocr.mode === "online") {
       try {
-        const detail = healthDetail(await connectOnline(settings.ocr.url));
-        pushLlmLog(t("log.onlineConnected", { detail }));
+        const h = await connectOnline(settings.ocr.url);
+        pushLlmLog(`[ui] online parse service connected: ${healthLine(h)}`);
       } catch (e) {
-        pushLlmLog(t("log.onlineConnectFailed", { error: String(e) }));
+        pushLlmLog(`[ui] failed to connect the online parse service: ${String(e)}`);
       }
       return;
     }
@@ -208,10 +213,10 @@ export const useParseStore = defineStore("parse", () => {
     const r = envReport.value;
     const ready = !!r && !!r.python && r.missing.length === 0 && !!r.models?.layout && !!r.models?.vl;
     if (!ready) {
-      pushLlmLog(t("log.autoWakeSkipped"));
+      pushLlmLog("[ui] OCR auto-wake skipped: environment or models not ready (Settings → OCR service)");
       return;
     }
-    pushLlmLog(t("log.autoWakeStart"));
+    pushLlmLog("[ui] OCR auto-wake: environment ready → starting service");
     await startService();
   }
 
@@ -292,12 +297,8 @@ export const useParseStore = defineStore("parse", () => {
     if (!isRunnable()) {
       if (isTauri) {
         pushLlmLog(
-          t("log.tick", {
-            svc: serviceStatus.value,
-            paused: paused.value,
-            standing: standing.value,
-            repo: !!useLibraryStore().repoRoot,
-          }),
+          `[ui] scheduler not ready (service=${serviceStatus.value} paused=${paused.value} ` +
+            `standing=${standing.value} repo=${!!useLibraryStore().repoRoot})`,
         );
       }
       return;
@@ -308,7 +309,7 @@ export const useParseStore = defineStore("parse", () => {
       if (!book) {
         standing.value = true; // 一轮扫完无事可做 → 挂起等事件
         clearStrikes();
-        pushLlmLog(t("log.sweepIdle"));
+        pushLlmLog("[ui] sweep done: no processable pages → standing");
         notifyLlmMissingOnce();
         return;
       }
@@ -316,11 +317,11 @@ export const useParseStore = defineStore("parse", () => {
         await processBatch(book);
         (book.kind === "translate" ? translateStrikes : ocrStrikes).delete(book.id);
       } catch (err) {
-        const kind = book.kind === "translate" ? t("pipeline.kindTranslate") : t("pipeline.kindOcr");
+        const kind = book.kind === "translate" ? "translation" : "OCR";
         const map = book.kind === "translate" ? translateStrikes : ocrStrikes;
         const n = (map.get(book.id) ?? 0) + 1;
         map.set(book.id, n);
-        pushLlmLog(t("log.batchFailed", { kind, n, max: MAX_ATTEMPTS, name: book.name, err: String(err) }));
+        pushLlmLog(`[ui] ${kind} batch failed (${n}/${MAX_ATTEMPTS}) ${book.name}: ${String(err)}`);
         if (n >= MAX_ATTEMPTS) {
           toast(
             book.kind === "translate"
@@ -329,7 +330,7 @@ export const useParseStore = defineStore("parse", () => {
             "warn",
           );
         } else {
-          console.warn(`[parse] 批次失败(${n}/${MAX_ATTEMPTS}) ${book.name}:`, err);
+          console.warn(`[parse] batch failed (${n}/${MAX_ATTEMPTS}) ${book.name}:`, err);
         }
       }
     } finally {
@@ -418,7 +419,7 @@ export const useParseStore = defineStore("parse", () => {
     const current = useLibraryStore().currentPdf;
     if (current?.pages.some(needsTranslation)) {
       llmMissingNotified = true;
-      pushLlmLog(t("log.llmMissing"));
+      pushLlmLog("[ui] LLM not configured (baseUrl/apiKey/model empty) → translation skipped; fill it in Settings");
       toast(t("toast.llmMissing"), "warn");
     }
   }
@@ -460,10 +461,10 @@ export const useParseStore = defineStore("parse", () => {
   async function processTranslateBatch(book: PickTarget): Promise<void> {
     const lib = useLibraryStore();
     const llm = llmPayload();
-    if (!llm) throw new Error(t("pipeline.errLlmNotConfigured"));
+    if (!llm) throw new Error("LLM not configured (baseUrl/apiKey/model empty)");
     const pages = ringCollect(book, (page) => (needsTranslation(page) ? page.index : null));
     if (pages.length === 0) return; // 竞态：已全部翻译
-    pushLlmLog(t("log.translateRetryBatch", { pages: pages.join(","), name: book.name }));
+    pushLlmLog(`[ui] translation retry batch p${pages.join(",")} (${book.name})`);
     const outcome = await invoke<ParseOutcome>("translate_pdf", {
       root: lib.repoRoot,
       id: book.id,
@@ -471,7 +472,7 @@ export const useParseStore = defineStore("parse", () => {
       llm,
     });
     if (outcome.updatedPages.length === 0) {
-      throw new Error(t("pipeline.errNoProgress")); // 计入 strike，防止坏页空转
+      throw new Error("translation made no progress"); // 计入 strike，防止坏页空转
     }
     applyOutcome(book.id, outcome);
   }
@@ -485,7 +486,7 @@ export const useParseStore = defineStore("parse", () => {
     const limit = currentBatchSize();
     const take = ringCollect(book, (page) => (needsOcr(page) ? page : null), limit);
     if (take.length === 0) return; // 竞态：已全部完成
-    pushLlmLog(t("log.ocrBatch", { pages: take.map((p) => p.index).join(","), name: book.name }));
+    pushLlmLog(`[ui] OCR batch p${take.map((p) => p.index).join(",")} (${book.name})`);
 
     // 离屏渲染：一律用 Rust 解析过的路径（load_pdf 已做仓库内校验），不自己拼 name-id
     const pdfPath = book.state.pdfPath;
@@ -536,7 +537,7 @@ export const useParseStore = defineStore("parse", () => {
       .catch(() => undefined)
       .then(run)
       .catch((err) => {
-        pushLlmLog(t("log.translateBatchFailed", { pages: pages.join(","), err: String(err) }));
+        pushLlmLog(`[ui] translation batch failed p${pages.join(",")}: ${String(err)}`);
         return true;
       });
     translateChains.set(bookId, next);
