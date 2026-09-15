@@ -279,6 +279,11 @@ export const useSettingsStore = defineStore("settings", () => {
    * 单次幂等（共享 promise），App 启动与设置页打开都安全。
    */
   let loadPromise: Promise<void> | null = null;
+  /**
+   * 成功读过盘才允许写回（否则用户的 config.json 会被内存里的默认值覆盖）。
+   * 场景：设置页返回键/主题/语言/仓库路径都是"整份写"，加载失败时写盘 = 清空用户配置。
+   */
+  let loaded = false;
   function ensureLoaded(): Promise<void> {
     loadPromise ??= (async () => {
       if (!isTauri) return;
@@ -306,7 +311,9 @@ export const useSettingsStore = defineStore("settings", () => {
         }
       } catch (e) {
         console.warn("[settings] config.json 读取失败，使用默认值:", e);
+        return; // 读失败：保持 loaded=false，本次会话拒绝写盘（不覆盖用户配置）
       }
+      loaded = true;
       // 界面语言：配置值非法（手改坏/旧字段）回落系统检测；配置优先于 localStorage 镜像
       if (!isAppLocale(general.value.lang)) general.value.lang = detectLocale();
       setLocale(general.value.lang);
@@ -412,6 +419,10 @@ export const useSettingsStore = defineStore("settings", () => {
 
   /** 整份写盘（save 与仓库路径即时持久化共用） */
   async function doSave(): Promise<void> {
+    if (!loaded) {
+      console.error("[settings] save skipped: the config was never loaded successfully");
+      return;
+    }
     const payload: PersistedConfig = {
       llm: { ...llm.value },
       general: { ...general.value },
@@ -425,6 +436,11 @@ export const useSettingsStore = defineStore("settings", () => {
   async function save(): Promise<void> {
     if (!isTauri) {
       pageOpen.value = false;
+      return;
+    }
+    if (!loaded) {
+      // 读盘都没成功：写回只会清空用户配置，留在设置页并说明原因
+      toast(t("settings.saveNotLoaded"), "error");
       return;
     }
     try {

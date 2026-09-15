@@ -56,6 +56,7 @@ export const i18n = createI18n({
 /** 切换界面语言并写镜像（设置页与启动恢复共用） */
 export function setLocale(locale: AppLocale): void {
   i18n.global.locale.value = locale;
+  if (typeof document !== "undefined") document.documentElement.lang = locale;
   try {
     localStorage.setItem(LANG_MIRROR_KEY, locale);
   } catch {
