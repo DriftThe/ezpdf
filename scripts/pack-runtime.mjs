@@ -24,7 +24,28 @@ const cacheDir = path.join(resDir, ".cache");
 // 与 astral-sh/python-build-standalone 的发布对齐（20260901 发布的最新 3.12）
 const PY_TAG = "20260901";
 const PY_VERSION = "3.12.14";
-const PY_ASSET = `cpython-${PY_VERSION}+${PY_TAG}-x86_64-pc-windows-msvc-install_only.tar.gz`;
+
+/** 目标平台 → python-build-standalone 资产三元组 + 随包解释器相对路径。
+ *  打包在哪个平台执行就必须打哪个平台的解释器（Tauri 不做交叉编译），
+ *  故直接取 process.platform/arch；EZPDF_PACK_PLATFORM 仅供本地演练其他平台。 */
+const PLATFORM = process.env.EZPDF_PACK_PLATFORM ?? process.platform;
+const ARCH = process.env.EZPDF_PACK_ARCH ?? process.arch;
+
+function targetFor() {
+  if (PLATFORM === "win32" && ARCH === "x64") {
+    return { triple: "x86_64-pc-windows-msvc", exe: ["python.exe"] };
+  }
+  if (PLATFORM === "linux" && ARCH === "x64") {
+    return { triple: "x86_64-unknown-linux-gnu", exe: ["bin", "python3"] };
+  }
+  if (PLATFORM === "linux" && ARCH === "arm64") {
+    return { triple: "aarch64-unknown-linux-gnu", exe: ["bin", "python3"] };
+  }
+  throw new Error(`暂不支持打包 ${PLATFORM}/${ARCH} 的 Python 运行时（Windows x64 / Linux x64|arm64）`);
+}
+
+const TARGET = targetFor();
+const PY_ASSET = `cpython-${PY_VERSION}+${PY_TAG}-${TARGET.triple}-install_only.tar.gz`;
 const ASSET_ENC = encodeURIComponent(PY_ASSET);
 const MIRRORS = [
   `https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/${PY_TAG}/${ASSET_ENC}`,
@@ -141,24 +162,50 @@ function extractPython(archive) {
   const r = spawnSync(TAR, ["-xzf", archive, "-C", stage], { stdio: "inherit" });
   if (r.status !== 0) throw new Error("tar 解压失败（需要 bsdtar / Windows tar.exe）");
   const extracted = path.join(stage, "python");
-  if (!fs.existsSync(path.join(extracted, "python.exe"))) {
-    throw new Error("解压结果缺少 python/python.exe，压缩包结构异常");
+  const interpreter = path.join(extracted, ...TARGET.exe);
+  if (!fs.existsSync(interpreter)) {
+    throw new Error(`解压结果缺少 ${["python", ...TARGET.exe].join("/")}，压缩包结构异常`);
   }
-  // 裁剪用不到的大件（tkinter/tcl/测试套件），省 ~60MB
-  rmrf(path.join(extracted, "tcl"));
-  rmrf(path.join(extracted, "Lib", "tkinter"));
-  rmrf(path.join(extracted, "Lib", "test"));
-  const dlls = path.join(extracted, "DLLs");
-  if (fs.existsSync(dlls)) {
-    for (const f of fs.readdirSync(dlls)) {
-      if (/^(_tkinter|tcl|tk)\d*t?\.(pyd|dll)$/i.test(f)) rmrf(path.join(dlls, f));
-    }
-  }
+  trimPython(extracted);
   const target = path.join(resDir, "python");
   rmrf(target);
   fs.renameSync(extracted, target);
   rmrf(stage);
   log(`Python 运行时就位：${path.relative(root, target)}（${fmtSize(dirSize(target))}）`);
+}
+
+/** 裁剪用不到的大件（tkinter/tcl/测试套件/头文件/share + Windows 调试符号）。
+ *  Linux 布局由 tar 清单核对过：lib/tcl9.0/*、lib/tk9.0/*、lib/libtcl9.0.so、
+ *  lib/pythonX.Y/config-<triplet>/、share/、include/；Windows 是 tcl/ + DLLs/*.pdb。 */
+function trimPython(dir) {
+  const [major, minor] = PY_VERSION.split(".");
+  const version = `${major}.${minor}`;
+  const fixed = [
+    "tcl",
+    "include",
+    "share",
+    path.join("Lib", "tkinter"),
+    path.join("Lib", "test"),
+    path.join("Lib", "idlelib"),
+    path.join("lib", `python${version}`, "tkinter"),
+    path.join("lib", `python${version}`, "test"),
+    path.join("lib", `python${version}`, "idlelib"),
+  ];
+  for (const rel of fixed) rmrf(path.join(dir, rel));
+
+  const scan = (rel, re) => {
+    const target = rel ? path.join(dir, rel) : dir;
+    if (!fs.existsSync(target)) return;
+    for (const name of fs.readdirSync(target)) {
+      if (re.test(name)) rmrf(path.join(target, name));
+    }
+  };
+  scan("", /\.pdb$/i); // 顶层 python.pdb / python3.pdb / pythonw.pdb
+  scan("DLLs", /\.pdb$/i); // 扩展模块的调试符号（~30MB）
+  scan("DLLs", /^(_tkinter|tcl|tk)\d*t?\.(pyd|dll)$/i);
+  scan("lib", /^(libtcl|libtk|tcl\d|tk\d|itcl|thread\d|tdbc)/i); // Linux tcl/tk 运行库与扩展
+  scan(path.join("lib", `python${version}`), /^config-/i); // 编译期头文件目录
+  scan(path.join("Lib", "venv", "scripts", "nt"), /\.pdb$/i);
 }
 
 // ---- 安全断言：dist 不得携带 dev 密钥 -------------------------------------------------------
@@ -182,15 +229,12 @@ function assertNoAuthKey() {
 // ---- main ---------------------------------------------------------------------------------
 
 async function main() {
-  if (process.platform !== "win32" || process.arch !== "x64") {
-    throw new Error("当前仅打包 Windows x64 的 Python 运行时");
-  }
   fs.mkdirSync(resDir, { recursive: true });
   const stamp = fs.existsSync(stampFile) ? JSON.parse(fs.readFileSync(stampFile, "utf8")) : null;
   const pyOk =
     !force &&
     stamp?.asset === PY_ASSET &&
-    fs.existsSync(path.join(resDir, "python", "python.exe"));
+    fs.existsSync(path.join(resDir, "python", ...TARGET.exe));
   if (pyOk) {
     log(`Python 已就绪（${stamp.asset}），跳过下载（--force 可强制重打）`);
   } else {
@@ -201,7 +245,11 @@ async function main() {
   assertNoAuthKey();
   fs.writeFileSync(
     stampFile,
-    JSON.stringify({ asset: PY_ASSET, python: PY_VERSION, packedAt: new Date().toISOString() }, null, 2),
+    JSON.stringify(
+      { asset: PY_ASSET, target: TARGET.triple, python: PY_VERSION, packedAt: new Date().toISOString() },
+      null,
+      2,
+    ),
   );
   log("完成：resources/python + resources/pyserver + resources/system_prompt");
 }
