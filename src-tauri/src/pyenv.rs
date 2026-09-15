@@ -53,9 +53,15 @@ pub struct PyPaths {
     /// stdlib 环境探测脚本（纯标准库，随包解释器/venv 均可运行）
     pub bootstrap: PathBuf,
     pub requirements: PathBuf,
-    /// 服务解释器：生产 = 随包可重定位 Python（安装目录 resources/python）；
-    /// dev = 仓库 pyserver/.venv 内解释器（缺失时用系统 python 创建）
+    /// 服务解释器（真正跑 pyserver 的那一个，装依赖也装给它）：
+    /// Windows 生产 = 随包可重定位 Python（安装目录可写）；
+    /// Linux 生产 = 用户级 venv（安装目录只读，见 venv_dir）；
+    /// dev = 仓库 pyserver/.venv（缺失时用系统 python 创建）
     pub python: PathBuf,
+    /// 随包基础解释器（只读）：Linux 生产用它创建 venv；Windows 生产与 python 相同；dev = None
+    pub base_python: Option<PathBuf>,
+    /// 需要用户级 venv 时给出 venv 根目录（Linux 生产 = ~/.ezpdf/venv；dev = pyserver/）
+    pub venv_dir: Option<PathBuf>,
     /// 模型目录（与代码分离）：生产 = ~/.ezpdf/models（升级/重装不丢），dev = pyserver/models
     pub models: PathBuf,
     /// true = 随包解释器（生产）；false = venv（dev，需自建）
@@ -65,14 +71,102 @@ pub struct PyPaths {
 impl PyPaths {
     pub fn resolve(app: &AppHandle) -> Result<Self, String> {
         let (root, bundled) = server_root(app)?;
+        let models = models_dir(app, &root);
+        let bootstrap = root.join("bootstrap.py");
+        let requirements = root.join("requirements.txt");
+        // 运行期覆盖解释器（dev 模拟生产布局 / 非标准部署）：不建 venv，直接用
+        if let Ok(p) = std::env::var("EZPDF_PYTHON_EXE") {
+            if !p.trim().is_empty() {
+                let python = PathBuf::from(p);
+                return Ok(Self {
+                    bootstrap,
+                    requirements,
+                    python: python.clone(),
+                    base_python: Some(python),
+                    venv_dir: None,
+                    models,
+                    root,
+                    bundled,
+                });
+            }
+        }
+        let bundled_py = bundled.then(|| bundled_python(app)).transpose()?;
+        let venv_dir = venv_root(app, &root, bundled);
+        let python = if let (true, Some(venv)) = (needs_own_venv(bundled), venv_dir.as_ref()) {
+            // 需要用户级 venv（Linux 生产）：服务解释器在 venv 里，首次安装时创建
+            venv_join(venv)
+        } else {
+            // Windows 生产 = 随包解释器；dev = 仓库 pyserver/.venv
+            bundled_py
+                .clone()
+                .unwrap_or_else(|| venv_join(&root.join(".venv")))
+        };
         Ok(Self {
-            bootstrap: root.join("bootstrap.py"),
-            requirements: root.join("requirements.txt"),
-            python: python_exe(app, &root, bundled)?,
-            models: models_dir(app, &root),
+            bootstrap,
+            requirements,
+            python,
+            base_python: bundled_py,
+            venv_dir,
+            models,
             root,
             bundled,
         })
+    }
+}
+
+/// 安装目录只读的平台（Linux/macOS）才需要用户级 venv：
+/// deb/rpm 把资源放在 root 所有的 /usr/lib 下，AppImage 是只读挂载，
+/// pip 都不能往随包解释器里写（Windows NSIS 是 per-user 安装，目录可写）。
+fn needs_own_venv(bundled: bool) -> bool {
+    bundled && !cfg!(windows)
+}
+
+/// venv 内解释器路径（Windows: Scripts/python.exe，Unix: bin/python3）
+fn venv_join(venv_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv_dir.join("Scripts").join(py_exe_name())
+    } else {
+        venv_dir.join("bin").join(py_exe_name())
+    }
+}
+
+/// 用户级 venv 根目录：生产非 Windows = ~/.ezpdf/venv（与模型目录同一处，升级重装不丢）；
+/// Windows 生产 = None（随包安装目录可写，直接用随包解释器）；dev = pyserver/.venv。
+fn venv_root(app: &AppHandle, root: &Path, bundled: bool) -> Option<PathBuf> {
+    if !bundled || cfg!(windows) {
+        let _ = app;
+        return Some(root.join(".venv"));
+    }
+    #[cfg(dev)]
+    {
+        let _ = app;
+        Some(root.join(".venv"))
+    }
+    #[cfg(not(dev))]
+    {
+        app.path()
+            .home_dir()
+            .ok()
+            .map(|home| home.join(".ezpdf").join("venv"))
+    }
+}
+
+/// 随包基础解释器（只读；双位置探测同 pyserver 代码根）
+#[cfg_attr(dev, allow(dead_code))]
+fn bundled_python(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(dev)]
+    {
+        let _ = app;
+        Err("dev 下没有随包解释器".into())
+    }
+    #[cfg(not(dev))]
+    {
+        let res = app.path().resource_dir().map_err(|e| e.to_string())?;
+        let nested = res.join("resources").join("python").join(bundled_py_rel());
+        if nested.is_file() {
+            return Ok(nested);
+        }
+        Ok(res.join("python").join(bundled_py_rel()))
     }
 }
 
@@ -99,41 +193,6 @@ fn server_root(app: &AppHandle) -> Result<(PathBuf, bool), String> {
             return Ok((nested, true));
         }
         Ok((res.join("pyserver"), true))
-    }
-}
-
-/// 解释器：EZPDF_PYTHON_EXE 运行期覆盖（dev 里模拟生产布局用）；
-/// 生产 = 随包 Python（resources/python）；dev = <root>/.venv。
-fn python_exe(app: &AppHandle, root: &Path, bundled: bool) -> Result<PathBuf, String> {
-    if let Ok(p) = std::env::var("EZPDF_PYTHON_EXE") {
-        if !p.trim().is_empty() {
-            return Ok(PathBuf::from(p));
-        }
-    }
-    if bundled {
-        #[cfg(not(dev))]
-        {
-            let res = app.path().resource_dir().map_err(|e| e.to_string())?;
-            let nested = res.join("resources").join("python").join(bundled_py_rel());
-            if nested.is_file() {
-                return Ok(nested);
-            }
-            return Ok(res.join("python").join(bundled_py_rel()));
-        }
-        #[cfg(dev)]
-        {
-            let _ = app;
-        }
-    }
-    Ok(venv_python(root))
-}
-
-/// venv 解释器位置：Windows = .venv/Scripts/python.exe，Unix = .venv/bin/python3
-fn venv_python(root: &Path) -> PathBuf {
-    if cfg!(windows) {
-        root.join(".venv").join("Scripts").join(py_exe_name())
-    } else {
-        root.join(".venv").join("bin").join(py_exe_name())
     }
 }
 
@@ -262,11 +321,13 @@ fn no_python_report() -> OcrEnvReport {
 /// 跑一次 bootstrap.py（服务解释器优先；不存在时系统 python 兜底——仅 dev 会走到）。
 /// 探测自身失败不作为错误抛出——报告即数据（error 字段），前端据此显示引导。
 pub fn probe_blocking(paths: &PyPaths) -> OcrEnvReport {
-    let python = if paths.python.is_file() {
-        Some(paths.python.clone())
-    } else {
-        find_system_python()
-    };
+    // 优先服务解释器（Linux 生产 = 用户级 venv）；venv 还没建时用随包基础解释器
+    // （报告要描述「我们真正会用的解释器」，而不是系统 python）
+    let python = std::iter::once(&paths.python)
+        .chain(paths.base_python.iter())
+        .find(|p| p.is_file())
+        .cloned()
+        .or_else(find_system_python);
     python
         .and_then(|py| run_bootstrap(&py, &paths.bootstrap, &paths.models).ok())
         .map(compose)
@@ -573,14 +634,19 @@ pub async fn install_env(
     .await;
     emit_progress(app, "准备", 2).await;
     if !paths.python.is_file() {
-        // 生产随包解释器必在；走到这里只可能是 dev（venv 未建）
-        let sys = find_system_python()
+        // 服务解释器不存在：Linux 生产 = 用随包解释器在 ~/.ezpdf 建用户级 venv
+        // （安装目录只读）；dev = 用系统 python 在 pyserver/ 建 .venv
+        let base = std::iter::once(paths.base_python.clone())
+            .chain(std::iter::once(find_system_python()))
+            .flatten()
+            .find(|p| p.is_file())
             .ok_or("未检测到 Python，无法创建环境（请先安装 Python 3.10+）")?;
-        emit_log(app, "[ezpdf] 创建 venv…".into()).await;
+        let venv_dir = paths.venv_dir.clone().ok_or("缺少 venv 目录配置")?;
+        emit_log(app, format!("[ezpdf] 创建 venv（{}）…", venv_dir.display())).await;
         run_streamed(
             app,
-            &sys,
-            &svec(&["-m", "venv", ".venv"]),
+            &base,
+            &svec(&["-m", "venv", &venv_dir.to_string_lossy()]),
             &paths.root,
             &paths.models,
             &[],

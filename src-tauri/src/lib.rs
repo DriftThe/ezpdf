@@ -490,8 +490,10 @@ fn move_pdf(root: &str, id: &str, belong: Option<String>) -> Result<RepoTree, St
 
 // ---- 应用设置持久化（用户 2026-09-14）：dev = 仓库根 config.json；生产 = 应用所在目录 config.json ----
 
-/// 设置文件位置：与应用同目录（用户拍板 2026-09-14：所有设置都存应用目录的 cfg 文件）。
-/// 生产 = exe 所在目录（NSIS per-user 安装，目录可写）；dev = 源码仓库根。
+/// 设置文件位置：Windows 生产 = exe 所在目录（NSIS per-user 安装，目录可写；用户拍板
+/// 2026-09-14「所有设置都存应用目录的 cfg 文件」）；Linux/macOS 生产 = ~/.ezpdf/config.json
+/// （deb/rpm 装到 root 所有的 /usr/lib、AppImage 是只读挂载，应用目录写不进去）。
+/// dev = 源码仓库根。
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     #[cfg(dev)]
     {
@@ -500,11 +502,24 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
     #[cfg(not(dev))]
     {
-        let _ = app;
+        prod_settings_path(app)
+    }
+}
+
+/// 生产设置路径（独立函数：dev 构建也参与编译检查）。
+/// Windows = exe 同目录；其他平台 = ~/.ezpdf/config.json（与模型目录同一处）。
+#[cfg_attr(dev, allow(dead_code))]
+fn prod_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if cfg!(windows) {
         let exe = std::env::current_exe().map_err(|e| format!("无法定位应用路径: {e}"))?;
         let dir = exe.parent().ok_or("无法解析应用目录")?;
-        Ok(dir.join("config.json"))
+        return Ok(dir.join("config.json"));
     }
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|e| format!("无法定位用户主目录: {e}"))?;
+    Ok(home.join(".ezpdf").join("config.json"))
 }
 
 /// 读设置：文件不存在 → Ok(None)（前端用默认值，不打断启动）
