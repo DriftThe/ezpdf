@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isTauri } from "../../lib/env";
 import ThemeToggle from "./ThemeToggle.vue";
 
 /**
@@ -11,7 +12,6 @@ import ThemeToggle from "./ThemeToggle.vue";
  * 浏览器 dev（无 Tauri）下按钮静默无效。
  */
 const { t } = useI18n();
-const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const win = isTauri ? getCurrentWindow() : null;
 const maximized = ref(false);
 let unlisten: (() => void) | null = null;

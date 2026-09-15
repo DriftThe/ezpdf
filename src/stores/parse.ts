@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import { toast } from "../composables/toast";
 import type {
+  InstallProgress,
   OcrEnvReport,
   PageInfo,
   ParseOutcome,
@@ -15,12 +16,12 @@ import { listen } from "@tauri-apps/api/event";
 import { loadPdfDoc } from "../composables/usePdfDoc";
 import { renderPageToDataUrl, RENDER_SCALE } from "../lib/pageCapture";
 import { t } from "../lib/i18n";
+import { isTauri } from "../lib/env";
 import { useLibraryStore } from "./library";
 import { useReaderStore } from "./reader";
 import { useSettingsStore, type LlmInvokePayload } from "./settings";
 
 /** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，调度整体静默（同 listen().catch 哲学） */
-const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 /** 页级谓词（调度取样共用） */
 const needsOcr = (p: PageInfo): boolean => !p.finished;
@@ -41,7 +42,7 @@ export const useParseStore = defineStore("parse", () => {
   const checking = ref(false);
   const installing = ref(false);
   /** 一键安装服务进度（ocr://install；null = 未在安装） */
-  const installProgress = ref<{ phase: string; percent: number } | null>(null);
+  const installProgress = ref<InstallProgress | null>(null);
 
   function togglePaused(): void {
     paused.value = !paused.value;
@@ -70,7 +71,7 @@ export const useParseStore = defineStore("parse", () => {
   listen<ServiceStatus>("ocr://status", (e) => {
     serviceStatus.value = e.payload;
   }).catch(() => undefined);
-  listen<{ phase: string; percent: number }>("ocr://install", (e) => {
+  listen<InstallProgress>("ocr://install", (e) => {
     installProgress.value = e.payload;
   }).catch(() => undefined);
 
@@ -501,8 +502,6 @@ export const useParseStore = defineStore("parse", () => {
     checking,
     installing,
     installProgress,
-    parsing,
-    standing,
     wake,
     checkEnv,
     installService,

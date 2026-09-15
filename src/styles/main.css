@@ -221,12 +221,9 @@ textarea {
 .svc.disconnected {
   color: var(--err);
 }
-/* 通用修饰（设置页 OCR 服务面板复用）：ok=就绪/空闲 warn=繁忙 info=信息态(CPU) err=失败 */
+/* 通用修饰（设置页 OCR 服务面板复用）：ok=就绪/空闲 info=信息态(CPU) err=失败 */
 .svc.ok .svc-dot {
   background: var(--ok);
-}
-.svc.warn .svc-dot {
-  background: var(--warn);
 }
 .svc.info .svc-dot {
   background: var(--accent);
@@ -395,9 +392,8 @@ textarea {
 }
 
 /*
- * 设置页按钮：与 set-field input 同规格（同高同框同字号），
- * 独立使用 class="set-button"，强调动作用 class="set-button primary"，
- * 次要动作用 class="set-button ghost"；不支持与 .btn 叠加。
+ * 设置页按钮：与 set-field input 同规格（同高同框同字号），独立使用
+ * class="set-button"；不支持与 .btn 叠加。
  */
 .set-button {
   justify-self: start; /* 在 set-field 的 1fr 格子里保持自然宽度，不拉满整行 */
@@ -417,23 +413,6 @@ textarea {
 .set-button:disabled {
   opacity: 0.45;
   cursor: default;
-}
-.set-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-contrast);
-}
-.set-button.primary:hover {
-  filter: brightness(1.07);
-}
-.set-button.ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--text-2);
-}
-.set-button.ghost:hover {
-  background: var(--bg-hover);
-  color: var(--text-1);
 }
 
 /* ---- 滚动条 ---- */

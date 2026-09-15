@@ -14,7 +14,7 @@ export const CUSTOM_PROVIDER = "custom";
  * 供应商显示名（pi-ai 目录只有 id）。用户 2026-09-15 要求「方便识别」，
  * 所以这里用人话 + 品牌：冷门供应商直接沿用 id。
  */
-export const PROVIDER_LABELS: Record<string, string> = {
+const PROVIDER_LABELS: Record<string, string> = {
   "opencode-go": "OpenCode Zen（Go 套餐）",
   opencode: "OpenCode Zen",
   deepseek: "DeepSeek 深度求索",

@@ -5,8 +5,6 @@ import type { PDFStruct } from "../../../src-tauri/bindings/PDFStruct";
 import { useLibraryStore } from "../../stores/library";
 import { confirmDialog } from "../../composables/confirm";
 
-defineOptions({ name: "RepoTree" });
-
 const { t } = useI18n();
 const lib = useLibraryStore();
 const collapsed = ref<Set<string>>(new Set());

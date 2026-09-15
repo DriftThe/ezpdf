@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isTauri } from "../../lib/env";
 
 /**
  * 无边框窗口的缩放热区（用户 2026-09-15，Linux 适配）：
@@ -8,7 +9,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
  * 按下即调用 startResizeDragging（权限见 capabilities/default.json）。
  * 只在 Linux 渲染：其他平台交给系统边框，避免与原生行为叠加。
  */
-const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const isLinux = isTauri && /Linux/i.test(navigator.userAgent);
 const win = isLinux ? getCurrentWindow() : null;
 

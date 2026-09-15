@@ -9,7 +9,6 @@ import {
   CUSTOM_PROVIDER,
   EMPTY_PRESET,
   type LlmPresetCompat,
-  SUPPORTED_API,
   detectProviderId,
   findModel,
   findProvider,
@@ -19,6 +18,7 @@ import {
   usableModels,
 } from "../lib/piModels";
 import { toast } from "../composables/toast";
+import { isTauri } from "../lib/env";
 import { useLibraryStore } from "./library";
 import { BLOCK_TYPE_OPTIONS, DEFAULT_TRANSLATED_TYPES } from "../lib/blocks";
 import {
@@ -32,7 +32,6 @@ import {
 import type { AppLocale } from "../locales";
 
 /** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，持久化整体静默 */
-const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export interface LlmSettings {
   /**
@@ -412,9 +411,6 @@ export const useSettingsStore = defineStore("settings", () => {
   }
 
   /** 供应商是不是「可用预设」（OpenAI 兼容）：UI 显示兼容性提示用 */
-  function presetUsable(): boolean {
-    return !llm.value.preset.api || llm.value.preset.api === SUPPORTED_API;
-  }
 
   function openPage(): void {
     pageOpen.value = true;
@@ -581,7 +577,6 @@ export const useSettingsStore = defineStore("settings", () => {
     applyProvider,
     applyModel,
     refreshPreset,
-    presetUsable,
     llmInvokePayload,
     verifyLlm,
     fetchModels,

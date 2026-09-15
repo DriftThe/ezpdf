@@ -50,7 +50,7 @@ export const DEFAULT_TRANSLATED_TYPES: readonly string[] = [
 ];
 
 /** 公式类型：始终覆盖渲染（KaTeX），与是否送翻无关 */
-export const FORMULA_TYPE = "formula";
+const FORMULA_TYPE = "formula";
 
 /** 该类型是否在译文栏渲染白底覆盖框（translated = 用户勾选的送翻类型集合） */
 export function isOverlayType(kind: string, translated: ReadonlySet<string>): boolean {

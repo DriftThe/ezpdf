@@ -5,6 +5,7 @@ import { useParseStore } from "../../../stores/parse";
 import { useSettingsStore } from "../../../stores/settings";
 import {
   CUSTOM_PROVIDER,
+  SUPPORTED_API,
   contextLabel,
   costLabel,
   isUsable,
@@ -25,7 +26,7 @@ const isCustom = computed(() => settings.llm.provider === CUSTOM_PROVIDER);
 /** 兼容性/关思考说明：预设已定则不需要靠验证按钮慢慢试 */
 const hint = computed(() => thinkingHint(settings.llm.preset, settings.llm.thinkingOff));
 const unsupported = computed(
-  () => !!settings.llm.preset.api && settings.llm.preset.api !== "openai-completions",
+  () => !!settings.llm.preset.api && settings.llm.preset.api !== SUPPORTED_API,
 );
 /** 当前供应商是「协议不支持」那一类（旧配置残留）：下拉里只留一个禁用项显示它 */
 const unsupportedProvider = computed(() =>

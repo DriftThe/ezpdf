@@ -2,7 +2,7 @@ import { createI18n } from "vue-i18n";
 import { LOCALES, messages, type AppLocale } from "../locales";
 
 /** 界面语言在 localStorage 的镜像（与主题同理：挂载前先读，避免首帧语言闪变） */
-export const LANG_MIRROR_KEY = "ezpdf.lang";
+const LANG_MIRROR_KEY = "ezpdf.lang";
 
 /**
  * 系统语言 → 支持的三选一：

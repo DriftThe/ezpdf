@@ -22,7 +22,7 @@ function resolve(mode: ThemeMode): Resolved {
 }
 
 /** 应用主题；animate = 播放一次颜色过渡（用户手动切换时为 true） */
-export function applyTheme(mode: ThemeMode, animate = false): void {
+function applyTheme(mode: ThemeMode, animate = false): void {
   const resolved = resolve(mode);
   if (resolved === applied) return;
   applied = resolved;

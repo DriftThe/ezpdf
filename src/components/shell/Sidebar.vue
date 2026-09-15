@@ -45,7 +45,6 @@ function cancelNewFolder(): void {
     <div class="side-inner">
     <div class="side-tabs">
       <button class="tab active">{{ t("repo.tab") }}</button>
-      <!-- <button class="tab" @click="onOfflineTab">离线</button> -->
     </div>
 
     <div class="side-actions">

@@ -306,7 +306,6 @@ export const useLibraryStore = defineStore("library", () => {
     openLastRepo,
     importing,
     importPdf,
-    loadRepo,
     createFolder,
     deleteFolder,
     deletePdf,
