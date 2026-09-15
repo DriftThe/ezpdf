@@ -124,4 +124,4 @@ pnpm tauri dev      # 桌面应用（会自动拉起 Vite）
 - **python-build-standalone**（Gregory Szorc / Astral）：随包分发的可重定位 Python 运行时。
 - 以及所有上游依赖的维护者。
 
-> 代码以 MIT 许可发布（见 [LICENSE](LICENSE)）；随包下载的模型版权归各自作者所有，使用请遵守其许可协议。
+> 代码以 Apache-2.0 许可发布（见 [LICENSE](LICENSE)）；随包下载的模型版权归各自作者所有，使用请遵守其许可协议。
