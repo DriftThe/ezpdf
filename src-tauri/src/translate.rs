@@ -567,8 +567,11 @@ fn message_thinks(msg: &Value) -> bool {
         .unwrap_or(true)
 }
 
-/// 验证 LLM：先按 auto 发探测（失败即连通性错误，原样返回），仍在思考则逐个试显式策略。
-/// 预设模型若标记为非思考（pi-ai 目录 reasoning=false）则跳过策略搜索。
+/// 验证 LLM：连通性 + 关思考策略。
+/// 四个候选策略（auto / reasoning / enable_thinking / thinking_type）**一次性并发**发出
+/// （用户 2026-09-15：串行探测太慢），任意一个既连通又不再思考即成功，按候选顺序取第一个；
+/// 四个都发不出去才算连通性失败，都通但都还在思考 → strategy="none"（前端 toast 警告）。
+/// 预设模型若标记为非思考（pi-ai 目录 reasoning=false）则只探一次连通性，不做策略搜索。
 pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
     if !cfg.usable() {
         return Err("please fill in Base URL / API Key / model first".into());
@@ -576,12 +579,19 @@ pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
     let client = llm_client()?;
     let messages = vec![json!({"role": "user", "content": PROBE_PROMPT})];
     let started = std::time::Instant::now();
-
-    let mut probe = cfg.clone();
-    probe.thinking_off = "auto".into();
-    let first = chat_raw(&client, &probe, &messages, PROBE_MAX_TOKENS).await?; // 连通性失败 → 直接上报
     let preset_no_thinking = cfg.model_reasoning == Some(false);
+
+    // 引用转成 Copy 的绑定，async move 块才能各自捕获（每个候选请求自己持有一份 cfg）
+    let ref_client = &client;
+    let ref_messages = &messages;
+    let probe = |strategy: &str| {
+        let mut p = cfg.clone();
+        p.thinking_off = strategy.to_string();
+        async move { chat_raw(ref_client, &p, ref_messages, PROBE_MAX_TOKENS).await }
+    };
+
     if preset_no_thinking {
+        probe("auto").await?; // 只查连通性：非思考模型无需挑策略
         return Ok(LlmVerifyReport {
             strategy: "none".into(),
             preset_no_thinking,
@@ -591,21 +601,41 @@ pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
             ),
         });
     }
-    let mut strategy = if !message_thinks(&first) { "auto" } else { "" };
-    if strategy.is_empty() {
-        for cand in ["reasoning", "enable_thinking", "thinking_type"] {
-            let mut p = cfg.clone();
-            p.thinking_off = cand.into();
-            match chat_raw(&client, &p, &messages, PROBE_MAX_TOKENS).await {
-                Ok(msg) if !message_thinks(&msg) => {
+
+    let (auto, reasoning, enable_thinking, thinking_type) = tokio::join!(
+        probe("auto"),
+        probe("reasoning"),
+        probe("enable_thinking"),
+        probe("thinking_type"),
+    );
+    let ms = started.elapsed().as_millis();
+    let mut strategy = "";
+    let mut first_err: Option<String> = None;
+    let mut any_ok = false;
+    for (cand, res) in [
+        ("auto", auto),
+        ("reasoning", reasoning),
+        ("enable_thinking", enable_thinking),
+        ("thinking_type", thinking_type),
+    ] {
+        match res {
+            Ok(msg) => {
+                any_ok = true;
+                // 取候选顺序里第一个"关掉思考"的成功响应（端点拒绝某参数会直接 4xx）
+                if strategy.is_empty() && !message_thinks(&msg) {
                     strategy = cand;
-                    break;
                 }
-                _ => continue, // 端点拒绝该参数或仍未关思考 → 试下一个
+            }
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
             }
         }
     }
-    let ms = started.elapsed().as_millis();
+    if !any_ok {
+        return Err(first_err.unwrap_or_else(|| "LLM probe failed".into()));
+    }
     Ok(if strategy.is_empty() {
         LlmVerifyReport {
             strategy: "none".into(),
