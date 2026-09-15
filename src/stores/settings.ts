@@ -81,6 +81,9 @@ export interface LlmInvokePayload {
  * - autoLaunch：启动时自动唤醒 OCR 服务（环境+模型全就绪才拉起）
  * - resumeOnStart：启动时自动续跑未完成的解析；关闭则启动后为暂停态
  *   （工具栏显示「启动翻译」）；两者都开才会自动进入运行态
+ * 两者默认关闭（用户 2026-09-15 核对：首启即暂停、不主动拉起服务，与 README
+ * 「出于省电考虑，启动后为暂停状态」及设置页提示的「开启后…」措辞一致）——
+ * 已存在的配置照旧生效，改默认值只影响首次启动（无 config.json）。
  * - theme：界面主题（浅色/深色/跟随系统；标题栏右侧切换）
  */
 export type ThemeMode = "system" | "light" | "dark";
@@ -263,8 +266,8 @@ export const useSettingsStore = defineStore("settings", () => {
   const updateText = ref(t("update.notChecked"));
 
   const general = ref<GeneralSettings>({
-    autoLaunch: true,
-    resumeOnStart: true,
+    autoLaunch: false,
+    resumeOnStart: false,
     theme: "system",
     lang: currentLocale(),
     translateTypes: [...DEFAULT_TRANSLATED_TYPES],
