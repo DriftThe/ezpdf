@@ -1,4 +1,4 @@
-"""单页 / 批量 OCR：POST /ocr/page {image_b64, scale} 与 POST /ocr/pages。
+"""单页 / 批量 OCR：POST /ocr/page {image_b64} 与 POST /ocr/pages。
 
 - /ocr/page  → {blocks, width, height, elapsed}（curl 冒烟/调试用）；
 - /ocr/pages → {elapsed, pages: [{blocks, width, height}]}（Rust parse_pdf 正路，
@@ -29,7 +29,6 @@ router = APIRouter()
 
 class PageRequest(BaseModel):
     image_b64: str
-    scale: float = 2.0
 
 
 class PagesBatchRequest(BaseModel):

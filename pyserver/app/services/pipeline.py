@@ -121,7 +121,6 @@ class RegionResult:
     label: str
     score: float
     rect: tuple[int, int, int, int]
-    crop_shape: tuple[int, int]
     markdown: str
 
 
@@ -134,10 +133,6 @@ class PageResult:
     height: int
     elapsed_seconds: float
     regions: list[RegionResult] = field(default_factory=list)
-
-    @property
-    def markdown(self) -> str:
-        return "\n\n".join(r.markdown for r in self.regions)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -431,15 +426,8 @@ class BoxFilter:
 
     @staticmethod
     def _iou(a: np.ndarray, b: np.ndarray) -> float:
-        """Compute IoU between two xyxy boxes (float arrays of length 4)."""
-        ax1, ay1, ax2, ay2 = a
-        bx1, by1, bx2, by2 = b
-        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-        iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
-        inter = iw * ih
-        union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
-        return inter / union if union > 0 else 0.0
+        """IoU of two xyxy boxes（与模块级 _iou_xyxy 同一实现，别再各写一份）"""
+        return _iou_xyxy(a, b)
 
     def _unclip(self, box: np.ndarray) -> np.ndarray:
         """按 ratio + 绝对像素把框向外扩，返回 (x1,y1,x2,y2)。"""
@@ -862,7 +850,6 @@ class OCRPipeline:
                     label=box.label_name,
                     score=box.score,
                     rect=box.int_rect,
-                    crop_shape=(img.height, img.width),
                     markdown=md,
                 )
                 for c_idx, ((img, box), md) in enumerate(

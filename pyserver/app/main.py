@@ -24,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from .config import TOKEN
-from .routers import env, health, ocr
+from .routers import health, ocr
 
 logger = logging.getLogger("ezpdf.pyserver")
 
@@ -35,7 +35,6 @@ MAX_BODY_BYTES = 64 * 1024 * 1024
 def create_app() -> FastAPI:
     app = FastAPI(title="ezpdf-pyserver", lifespan=None)
     app.include_router(health.router)
-    app.include_router(env.router)
     app.include_router(ocr.router)
 
     if TOKEN:

@@ -1,27 +1,8 @@
-"""运行期环境复查：bootstrap.py 是装前 stdlib 探测，这里补装后运行期信息。"""
+"""运行期环境复查（占位）。
+
+原 /env/report 路由没有任何调用方：OCR 设置页的三盏灯由 bootstrap.py 的探测报告驱动
+（装前），运行期判据还没有需求；且它与 bootstrap 的 torch 构建判定不一致（PyPI 的
+Linux torch 轮子带 CUDA 但没有 +cu 标签）。要恢复时一并修这两点。
+"""
 
 from __future__ import annotations
-
-from fastapi import APIRouter
-
-router = APIRouter()
-
-
-@router.get("/env/report")
-async def env_report() -> dict:
-    report: dict = {
-        "torch": None, "torch_build": None,
-        "cuda_available": None, "device_name": None,
-        "error": None,
-    }
-    try:
-        import torch
-        report["torch"] = torch.__version__
-        report["torch_build"] = "cuda" if "+cu" in torch.__version__ else "cpu"
-        if report["torch_build"] == "cuda":
-            report["cuda_available"] = torch.cuda.is_available()
-            if report["cuda_available"]:
-                report["device_name"] = torch.cuda.get_device_name(0)
-    except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
-    return report

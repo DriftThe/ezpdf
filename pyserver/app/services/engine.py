@@ -17,7 +17,6 @@ class Engine:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pipe: OCRPipeline | None = None
-        self.device = "unloaded"
 
     def load(self) -> OCRPipeline:
         """首次调用才吃显存（拓扑 A：引擎懒加载）。加载耗时以分钟计。"""
@@ -26,7 +25,6 @@ class Engine:
                 import torch  # 懒加载：torch 未装/未导入不阻塞服务启动
 
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                self.device = str(device)
                 self._pipe = OCRPipeline(
                     layout_model_path=str(MODELS_DIR / LAYOUT_MODEL_DIR_NAME),
                     vl_model_path=str(MODELS_DIR / VL_MODEL_DIR_NAME),
