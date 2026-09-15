@@ -74,15 +74,6 @@ function rectStyle(r: Rect): Record<string, string> {
   return { left: r.left + "%", top: r.top + "%", width: r.width + "%", height: r.height + "%" };
 }
 
-/**
- * 译文框内边距（用户 2026-09-15）：一律 0 —— 覆盖框贴齐 OCR 块矩形，不因 padding
- * 偏移或吃掉小框高度（此前按框尺寸比例取 0.5~4px / 1~6px，现取消）。
- * 注：v-fit 读 computed padding（.cover 亦为 0），内联样式同样生效。
- */
-function coverStyle(r: Rect): Record<string, string> {
-  return rectStyle(r);
-}
-
 interface CoverRect extends Rect {
   /** 内容 HTML：正文转义 + 公式 KaTeX（lib/richText.ts） */
   html: string;
@@ -182,11 +173,15 @@ const dirtyBoxes = new WeakSet<HTMLElement>();
 const pendingFits = new Set<HTMLElement>();
 let flushRaf = 0;
 
-// KaTeX 字体异步加载完成 = 字宽/行高变化：对当前可见框重适配一次（数量小，代价可忽略）
+// KaTeX 字体异步加载完成 = 字宽/行高变化：对当前可见框重适配一次（数量小，代价可忽略）。
+// 监听是全局的，而这段代码按"每个页卡实例"执行一次——卸载时必须摘掉，
+// 否则每页留一条永不回收的监听（闭包还攥着各自的 visibleBoxes）。
+const onFontsLoaded = (): void => {
+  for (const box of visibleBoxes) fitCoverText(box);
+};
 if (typeof document !== "undefined" && "fonts" in document) {
-  document.fonts.addEventListener("loadingdone", () => {
-    for (const box of visibleBoxes) fitCoverText(box);
-  });
+  document.fonts.addEventListener("loadingdone", onFontsLoaded);
+  onBeforeUnmount(() => document.fonts.removeEventListener("loadingdone", onFontsLoaded));
 }
 
 function fitCoverText(box: HTMLElement): void {
@@ -302,7 +297,7 @@ const vFit: Directive<HTMLElement> = {
           v-fit
           class="blk-cover"
           :class="{ 'cover-formula': r.block.type === 'formula' }"
-          :style="coverStyle(r)"
+          :style="rectStyle(r)"
           :title="r.block.type"
         >
           <span class="cover-text" v-html="r.html"></span>

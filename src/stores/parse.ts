@@ -385,11 +385,8 @@ export const useParseStore = defineStore("parse", () => {
     if (take.length === 0) return; // 竞态：已全部完成
     pushLlmLog(t("log.ocrBatch", { pages: take.map((p) => p.index).join(","), name: book.name }));
 
-    // 离屏渲染：路径优先用 Rust 解析过的（聚焦书 currentPdf.pdfPath），
-    // 后台书按物理命名 name-id 拼装（与 load_pdf 同构）
-    const pdfPath =
-      (book.focused ? lib.currentPdf?.pdfPath : undefined) ??
-      `${lib.repoRoot}/${book.name}-${book.id}.pdf`;
+    // 离屏渲染：一律用 Rust 解析过的路径（load_pdf 已做仓库内校验），不自己拼 name-id
+    const pdfPath = book.state.pdfPath;
     const doc = await loadPdfDoc(book.id, pdfPath);
     const pages: ParsePageInput[] = [];
     for (const page of take) {
