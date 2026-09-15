@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -22,10 +23,26 @@ const PYPI_OFFICIAL: &str = "https://pypi.org/simple";
 const TORCH_MIRROR_BASE: &str = "https://mirror.sjtu.edu.cn/pytorch-wheels";
 const TORCH_OFFICIAL_BASE: &str = "https://download.pytorch.org/whl";
 
-#[cfg(windows)]
-const PY_EXE: &str = "python.exe";
-#[cfg(not(windows))]
-const PY_EXE: &str = "python";
+/// 解释器可执行文件名（跨平台用 cfg! 运行期判定，两端都参与编译检查）
+fn py_exe_name() -> &'static str {
+    if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python3"
+    }
+}
+
+/// 随包解释器相对 `resources/python` 的位置：Windows = python/python.exe，
+/// Linux/macOS = python/bin/python3（python-build-standalone install_only 的布局）。
+/// dev 下随包分支不参与编译，故显式放行 dead_code。
+#[cfg_attr(dev, allow(dead_code))]
+fn bundled_py_rel() -> &'static str {
+    if cfg!(windows) {
+        "python.exe"
+    } else {
+        "bin/python3"
+    }
+}
 
 /// pyserver 全部派生路径。`run()` 的 setup 钩子启动即解析一次并存为全局状态，
 /// 命令侧通过 `tauri::State<PyPaths>` 取用，不做二次解析。
@@ -97,11 +114,11 @@ fn python_exe(app: &AppHandle, root: &Path, bundled: bool) -> Result<PathBuf, St
         #[cfg(not(dev))]
         {
             let res = app.path().resource_dir().map_err(|e| e.to_string())?;
-            let nested = res.join("resources").join("python").join(PY_EXE);
+            let nested = res.join("resources").join("python").join(bundled_py_rel());
             if nested.is_file() {
                 return Ok(nested);
             }
-            return Ok(res.join("python").join(PY_EXE));
+            return Ok(res.join("python").join(bundled_py_rel()));
         }
         #[cfg(dev)]
         {
@@ -111,15 +128,12 @@ fn python_exe(app: &AppHandle, root: &Path, bundled: bool) -> Result<PathBuf, St
     Ok(venv_python(root))
 }
 
-/// venv 解释器位置：Windows 与 Unix 目录布局不同
+/// venv 解释器位置：Windows = .venv/Scripts/python.exe，Unix = .venv/bin/python3
 fn venv_python(root: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        root.join(".venv").join("Scripts").join(PY_EXE)
-    }
-    #[cfg(not(windows))]
-    {
-        root.join(".venv").join("bin").join(PY_EXE)
+    if cfg!(windows) {
+        root.join(".venv").join("Scripts").join(py_exe_name())
+    } else {
+        root.join(".venv").join("bin").join(py_exe_name())
     }
 }
 
@@ -286,9 +300,14 @@ fn run_bootstrap(python: &Path, script: &Path, models: &Path) -> Result<Bootstra
     Err("bootstrap stdout 无法解析".into())
 }
 
-/// 系统解释器发现：py -3 → PATH python
+/// 系统解释器发现：Windows = py -3 → PATH python；Unix = python3 → python
+/// （Debian/Ubuntu 默认没有裸 `python`）
 fn find_system_python() -> Option<PathBuf> {
-    try_python("py", &["-3"]).or_else(|| try_python("python", &[]))
+    if cfg!(windows) {
+        try_python("py", &["-3"]).or_else(|| try_python("python", &[]))
+    } else {
+        try_python("python3", &[]).or_else(|| try_python("python", &[]))
+    }
 }
 
 fn try_python(exe: &str, pre: &[&str]) -> Option<PathBuf> {
