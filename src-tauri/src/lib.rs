@@ -131,30 +131,20 @@ fn is_dir_empty<P: AsRef<Path>>(path: P) -> io::Result<bool> {
 
 #[tauri::command]
 fn check_and_build_repo(root: &str) -> Result<bool, String> {
-    /*
-    true => created a repo
-    false => opened an exist repo
-    Err => Error message to handle
-     */
     let dir = Path::new(root);
-    let _sign_path = Path::new(dir).join(".ezrepo");
     if !dir.is_dir() {
         return Err(format!("{} is not a valid directory path", root));
     }
+    let sign_path = dir.join(".ezrepo");
     match is_dir_empty(dir) {
+        // 空目录 = 新仓库：建索引并返回 true；已有 .ezrepo = 打开既有仓库
         Ok(true) => {
-            fs::write(&_sign_path, r#"{"folders":[],"pdfs":[]}"#)
-                .map_err(|e| format!("Failed when creating .ezrepo file:{e}"))?;
+            write_text_atomic(&sign_path, r#"{"folders":[],"pdfs":[]}"#)?;
             Ok(true)
         }
-        Ok(false) => {
-            if _sign_path.is_file() {
-                Ok(false)
-            } else {
-                Err(format!("Path is not a valid repo"))
-            }
-        }
-        _ => Err(format!("Failed when impletting \"is_dir_empty()\"")),
+        Ok(false) if sign_path.is_file() => Ok(false),
+        Ok(false) => Err("Path is not a valid repo".into()),
+        Err(e) => Err(format!("failed to inspect {}: {e}", dir.display())),
     }
 }
 
@@ -677,7 +667,6 @@ async fn check_update(app: tauri::AppHandle) -> Result<update::UpdateInfo, Strin
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let paths = pyenv::PyPaths::resolve(app.handle())?;
