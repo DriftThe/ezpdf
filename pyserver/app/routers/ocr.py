@@ -3,7 +3,8 @@
 - /ocr/page  → {blocks, width, height, elapsed}（curl 冒烟/调试用）；
 - /ocr/pages → {elapsed, pages: [{blocks, width, height}]}（Rust parse_pdf 正路，
   前端 parse_append 每批 ≤4 页同书提交，PyService 持有 token 后经此批量推理）；
-- 图片解码用 PIL（Wise-Paddle 的 cv2 路径服务于文件上传，这里不需要）；
+- 图片解码用 PIL（Wise-Paddle 的 cv2 路径服务于文件上传，这里不需要）；尺寸有上限，
+  解码放线程池（见 _decode_image / MAX_BODY_BYTES）；
 - bbox_px 为原图像素坐标（含 unclip 扩框），px→PDF pt 换算（pt = px/scale）由
   Rust 写绑定 JSON 时做，本服务不关心 scale；
 - 引擎懒加载 + 单锁串行，首个请求耗时以分钟计（VL 模型 ~1.8GB）。
@@ -35,16 +36,36 @@ class PagesBatchRequest(BaseModel):
     pages: list[PageRequest] = Field(min_length=1, max_length=32)
 
 
+# 解压炸弹/超大渲染兜底：单边与总像素双限（正常页渲染 scale2.0 远小于此）
+MAX_SIDE_PX = 12_000
+MAX_PIXELS = 40_000_000
+
+
 def _decode_image(payload: str) -> Image.Image:
     """base64（可带 data: URI 前缀）→ PIL RGB Image。"""
     if payload.startswith("data:"):
-        payload = payload.split(",", 1)[1]
+        # partition 而非 split[1]：畸形 data: 串不会 IndexError
+        _, sep, rest = payload.partition(",")
+        payload = rest if sep else ""
     try:
         raw = base64.b64decode(payload)
-        image = Image.open(io.BytesIO(raw))
-        return image.convert("RGB")
-    except (binascii.Error, ValueError, OSError) as exc:
+        with Image.open(io.BytesIO(raw)) as image:
+            width, height = image.size
+            if max(width, height) > MAX_SIDE_PX or width * height > MAX_PIXELS:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"image too large: {width}x{height}",
+                )
+            return image.convert("RGB")
+    except HTTPException:
+        raise
+    except (binascii.Error, ValueError, OSError, Image.DecompressionBombError) as exc:
         raise HTTPException(status_code=400, detail=f"failed to decode image: {exc}") from exc
+
+
+def _decode_images(pages: list[PageRequest]) -> list[Image.Image]:
+    """批量解码（CPU 密集：放线程池，别占事件循环）"""
+    return [_decode_image(p.image_b64) for p in pages]
 
 
 def _region_json(r: RegionResult) -> dict:
@@ -59,7 +80,7 @@ def _region_json(r: RegionResult) -> dict:
 
 @router.post("/ocr/page")
 async def ocr_page(req: PageRequest) -> dict:
-    image = _decode_image(req.image_b64)
+    image = await run_in_threadpool(_decode_image, req.image_b64)
     try:
         result = await run_in_threadpool(engine.recognize, image)
     except Exception as exc:
@@ -74,7 +95,7 @@ async def ocr_page(req: PageRequest) -> dict:
 
 @router.post("/ocr/pages")
 async def ocr_pages(req: PagesBatchRequest) -> dict:
-    images = [_decode_image(p.image_b64) for p in req.pages]
+    images = await run_in_threadpool(_decode_images, req.pages)
     try:
         results = await run_in_threadpool(engine.recognize_batch, images)
     except Exception as exc:

@@ -28,6 +28,9 @@ from .routers import env, health, ocr
 
 logger = logging.getLogger("ezpdf.pyserver")
 
+# 单请求体上限（同书一批 ≤4 页，32 页是硬上限，留足余量）
+MAX_BODY_BYTES = 64 * 1024 * 1024
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="ezpdf-pyserver", lifespan=None)
@@ -43,6 +46,16 @@ def create_app() -> FastAPI:
             if not hmac.compare_digest(supplied, TOKEN.encode()):
                 return JSONResponse(status_code=403, content={"detail": "forbidden"})
             return await call_next(request)
+
+    @app.middleware("http")
+    async def _body_limit(request, call_next):
+        # 32 页 × base64 PNG 远小于此值；Pydantic 的 max_length 要等体读进内存才生效，
+        # 超大 body 能先把进程撑爆，所以在读体之前按 Content-Length 拦掉
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+            logger.warning("request body too large: %s bytes", declared)
+            return JSONResponse(status_code=413, content={"detail": "request body too large"})
+        return await call_next(request)
 
     return app
 
