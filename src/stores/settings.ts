@@ -288,6 +288,10 @@ export const useSettingsStore = defineStore("settings", () => {
    * 场景：设置页返回键/主题/语言/仓库路径都是"整份写"，加载失败时写盘 = 清空用户配置。
    */
   let loaded = false;
+  /** 读盘落地后的界面语言（写盘前用它兜住"被默认值顶掉"的语言，见 doSave） */
+  let loadedLang: AppLocale | null = null;
+  /** 用户在设置里显式改过界面语言（只有这种情况允许把新语言写进配置） */
+  let langTouched = false;
   function ensureLoaded(): Promise<void> {
     loadPromise ??= (async () => {
       if (!isTauri) return;
@@ -321,6 +325,7 @@ export const useSettingsStore = defineStore("settings", () => {
       // 界面语言：配置值非法（手改坏/旧字段）回落系统检测；配置优先于 localStorage 镜像
       if (!isAppLocale(general.value.lang)) general.value.lang = detectLocale();
       setLocale(general.value.lang);
+      loadedLang = general.value.lang;
       // 目标语言初值（用户 2026-09-15：跟随系统语言；仅从未设置过时填，auth.cfg/旧配置优先）
       if (!llm.value.targetLang.trim()) llm.value.targetLang = defaultTargetLang(general.value.lang);
       // 送翻类型：过滤非法/过时标签；空集合视为未设置 → 回落内置默认（Rust 侧同样语义）
@@ -420,6 +425,13 @@ export const useSettingsStore = defineStore("settings", () => {
 
   /** 整份写盘（save 与仓库路径即时持久化共用） */
   async function doSave(): Promise<void> {
+    // 界面语言只允许由 setLang 改动：写盘前若发现它偏离读盘值（且用户没动过设置），
+    // 说明被某个默认值流程顶掉了——按读盘值写回，避免把系统语言覆盖进用户配置
+    // （2026-09-15 真的发生过：一次启动把 en 写成 zh-CN，来源未复现）。
+    if (!langTouched && loadedLang !== null && general.value.lang !== loadedLang) {
+      console.warn(`[settings] lang reverted to ${general.value.lang}, keeping ${loadedLang}`);
+      general.value.lang = loadedLang;
+    }
     if (!loaded) {
       console.error("[settings] save skipped: the config was never loaded successfully");
       return;
@@ -477,6 +489,7 @@ export const useSettingsStore = defineStore("settings", () => {
   /** 界面语言切换（用户 2026-09-15）：即时生效 + 即时持久化（localStorage 镜像由 i18n.ts 维护） */
   async function setLang(locale: AppLocale): Promise<void> {
     general.value.lang = locale;
+    langTouched = true;
     setLocale(locale);
     if (!isTauri) return;
     try {
