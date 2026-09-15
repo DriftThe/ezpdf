@@ -93,6 +93,25 @@ impl PyService {
         Some((base, token))
     }
 
+    /// 在线模式（用户 2026-09-15）：把远端解析服务登记为 OCR 目标（无会话 token）。
+    /// 探测通过由调用方负责；这里只落端点 + 置 Connected（前端「服务」灯靠它）
+    pub fn set_remote(&self, app: &AppHandle, base: String) {
+        self.set_endpoint(base, String::new());
+        self.set_status(app, ServiceStatus::Connected);
+    }
+
+    /// 在线模式断开：清端点 + 复位状态（无子进程，不碰 stdin / supervisor）
+    pub fn disconnect(&self, app: &AppHandle) {
+        *self.0.endpoint.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.0.token.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
+        self.set_status(app, ServiceStatus::Unknown);
+    }
+
+    /// 是否托管着本地子进程（在线模式没有）；ocr_stop 据此选择断开方式
+    pub fn has_child(&self) -> bool {
+        self.0.stdin.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
     /// 停止（同步）：置标记 + 通知 supervisor + 关 stdin（Python 优雅退出）。
     /// 供 RunEvent::Exit（同步上下文）与 ocr_stop 命令共用。
     pub fn stop(&self) {
@@ -112,8 +131,7 @@ impl PyService {
     }
 }
 
-/// 随机会话 token（防本地误连即可，非密码学用途）。
-/// RandomState 的密钥取自 OS 熵（sys::hashmap_random_keys），比"时间+pid"可预测种子强。
+/// 随机会话 token（防本地误连即可，非密码学用途）。/// RandomState 的密钥取自 OS 熵（sys::hashmap_random_keys），比"时间+pid"可预测种子强。
 fn fresh_token() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash, Hasher};
@@ -300,4 +318,137 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
     }
     let _ = child.start_kill();
     Err("health check failed".into())
+}
+
+// ---- 在线模式（用户 2026-09-15）：远端解析服务探活/登记 ----
+//
+// 与本地托管服务的区别：没有子进程可管、没有会话 token（远端由部署方决定要不要鉴权，
+// 文档见 pyserver/PROTOCOL.md）；连接期只有一次 /health 探测。开发联调用
+// `pyserver/server_test.py`（默认 127.0.0.1:9055）起一个本地解析服务当"远端"。
+
+/// 探活超时：/health 是纯内存响应，超过这个时间说明地址/网络不对
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 规范化用户输入的地址：去空白/尾斜杠，缺协议按 http 补（本地开发最常见）。
+/// 空串报错（避免把空地址当成"连上了"）。
+pub fn normalize_base(url: &str) -> Result<String, String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("parse service URL is empty".into());
+    }
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+    // 只接受 http(s)，避免把 file:// 之类当服务地址
+    if !(with_scheme.starts_with("http://") || with_scheme.starts_with("https://")) {
+        return Err(format!("unsupported parse service URL: {with_scheme}"));
+    }
+    Ok(with_scheme)
+}
+
+/// 回环地址：系统代理不该插手本机服务（与 Rust 侧本地托管的直连语义一致）
+fn is_loopback(base: &str) -> bool {
+    let authority = base.split("://").nth(1).unwrap_or(base);
+    let authority = authority.split(['/', '?']).next().unwrap_or("");
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    let host = match hostport.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(""), // IPv6 字面量 [::1]:9055
+        None => hostport.split(':').next().unwrap_or(""),
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
+}
+
+/// 在线解析服务的握手结果（在线模式「测试」按钮 + 每次 OCR 请求前的批大小协商）。
+/// `max_batch_pages` 由服务端公布（PROTOCOL.md §4），已夹到 1..=32
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseServiceHealth {
+    pub status: String,
+    /// u32 而非 u64：ts-rs 会把 u64 映射成 bigint，前端只想拿它显示
+    pub pid: Option<u32>,
+    /// 服务端允许的单批最大页数
+    pub max_batch_pages: u32,
+    /// 本次探活耗时（ms）
+    pub elapsed_ms: u32,
+}
+
+/// 服务端没公布/公布得不可信时的批大小：与客户端本地托管的批大小一致
+pub const FALLBACK_BATCH_PAGES: u32 = 4;
+
+/// 解析服务探活：GET {base}/health → (pid, 耗时 ms, 服务端公布的批大小)。失败给出可读
+/// 原因（前端「测试」按钮、在线模式连接前确认、每次 OCR 请求前的批大小握手共用）。
+pub async fn probe_health(base: &str) -> Result<ParseServiceHealth, String> {
+    let base = normalize_base(base)?;
+    let url = format!("{base}/health");
+    let mut builder = reqwest::Client::builder().timeout(HEALTH_TIMEOUT);
+    if is_loopback(&base) {
+        builder = builder.no_proxy();
+    }
+    let client = builder.build().map_err(|e| format!("failed to create HTTP client: {e}"))?;
+    let started = std::time::Instant::now();
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("cannot reach {url}: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("{url} answered HTTP {status}"));
+    }
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    Ok(ParseServiceHealth {
+        status: body["status"].as_str().unwrap_or("ok").to_string(),
+        pid: body["pid"].as_u64().map(|p| p.min(u32::MAX as u64) as u32),
+        max_batch_pages: advertised_batch_pages(&body),
+        elapsed_ms: started.elapsed().as_millis().min(u32::MAX as u128) as u32,
+    })
+}
+
+/// 服务端公布的批大小 → 客户端可用值：缺失/非法回落 4，越界夹进 1..=32。
+/// 夹上界是硬要求——本地 Rust 侧的批次上限就是 32，超了整批会被拒
+fn advertised_batch_pages(body: &serde_json::Value) -> u32 {
+    match body["max_batch_pages"].as_u64() {
+        Some(n) if n >= 1 => (n.min(32)) as u32,
+        _ => FALLBACK_BATCH_PAGES,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_base_fills_scheme_and_rejects_junk() {
+        assert_eq!(normalize_base(" 127.0.0.1:9055/ ").unwrap(), "http://127.0.0.1:9055");
+        assert_eq!(
+            normalize_base("https://parse.example.com/api").unwrap(),
+            "https://parse.example.com/api"
+        );
+        assert!(normalize_base("   ").unwrap_err().contains("empty"));
+        assert!(normalize_base("file:///etc/passwd").is_err());
+    }
+
+    /// 回环判定：决定探活请求是否绕开系统代理
+    /// 批大小协商：服务端缺失/非法值回落 4，越界夹进 1..=32（本地 Rust 上限 32）
+    #[test]
+    fn advertised_batch_pages_is_clamped() {
+        assert_eq!(advertised_batch_pages(&serde_json::json!({"max_batch_pages": 6})), 6);
+        assert_eq!(advertised_batch_pages(&serde_json::json!({"max_batch_pages": 9999})), 32);
+        assert_eq!(advertised_batch_pages(&serde_json::json!({"max_batch_pages": 0})), 4);
+        assert_eq!(advertised_batch_pages(&serde_json::json!({})), 4);
+        assert_eq!(advertised_batch_pages(&serde_json::json!({"max_batch_pages": "x"})), 4);
+    }
+
+    #[test]
+    fn loopback_hosts_are_recognized() {
+        assert!(is_loopback("http://127.0.0.1:9055"));
+        assert!(is_loopback("http://localhost:9055/health"));
+        assert!(is_loopback("http://[::1]:9055"));
+        assert!(is_loopback("http://user:pw@localhost:9055"));
+        assert!(!is_loopback("https://parse.example.com"));
+        assert!(!is_loopback("http://10.0.0.7:9055"));
+    }
 }

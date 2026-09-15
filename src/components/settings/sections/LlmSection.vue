@@ -55,6 +55,14 @@ function onPickLang(e: Event): void {
   <div class="set-pane">
     <h2 class="set-title">{{ t("llm.title") }}</h2>
 
+    <!-- 启用翻译（用户 2026-09-15）：首项总开关；关闭时 Rust 把 OCR 文本原文记入译文列并
+         标记完成（不请求模型、也不留 null），重新打开翻译也不会回翻这些页面 -->
+    <label class="set-check">
+      <input v-model="settings.llm.translateEnabled" type="checkbox" />
+      <span>{{ t("llm.translateEnabled") }}</span>
+    </label>
+    <p class="set-hint">{{ t("llm.translateEnabledHint") }}</p>
+
     <!--
       供应商预设（用户 2026-09-15 整合 pi-ai 目录）：选供应商 → 自动填端点 + 列出预设模型，
       并把「协议 / max tokens 字段 / 关思考参数形态」派生给 Rust 客户端（lib/piModels.ts）。

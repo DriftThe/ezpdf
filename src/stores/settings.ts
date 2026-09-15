@@ -35,6 +35,12 @@ import type { AppLocale } from "../locales";
 
 export interface LlmSettings {
   /**
+   * 是否启用翻译（用户 2026-09-15，设置→LLM 首项）：关闭时 OCR 出的文本直接以
+   * content 作为译文落盘并标记完成（不请求 LLM，也不留 null），避免以后重新打开
+   * 翻译时把老内容回翻。默认开。
+   */
+  translateEnabled: boolean;
+  /**
    * 供应商预设（用户 2026-09-15 整合 pi-ai）：pi-ai 目录的供应商 id，或 "custom"。
    * 预设只负责「识别 + 填端点 + 协议/关思考参数适配」，网络请求仍是 Rust 的
    * OpenAI 兼容客户端（见 lib/piModels.ts）。
@@ -74,6 +80,8 @@ export interface LlmInvokePayload {
   extraHeaders: Record<string, string>;
   /** 送翻块类型（Rust LlmConfig.translateTypes；空数组 = 用后端内置默认） */
   translateTypes: string[];
+  /** 是否启用翻译（Rust LlmConfig.translateEnabled；false = 原文当译文落盘） */
+  translateEnabled: boolean;
 }
 
 /**
@@ -102,9 +110,20 @@ export interface GeneralSettings {
   translateTypes: string[];
 }
 
-/** OCR 服务安装选项（用户 2026-09-14）：一键安装服务时是否走国内镜像源 */
+/**
+ * OCR 解析服务来源（用户 2026-09-15）：
+ * - local：应用托管的 pyserver（spawn + 就绪握手 + stdin EOF 收尾，需装依赖/模型）；
+ * - online：远端解析服务（同款 HTTP 协议，见 pyserver/PROTOCOL.md），只需一个可达
+ *   的 URL——基础环境（没装 torch/模型）也能用；翻译不依赖它（Rust 直连 LLM）。
+ */
+export type OcrMode = "local" | "online";
+
+/** OCR 服务设置：安装镜像源 + 服务来源（本地托管 / 在线服务） */
 export interface OcrSettings {
   installMirror: boolean;
+  mode: OcrMode;
+  /** 在线模式的解析服务地址（如 http://127.0.0.1:9055）；local 模式忽略 */
+  url: string;
 }
 
 /**
@@ -210,6 +229,7 @@ export const useSettingsStore = defineStore("settings", () => {
     targetLang: "",
     smartContext: true,
     thinkingOff: "auto",
+    translateEnabled: true,
   });
 
   /** pi-ai 目录（懒加载；null = 未加载——纯浏览器模式不加载） */
@@ -275,6 +295,8 @@ export const useSettingsStore = defineStore("settings", () => {
 
   const ocr = ref<OcrSettings>({
     installMirror: true,
+    mode: "local",
+    url: "",
   });
 
   /** 上次选择的仓库根目录（config.json 持久化；library 启动时据此自动打开） */
@@ -398,7 +420,11 @@ export const useSettingsStore = defineStore("settings", () => {
   /** invoke 用的扁平配置（parse.ts 调度 + verify_llm 共用）；三要素缺失 = null（翻译整体跳过） */
   function llmInvokePayload(): LlmInvokePayload | null {
     const s = llm.value;
-    if (!s.baseUrl.trim() || !s.apiKey.trim() || !s.model.trim()) return null;
+    // 关掉翻译时也要下发：Rust 收到的 translateEnabled=false 会把原文复制成译文
+    // 并标记完成（不走网络），端点/密钥可以为空——基础环境照样能"处理完" OCR 文本
+    if (s.translateEnabled && (!s.baseUrl.trim() || !s.apiKey.trim() || !s.model.trim())) {
+      return null;
+    }
     return {
       baseUrl: s.baseUrl.trim(),
       apiKey: s.apiKey,
@@ -415,6 +441,7 @@ export const useSettingsStore = defineStore("settings", () => {
       modelReasoning: s.preset.reasoning,
       extraHeaders: s.preset.extraHeaders,
       translateTypes: [...general.value.translateTypes],
+      translateEnabled: s.translateEnabled,
     };
   }
 

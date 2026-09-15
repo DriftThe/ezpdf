@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use tauri::Manager;
+use tauri::Emitter;
 use ts_rs::TS;
 
 pub mod parse;
@@ -600,9 +601,45 @@ async fn ocr_start(
 }
 
 #[tauri::command]
-async fn ocr_stop(svc: tauri::State<'_, pyserver::PyService>) -> Result<(), String> {
-    svc.stop(); // 关 stdin → Python stdin-EOF 自灭；状态经 ocr://status 事件回报
+async fn ocr_stop(
+    app: tauri::AppHandle,
+    svc: tauri::State<'_, pyserver::PyService>,
+) -> Result<(), String> {
+    if svc.has_child() {
+        svc.stop(); // 关 stdin → Python stdin-EOF 自灭；状态经 ocr://status 事件回报
+    } else {
+        svc.disconnect(&app); // 在线模式：没有子进程可停，清端点 + 复位状态
+    }
     Ok(())
+}
+
+/// 在线模式探活（OCR 设置页地址框右侧「测试」）：只探测，不改连接状态。
+/// 返回服务端公布的批大小（前端拿它做提示 + 后续每批的协商值）
+#[tauri::command]
+async fn ocr_health(url: String) -> Result<pyserver::ParseServiceHealth, String> {
+    pyserver::probe_health(&url).await
+}
+
+/// 在线模式连接：探活通过才登记为 OCR 目标（用户 2026-09-15，见 pyserver/PROTOCOL.md）
+#[tauri::command]
+async fn ocr_start_remote(
+    app: tauri::AppHandle,
+    svc: tauri::State<'_, pyserver::PyService>,
+    url: String,
+) -> Result<pyserver::ParseServiceHealth, String> {
+    let base = pyserver::normalize_base(&url)?;
+    let health = pyserver::probe_health(&base).await?;
+    svc.set_remote(&app, base.clone());
+    let _ = app.emit(
+        "ocr://log",
+        format!(
+            "[ezpdf] online parse service connected: {base} (pid {}, {} ms, max batch {} pages)",
+            health.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+            health.elapsed_ms,
+            health.max_batch_pages
+        ),
+    );
+    Ok(health)
 }
 
 // ---- OCR 解析回路（阶段4）：批量 OCR + 骨架补齐 + 同批 LLM 翻译；细节在 parse.rs / translate.rs ----
@@ -692,6 +729,8 @@ pub fn run() {
             ocr_download_models,
             ocr_start,
             ocr_stop,
+            ocr_health,
+            ocr_start_remote,
             parse_pdf,
             translate_pdf,
             prefill_pages,

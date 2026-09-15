@@ -3,6 +3,7 @@ import { ref, watch } from "vue";
 import { toast } from "../composables/toast";
 import type {
   InstallProgress,
+  ParseServiceHealth,
   OcrEnvReport,
   PageInfo,
   ParseOutcome,
@@ -132,10 +133,77 @@ export const useParseStore = defineStore("parse", () => {
   const startService = (): Promise<void> => runServiceCommand("ocr_start");
   const stopService = (): Promise<void> => runServiceCommand("ocr_stop");
 
+  /** 在线模式握手：读 /health 拿服务端公布的批大小（用户 2026-09-15）。
+   *  每次 OCR 请求前都会调一次——服务端换负载/换配置后客户端立刻跟上；
+   *  失败即抛错，让这一批按失败计连败（不要拿过期数字继续发） */
+  async function handshakeOnline(): Promise<ParseServiceHealth> {
+    const health = await invoke<ParseServiceHealth>("ocr_health", {
+      url: useSettingsStore().ocr.url,
+    });
+    onlineHealth.value = health;
+    return health;
+  }
+
+  /** 健康报告 → 一行可读文案（toast / 日志共用） */
+  function healthDetail(h: ParseServiceHealth): string {
+    return t("ocr.healthDetail", {
+      pid: h.pid ?? "?",
+      ms: h.elapsedMs,
+      batch: h.maxBatchPages,
+    });
+  }
+
+  /** 在线模式连接（探活通过才登记为 OCR 目标）；失败抛错，调用方决定 toast 还是日志 */
+  async function connectOnline(url: string): Promise<ParseServiceHealth> {
+    const health = await invoke<ParseServiceHealth>("ocr_start_remote", { url });
+    onlineHealth.value = health;
+    return health;
+  }
+
+  /** 启动服务（设置页按钮）：本地托管 → 拉起子进程；在线服务 → 探活后登记端点 */
+  async function startServiceForMode(): Promise<void> {
+    if (useSettingsStore().ocr.mode !== "online") {
+      await startService();
+      return;
+    }
+    try {
+      const detail = healthDetail(await connectOnline(useSettingsStore().ocr.url));
+      pushLlmLog(t("log.onlineConnected", { detail }));
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  }
+
+  /** 在线模式地址探活（设置页地址框右侧「测试」按钮，用户 2026-09-15）：
+   *  只探测健康度，不改连接状态——连不连是「启动服务」的事。
+   *  顺便把服务端公布的批大小显示出来（地址下方 hint） */
+  async function testRemote(): Promise<void> {
+    try {
+      const detail = healthDetail(await handshakeOnline());
+      pushLlmLog(t("log.onlineProbeOk", { detail }));
+      toast(t("toast.parseServiceOk", { detail }), "info");
+    } catch (e) {
+      onlineHealth.value = null;
+      pushLlmLog(t("log.onlineProbeFailed", { error: String(e) }));
+      toast(String(e), "error");
+    }
+  }
+
   /** 启动自动唤醒（常规设置 autoLaunch，用户 2026-09-14）：环境/模型全就绪才拉起，
-   *  缺件只记日志不打扰（到 OCR 服务设置页一键安装服务） */
+   *  缺件只记日志不打扰（到 OCR 服务设置页一键安装服务）。
+   *  在线模式（2026-09-15）不查本地环境：基础环境也能连远端服务，探活通过即登记 */
   async function autoStartIfEnabled(): Promise<void> {
-    if (!isTauri || !useSettingsStore().general.autoLaunch) return;
+    const settings = useSettingsStore();
+    if (!isTauri || !settings.general.autoLaunch) return;
+    if (settings.ocr.mode === "online") {
+      try {
+        const detail = healthDetail(await connectOnline(settings.ocr.url));
+        pushLlmLog(t("log.onlineConnected", { detail }));
+      } catch (e) {
+        pushLlmLog(t("log.onlineConnectFailed", { error: String(e) }));
+      }
+      return;
+    }
     await checkEnv();
     const r = envReport.value;
     const ready = !!r && !!r.python && r.missing.length === 0 && !!r.models?.layout && !!r.models?.vl;
@@ -159,21 +227,41 @@ export const useParseStore = defineStore("parse", () => {
   let wakePending = false;
   /** 上述 pending 是否含外部事件（外部才重置连败预算） */
   let wakePendingExternal = false;
-  /** 批大小（用户拍板：一次 ≤4 页、同书，不足传剩余页） */
-  const BATCH_SIZE = 4;
+  /** 本地托管模式的批大小（用户拍板 2026-09-14：一次 ≤4 页、同书，不足传剩余页）。
+   *  在线模式不用它——批大小由服务端 /health 公布（用户 2026-09-15），见 PROTOCOL.md §4 */
+  const LOCAL_BATCH_SIZE = 4;
+  /** 最近一次在线握手结果（服务端公布的批大小 + pid/耗时，供设置页显示） */
+  const onlineHealth = ref<ParseServiceHealth | null>(null);
+  /** 当前该一批发几页：本地 = 客户端定；在线 = 服务端公布（没握到手时回落 4） */
+  function currentBatchSize(): number {
+    if (useSettingsStore().ocr.mode !== "online") return LOCAL_BATCH_SIZE;
+    return onlineHealth.value?.maxBatchPages ?? LOCAL_BATCH_SIZE;
+  }
   /** 首次 + 重试 2 次 = 3 连败 → 本轮停该类批次 */
   const MAX_ATTEMPTS = 3;
   /** 书级连败计数（OCR / 翻译分开：翻译持续失败只关翻译支路，OCR 照跑；反之亦然）；wake 时清零 */
   const ocrStrikes = new Map<string, number>();
   const translateStrikes = new Map<string, number>();
 
+  /** OCR 批次的前提：解析服务可用（本地托管已连上 / 在线服务已登记） */
+  function canOcr(): boolean {
+    return serviceStatus.value === "connected";
+  }
+
+  /** 翻译批次的前提：仅需 LLM 配置——与解析服务无关（用户 2026-09-15 解耦）。
+   *  关掉翻译时 payload 也非空（Rust 走"原文当译文"路径，无需密钥），
+   *  所以基础环境（没装依赖/模型）也能把已 OCR 的页处理完 */
+  function canTranslate(): boolean {
+    return llmPayload() !== null;
+  }
+
   function isRunnable(): boolean {
     return (
       isTauri &&
       !paused.value &&
       !standing.value &&
-      serviceStatus.value === "connected" &&
-      !!useLibraryStore().repoRoot
+      !!useLibraryStore().repoRoot &&
+      (canOcr() || canTranslate())
     );
   }
 
@@ -286,20 +374,25 @@ export const useParseStore = defineStore("parse", () => {
     const order = focused
       ? [focused, ...index.pdfs.filter((p) => p.id !== focused.id)]
       : [...index.pdfs];
-    const canTranslate = llmPayload() !== null;
+    const canTranslateNow = canTranslate();
     for (const entry of order) {
       const state = await bookState(entry);
       if (!state || state.pages.length === 0) continue;
       const focusedBook = entry.id === lib.currentPdfId;
       if (
-        canTranslate &&
+        canTranslateNow &&
         !translateChains.has(entry.id) &&
         (translateStrikes.get(entry.id) ?? 0) < MAX_ATTEMPTS &&
         state.pages.some(needsTranslation)
       ) {
         return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "translate" };
       }
-      if ((ocrStrikes.get(entry.id) ?? 0) < MAX_ATTEMPTS && state.pages.some(needsOcr)) {
+      // OCR 需要解析服务（在线/本地托管皆可）；服务不可用时跳过，等连上再唤醒
+      if (
+        canOcr() &&
+        (ocrStrikes.get(entry.id) ?? 0) < MAX_ATTEMPTS &&
+        state.pages.some(needsOcr)
+      ) {
         return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "ocr" };
       }
     }
@@ -338,12 +431,16 @@ export const useParseStore = defineStore("parse", () => {
       : 1;
   }
 
-  /** 环形收集 ≤BATCH_SIZE 个命中页（pick 返回 null = 跳过该页） */
-  function ringCollect<T>(book: PickTarget, pick: (page: PageInfo) => T | null): T[] {
+  /** 环形收集 ≤limit 个命中页（pick 返回 null = 跳过该页；limit 默认本地批大小） */
+  function ringCollect<T>(
+    book: PickTarget,
+    pick: (page: PageInfo) => T | null,
+    limit: number = LOCAL_BATCH_SIZE,
+  ): T[] {
     const pages = book.state.pages;
     const start = startPageFor(book);
     const out: T[] = [];
-    for (let k = 0; k < pages.length && out.length < BATCH_SIZE; k++) {
+    for (let k = 0; k < pages.length && out.length < limit; k++) {
       const hit = pick(pages[(start - 1 + k) % pages.length]);
       if (hit !== null) out.push(hit);
     }
@@ -379,10 +476,14 @@ export const useParseStore = defineStore("parse", () => {
     applyOutcome(book.id, outcome);
   }
 
-  /** OCR 批次：环形取 ≤BATCH_SIZE 未完成页 → 离屏渲染 → parse_pdf → 排翻译链 */
+  /** OCR 批次：环形取 ≤批大小 未完成页 → 离屏渲染 → parse_pdf → 排翻译链。
+   *  在线模式先握手 /health 拿服务端公布的批大小（用户 2026-09-15：批大小由服务端定，
+   *  每次请求前重新协商；握手失败按批次失败计连败），本地托管沿用客户端自己的 4 页 */
   async function processOcrBatch(book: PickTarget): Promise<void> {
     const lib = useLibraryStore();
-    const take = ringCollect(book, (page) => (needsOcr(page) ? page : null));
+    if (useSettingsStore().ocr.mode === "online") await handshakeOnline();
+    const limit = currentBatchSize();
+    const take = ringCollect(book, (page) => (needsOcr(page) ? page : null), limit);
     if (take.length === 0) return; // 竞态：已全部完成
     pushLlmLog(t("log.ocrBatch", { pages: take.map((p) => p.index).join(","), name: book.name }));
 
@@ -499,14 +600,16 @@ export const useParseStore = defineStore("parse", () => {
     envReport,
     envLogs,
     llmLogs,
+    onlineHealth,
     checking,
     installing,
     installProgress,
     wake,
     checkEnv,
     installService,
-    startService,
+    startService: startServiceForMode,
     stopService,
+    testRemote,
     autoStartIfEnabled,
   };
 });

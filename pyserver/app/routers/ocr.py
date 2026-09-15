@@ -2,7 +2,8 @@
 
 - /ocr/page  → {blocks, width, height, elapsed}（curl 冒烟/调试用）；
 - /ocr/pages → {elapsed, pages: [{blocks, width, height}]}（Rust parse_pdf 正路，
-  前端 parse_append 每批 ≤4 页同书提交，PyService 持有 token 后经此批量推理）；
+  批量页数由客户端按 /health 的 max_batch_pages 决定：本地托管用客户端自己的批大小，
+  在线服务用服务端公布的值，PyService 持有 token 后经此批量推理）；
 - 图片解码用 PIL（Wise-Paddle 的 cv2 路径服务于文件上传，这里不需要）；尺寸有上限，
   解码放线程池（见 _decode_image / MAX_BODY_BYTES）；
 - bbox_px 为原图像素坐标（含 unclip 扩框），px→PDF pt 换算（pt = px/scale）由
@@ -21,6 +22,7 @@ from pydantic import BaseModel, Field
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
+from ..config import MAX_BATCH_PAGES
 from ..services.engine import engine
 from ..services.pipeline import RegionResult
 
@@ -32,7 +34,8 @@ class PageRequest(BaseModel):
 
 
 class PagesBatchRequest(BaseModel):
-    pages: list[PageRequest] = Field(min_length=1, max_length=32)
+    # 上限 = /health 里公布的 max_batch_pages（客户端据此决定每批发几页）
+    pages: list[PageRequest] = Field(min_length=1, max_length=MAX_BATCH_PAGES)
 
 
 # 解压炸弹/超大渲染兜底：单边与总像素双限（正常页渲染 scale2.0 远小于此）

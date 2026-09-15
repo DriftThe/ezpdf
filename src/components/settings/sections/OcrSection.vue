@@ -19,9 +19,22 @@ watch(
 );
 
 // 打开 OCR 设置页即刷新一次报告（灯与按钮可用性以最新探测为准）
+// 在线模式不探本地环境（那是托管服务的事），只探地址
 onMounted(() => {
-  if (parse.envReport === null) void parse.checkEnv();
+  if (!online.value && parse.envReport === null) void parse.checkEnv();
 });
+
+/** 在线模式（用户 2026-09-15）：隐藏本地环境/安装区，改显示地址 + 测试 */
+const online = computed(() => settings.ocr.mode === "online");
+const probing = ref(false);
+async function onTest(): Promise<void> {
+  probing.value = true;
+  try {
+    await parse.testRemote();
+  } finally {
+    probing.value = false;
+  }
+}
 
 /** 状态位 → 文案 / 状态灯修饰类（"" = 灰色未就绪态） */
 type EnvState = "notready" | "cpu" | "gpu";
@@ -123,53 +136,91 @@ const lights = computed(() => [
 <template>
   <div class="set-pane">
     <h2 class="set-title">{{ t("ocr.title") }}</h2>
-    <!-- 注意：含 button 的行不能用 label 包裹（label 会把整行点击转发给按钮） -->
+
+    <!-- 服务来源（用户 2026-09-15）：本地托管 = 随包 pyserver；在线服务 = 远端同款 HTTP 服务。
+         在线模式只需一个可达地址，基础环境（没装依赖/模型）也能用；翻译与它无关 -->
     <div class="set-field">
-      <span>{{ t("ocr.envCheck") }}</span>
-      <button class="set-button" :disabled="parse.checking" @click="parse.checkEnv()">
-        {{ parse.checking ? t("ocr.checking") : t("ocr.checkEnv") }}
-      </button>
+      <span>{{ t("ocr.mode") }}</span>
+      <span class="set-select-wrap">
+        <select v-model="settings.ocr.mode" class="set-select" :title="t('ocr.modeHint')">
+          <option value="local">{{ t("ocr.modeLocal") }}</option>
+          <option value="online">{{ t("ocr.modeOnline") }}</option>
+        </select>
+        <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
+          <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+      </span>
     </div>
-    <div class="set-field">
-      <span>{{ t("ocr.serviceCheck") }}</span>
-      <div class="set-field-row">
-        <span v-for="light in lights" :key="light.key" class="svc" :class="light.cls" :title="light.tip">
-          <span class="svc-dot" />{{ light.label }}
-        </span>
+    <p class="set-hint">{{ t("ocr.modeHint") }}</p>
+
+    <!-- 在线模式：地址框 + 右侧「测试」（只探活，不改连接状态）+ 启动服务完成登记 -->
+    <template v-if="online">
+      <div class="set-field">
+        <span>{{ t("ocr.url") }}</span>
+        <div class="set-field-row url-row">
+          <input v-model="settings.ocr.url" class="url-input" :placeholder="t('ocr.urlPlaceholder')" />
+          <button class="set-button" :disabled="probing" @click="onTest">
+            {{ probing ? t("ocr.checking") : t("ocr.testUrl") }}
+          </button>
+        </div>
       </div>
-    </div>
-    <!-- 一键安装服务（用户 2026-0x9-14）：下拉选择安装模式（自绘样式）+ 镜像源开关 + 进度 -->
-    <div class="set-field">
-      <span>{{ t("ocr.installService") }}</span>
-      <div class="set-field-row install-row">
-        <span class="set-select-wrap">
-          <select v-model="installMode" class="set-select" :title="t('ocr.installMode')">
-            <option value="gpu">GPU</option>
-            <option value="cpu">CPU</option>
-          </select>
-          <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
-            <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-          </svg>
-        </span>
-        <label class="set-check">
-          <input v-model="settings.ocr.installMirror" type="checkbox" />
-          <span>{{ t("ocr.useMirror") }}</span>
-        </label>
-        <button
-          class="set-button"
-          :disabled="parse.installing"
-          @click="parse.installService(installMode, settings.ocr.installMirror)"
-        >
-          {{ parse.installing ? t("ocr.installing") : t("ocr.installOneClick") }}
+      <p class="set-hint">{{ t("ocr.urlHint") }}</p>
+      <!-- 服务端公布的单批页数（点「测试」或连接后出现；每次 OCR 请求前会重新握手） -->
+      <p v-if="parse.onlineHealth" class="set-hint batch-hint">
+        {{ t("ocr.batchHint", { batch: parse.onlineHealth.maxBatchPages }) }}
+      </p>
+    </template>
+
+    <template v-else>
+      <!-- 注意：含 button 的行不能用 label 包裹（label 会把整行点击转发给按钮） -->
+      <div class="set-field">
+        <span>{{ t("ocr.envCheck") }}</span>
+        <button class="set-button" :disabled="parse.checking" @click="parse.checkEnv()">
+          {{ parse.checking ? t("ocr.checking") : t("ocr.checkEnv") }}
         </button>
-        <span v-if="parse.installing && parse.installProgress" class="install-phase">
-          {{ parse.installProgress.phase }} {{ parse.installProgress.percent }}%
-        </span>
       </div>
-    </div>
-    <div v-if="parse.installing && parse.installProgress" class="progress-track">
-      <div class="progress-fill" :style="{ width: parse.installProgress.percent + '%' }" />
-    </div>
+      <div class="set-field">
+        <span>{{ t("ocr.serviceCheck") }}</span>
+        <div class="set-field-row">
+          <span v-for="light in lights" :key="light.key" class="svc" :class="light.cls" :title="light.tip">
+            <span class="svc-dot" />{{ light.label }}
+          </span>
+        </div>
+      </div>
+      <!-- 一键安装服务（用户 2026-0x9-14）：下拉选择安装模式（自绘样式）+ 镜像源开关 + 进度 -->
+      <div class="set-field">
+        <span>{{ t("ocr.installService") }}</span>
+        <div class="set-field-row install-row">
+          <span class="set-select-wrap">
+            <select v-model="installMode" class="set-select" :title="t('ocr.installMode')">
+              <option value="gpu">GPU</option>
+              <option value="cpu">CPU</option>
+            </select>
+            <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
+              <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          </span>
+          <label class="set-check">
+            <input v-model="settings.ocr.installMirror" type="checkbox" />
+            <span>{{ t("ocr.useMirror") }}</span>
+          </label>
+          <button
+            class="set-button"
+            :disabled="parse.installing"
+            @click="parse.installService(installMode, settings.ocr.installMirror)"
+          >
+            {{ parse.installing ? t("ocr.installing") : t("ocr.installOneClick") }}
+          </button>
+          <span v-if="parse.installing && parse.installProgress" class="install-phase">
+            {{ parse.installProgress.phase }} {{ parse.installProgress.percent }}%
+          </span>
+        </div>
+      </div>
+      <div v-if="parse.installing && parse.installProgress" class="progress-track">
+        <div class="progress-fill" :style="{ width: parse.installProgress.percent + '%' }" />
+      </div>
+    </template>
+
     <div class="set-field">
       <span>{{ t("ocr.serviceActions") }}</span>
       <div class="set-field-row">
@@ -185,6 +236,19 @@ const lights = computed(() => [
 </template>
 
 <style scoped>
+/* 批大小提示：与地址框同一视觉层，弱化处理（服务端公布值） */
+.batch-hint {
+  color: var(--accent);
+}
+/* 地址框占满剩余宽度，「测试」按钮留在右侧（用户 2026-09-15） */
+.url-row {
+  gap: 12px;
+  align-items: center;
+}
+.url-input {
+  flex: 1;
+  min-width: 0;
+}
 .install-row {
   gap: 12px;
   align-items: center;
