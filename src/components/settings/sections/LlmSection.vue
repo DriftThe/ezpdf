@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useParseStore } from "../../../stores/parse";
 import { useSettingsStore } from "../../../stores/settings";
@@ -11,6 +11,7 @@ import {
   providerLabel,
   thinkingHint,
 } from "../../../lib/piModels";
+import { CUSTOM_TARGET_LANG, TARGET_LANG_OPTIONS, isPresetTargetLang } from "../../../lib/languages";
 
 const settings = useSettingsStore();
 const parse = useParseStore();
@@ -33,6 +34,19 @@ const unsupportedProvider = computed(() =>
 
 function onProvider(e: Event): void {
   settings.applyProvider((e.target as HTMLSelectElement).value);
+}
+
+/** 目标语言：预设命中就直接用，否则显示"自定义"并展开输入框（用户 2026-09-15） */
+const customLang = ref(false);
+const langPick = computed(() => {
+  if (customLang.value) return CUSTOM_TARGET_LANG;
+  return isPresetTargetLang(settings.llm.targetLang) ? settings.llm.targetLang : CUSTOM_TARGET_LANG;
+});
+
+function onPickLang(e: Event): void {
+  const v = (e.target as HTMLSelectElement).value;
+  customLang.value = v === CUSTOM_TARGET_LANG;
+  if (!customLang.value) settings.llm.targetLang = v;
 }
 </script>
 
@@ -138,8 +152,20 @@ function onProvider(e: Event): void {
       </div>
     </div>
 
-    <label class="set-field">
+    <div class="set-field">
       <span>{{ t("llm.targetLang") }}</span>
+      <span class="set-select-wrap">
+        <select class="set-select" :value="langPick" @change="onPickLang">
+          <option v-for="o in TARGET_LANG_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+          <option :value="CUSTOM_TARGET_LANG">{{ t("llm.targetLangCustom") }}</option>
+        </select>
+        <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
+          <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+      </span>
+    </div>
+    <label v-if="langPick === CUSTOM_TARGET_LANG" class="set-field">
+      <span>{{ t("llm.targetLangCustomLabel") }}</span>
       <input v-model="settings.llm.targetLang" :placeholder="t('llm.targetLangPlaceholder')" />
     </label>
     <label class="set-check">
