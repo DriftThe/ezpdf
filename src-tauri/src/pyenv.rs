@@ -162,11 +162,11 @@ fn bundled_python(app: &AppHandle) -> Result<PathBuf, String> {
     #[cfg(not(dev))]
     {
         let res = app.path().resource_dir().map_err(|e| e.to_string())?;
-        let nested = res.join("resources").join("python").join(bundled_py_rel());
-        if nested.is_file() {
-            return Ok(nested);
+        let direct = res.join("python").join(bundled_py_rel());
+        if direct.is_file() {
+            return Ok(direct);
         }
-        Ok(res.join("python").join(bundled_py_rel()))
+        Ok(res.join("resources").join("python").join(bundled_py_rel()))
     }
 }
 
@@ -187,12 +187,14 @@ fn server_root(app: &AppHandle) -> Result<(PathBuf, bool), String> {
     #[cfg(not(dev))]
     {
         let res = app.path().resource_dir().map_err(|e| e.to_string())?;
-        // bundle.resources 映射落位：优先 <资源根>/resources/pyserver，兼容直接落位
-        let nested = res.join("resources").join("pyserver");
-        if nested.join("bootstrap.py").is_file() {
-            return Ok((nested, true));
+        // bundle.resources 的 target 相对资源根（tauri.conf 的 "resources/pyserver": "pyserver"），
+        // 实测落位就是 <资源根>/pyserver（Linux deb = /usr/lib/ezpdf/pyserver）；
+        // 再兼容一层 resources/ 子目录（自定义打包布局）
+        let direct = res.join("pyserver");
+        if direct.join("bootstrap.py").is_file() {
+            return Ok((direct, true));
         }
-        Ok((res.join("pyserver"), true))
+        Ok((res.join("resources").join("pyserver"), true))
     }
 }
 
