@@ -83,6 +83,11 @@ jobs:
           releaseBody: |
             Windows 下载 setup.exe 安装；Linux 用 deb/rpm 包（Debian/Ubuntu 用 deb，Fedora/RHEL 用 rpm）。
             首次运行后在应用内「一键安装服务」下载 OCR 依赖与模型。
+
+            解析服务的离线镜像快照（自包含、模型内置，供离线/公网隔离服务器用）由 **Pyserver images**
+            workflow 手动构建后附在本 Release 下，文件名形如 `ezpdf-pyserver-<tag>-cpu.tar.part-00`：
+            先按 README「用 Docker 部署解析服务」合并分片（Linux `cat` / Windows `copy /b`）并核对
+            `.sha256`，再 `docker load`。若尚未附上，可手动触发该 workflow 生成。
           releaseDraft: true
           prerelease: false
           tauriScript: pnpm tauri

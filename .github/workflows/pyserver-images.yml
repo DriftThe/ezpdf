@@ -1,0 +1,159 @@
+name: Pyserver images
+
+# 解析服务的镜像快照：构建 CPU/GPU 两个自包含镜像（模型打在镜像里，离线可用），
+# 容器冒烟测试（/health 鉴权 + 真实推理）后 docker save、切成 <2GiB 分片，
+# 附到对应 tag 的 Release 下（见 README「用 Docker 部署解析服务」）。
+#
+# 为什么手动触发：一次要现下模型（1.9GB）与 torch 轮子（CPU 约 0.3GB / GPU 约 5GB），
+# 单变体约 20-30 分钟，没必要挂在每次发版上。发版流程仍只由 release.yml 负责安装包。
+# 为什么切分：GitHub Release 单个附件上限 2GiB，实测 tar 为 2.1GB（CPU）/ 4.5GB（GPU），
+# 客户端下载分片后按 README 合并再 docker load。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 目标 Release 的 tag（留空 = 用 tauri.conf.json 里的版本）
+        required: false
+      variants:
+        description: 构建哪些变体
+        type: choice
+        options: ["cpu,gpu", "cpu", "gpu"]
+        default: "cpu,gpu"
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 需要 tag，构建必须与发出去的那一版同源
+
+      - name: Resolve tag
+        id: vars
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            tag="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          fi
+          if ! git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::tag $tag not found in this repository"
+            exit 1
+          fi
+          git checkout --quiet "refs/tags/$tag"
+          app_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$tag" != "v${app_version}" ]; then
+            echo "::error::tag $tag != v${app_version} (src-tauri/tauri.conf.json)"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "building from $(git rev-parse --short HEAD)"
+          df -h / | tail -1
+
+      # 分片要挂到 Release 上：还没有就建 draft（正文交给 release.yml 的安装包流程去写）
+      - name: Ensure draft release
+        run: |
+          set -euo pipefail
+          tag="${{ steps.vars.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists"
+          else
+            printf 'Pyserver image snapshots for %s. See the README for how to merge the parts and load the image.\n' "$tag" > /tmp/notes.md
+            gh release create "$tag" --draft --verify-tag --title "ezpdf $tag" --notes-file /tmp/notes.md
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Dockerfile 里模型是 COPY 进镜像的（自包含），CI 上先下到构建上下文。
+      # 与客户端「一键安装服务」走同一条代码路径（python -m app.fetch）。
+      - name: Download models into the build context
+        working-directory: pyserver
+        env:
+          HF_ENDPOINT: https://huggingface.co # fetch.py 默认镜像端点，runner 直连官方源更快
+          EZPDF_MODELS_DIR: ${{ github.workspace }}/pyserver/models
+        run: |
+          set -euo pipefail
+          pip install -r requirements-download.txt
+          python -m app.fetch
+          du -sh "$EZPDF_MODELS_DIR"/*
+
+      - name: Build CPU image
+        if: contains(inputs.variants, 'cpu')
+        run: |
+          docker build -t ezpdf-pyserver:cpu -t "ezpdf-pyserver:${{ steps.vars.outputs.tag }}-cpu" \
+            --build-arg VARIANT=cpu pyserver
+
+      # 冒烟测试：只探 /health 不够，镜像是"能推理"才算可用，所以容器里真跑一次。
+      # 无令牌必须 403、带令牌必须 200（服务端鉴权默认开启）。
+      - name: Smoke test CPU image
+        if: contains(inputs.variants, 'cpu')
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 127.0.0.1:9055:9055 \
+            -v "$PWD/ci-data:/data" \
+            -v "$PWD/scripts/smoke-inference.py:/smoke.py:ro" \
+            ezpdf-pyserver:cpu
+          code=""
+          for _ in $(seq 1 40); do
+            sleep 3
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9055/health || true)
+            [ "$code" = "403" ] && break
+          done
+          if [ "$code" != "403" ]; then
+            echo "::error::unauthenticated /health returned $code"
+            docker logs smoke
+            exit 1
+          fi
+          curl -fsS -H "x-ezpdf-token: $(cat ci-data/token.txt)" http://127.0.0.1:9055/health
+          docker exec smoke python /smoke.py
+          docker rm -f smoke
+
+      - name: Package and upload CPU snapshot
+        if: contains(inputs.variants, 'cpu')
+        run: bash scripts/docker-snapshot.sh cpu "${{ steps.vars.outputs.tag }}"
+
+      # GPU 镜像比 CPU 大一个量级，构建前把 CPU 镜像与分片清掉，别把 runner 的盘撑爆
+      - name: Free disk before the GPU build
+        if: contains(inputs.variants, 'cpu') && contains(inputs.variants, 'gpu')
+        run: |
+          set -euo pipefail
+          docker rmi "ezpdf-pyserver:cpu" "ezpdf-pyserver:${{ steps.vars.outputs.tag }}-cpu" || true
+          df -h / | tail -1
+
+      - name: Build GPU image
+        if: contains(inputs.variants, 'gpu')
+        run: |
+          docker build -t ezpdf-pyserver:gpu -t "ezpdf-pyserver:${{ steps.vars.outputs.tag }}-gpu" \
+            --build-arg VARIANT=gpu pyserver
+
+      # runner 没有 GPU，CUDA 路径测不了（GPU 侧真实推理是本机验证的：RTX 4060 约 4.7s/页）。
+      # 退一步确认：CUDA 版 torch 与 triton 都能 import，并让同镜像在 CPU 模式下真跑一次推理
+      # —— torch 的 cu132 构建在无 GPU 机器上会回落到 CPU，这样至少覆盖了依赖完整性。
+      # 注意：triton 的即时编译是 CUDA 路径才走的，所以 gcc 的必要性在这里测不出来，
+      # 删 Dockerfile 里的 build-essential 会让 GPU 侧推理在运行时才炸。
+      - name: Smoke test GPU image
+        if: contains(inputs.variants, 'gpu')
+        run: |
+          set -euo pipefail
+          docker run --rm ezpdf-pyserver:gpu \
+            python -c "import torch, triton; print('torch', torch.__version__, '| cuda build', torch.version.cuda, '| triton', triton.__version__)"
+          docker run --rm -v "$PWD/scripts/smoke-inference.py:/smoke.py:ro" ezpdf-pyserver:gpu python /smoke.py
+
+      - name: Package and upload GPU snapshot
+        if: contains(inputs.variants, 'gpu')
+        run: bash scripts/docker-snapshot.sh gpu "${{ steps.vars.outputs.tag }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          df -h / | tail -1
+          gh release view "${{ steps.vars.outputs.tag }}" --json assets \
+            -q '.assets[] | "\(.name)\t\(.size)"' || true

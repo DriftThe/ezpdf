@@ -117,7 +117,11 @@ docker compose --profile gpu up -d --build     # GPU image (host needs a driver 
 Behind a slow or blocked network, point all four sources at mirrors (same idea as the app's own mirror switch):
 
 ```bash
-docker compose --profile cpu build \n  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \n  --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn \n  --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \n  --build-arg TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # .../cu132 for GPU
+docker compose --profile cpu build \
+  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
+  --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn \
+  --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \
+  --build-arg TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # .../cu132 for GPU
 docker compose --profile cpu up -d
 ```
 
@@ -138,6 +142,32 @@ rebuilds never invalidate what the client has saved. It listens on `127.0.0.1:90
 change the port mapping in `docker-compose.yml` to expose it to a LAN or the internet, and remember
 this protocol is plain HTTP with a bearer token — put it behind an HTTPS reverse proxy if it is
 publicly reachable.
+
+#### Offline install from a release snapshot (network-isolated servers)
+
+If the target machine cannot build (or cannot reach the internet at all), download the parse service
+image snapshot straight from the Releases page:
+
+```bash
+# 1) Merge the parts: a GitHub Release caps each file at 2GiB, so the tar is split into ~1.9GiB parts
+cat ezpdf-pyserver-v0.1.1-cpu.tar.part-* > ezpdf-pyserver-v0.1.1-cpu.tar
+#    Windows: copy /b ezpdf-pyserver-v0.1.1-cpu.tar.part-* ezpdf-pyserver-v0.1.1-cpu.tar
+sha256sum -c ezpdf-pyserver-v0.1.1-cpu.tar.sha256     # verify the merged tar
+
+# 2) Load the image (you get both ezpdf-pyserver:cpu and ezpdf-pyserver:v0.1.1-cpu)
+docker load -i ezpdf-pyserver-v0.1.1-cpu.tar
+
+# 3) Run it: add --gpus all for the GPU snapshot, everything else is the same
+docker run -d --name ezpdf-pyserver -p 127.0.0.1:9055:9055 -v ./data:/data ezpdf-pyserver:cpu
+docker logs ezpdf-pyserver | grep "auth token"        # paste into Settings → OCR service
+```
+
+The snapshot is built from the same source as the release (the workflow checks out that tag), and is
+about 2.1GB for CPU and 4.5GB for GPU before splitting; the models are inside, so the container needs
+neither network nor volumes. Snapshots come from the repository's **Pyserver images** workflow, run
+manually (`Actions → Pyserver images → Run workflow`, optionally one variant only). If you have
+already built the image locally, the same packaging path works:
+`bash scripts/docker-snapshot.sh cpu v0.1.1`.
 
 ## Roadmap
 

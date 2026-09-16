@@ -116,7 +116,11 @@ docker compose --profile gpu up -d --build     # GPU 镜像（宿主需装好驱
 国内网络建议改走镜像源（Docker Hub / deb / pypi / pytorch 四处，与客户端「使用镜像源」同源）：
 
 ```bash
-docker compose --profile cpu build \n  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \n  --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn \n  --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \n  --build-arg TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # GPU 改为 .../cu132
+docker compose --profile cpu build \
+  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
+  --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn \
+  --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \
+  --build-arg TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # GPU 改为 .../cu132
 docker compose --profile cpu up -d
 ```
 
@@ -132,6 +136,29 @@ docker compose logs -f ezpdf-pyserver-cpu      # 找 "auth token: ..." 那一行
 令牌会落在挂载卷 `pyserver/data/token.txt`，重启或重建容器都不会变，客户端无需重新粘贴。默认只监听
 `127.0.0.1:9055`；要给内网/公网使用需修改 `docker-compose.yml` 的端口映射，并注意本协议是明文 HTTP +
 bearer 令牌，公网部署请自行套一层 HTTPS 反向代理。
+
+#### 从 Release 快照离线部署（公网隔离的服务器）
+
+目标机器不构建（或根本连不上外网）时，直接在 Releases 页下载解析服务的镜像快照：
+
+```bash
+# 1) 合并分片：GitHub Release 单文件上限 2GiB，所以 tar 被切成约 1.9GiB 的分片
+cat ezpdf-pyserver-v0.1.1-cpu.tar.part-* > ezpdf-pyserver-v0.1.1-cpu.tar
+#    Windows: copy /b ezpdf-pyserver-v0.1.1-cpu.tar.part-* ezpdf-pyserver-v0.1.1-cpu.tar
+sha256sum -c ezpdf-pyserver-v0.1.1-cpu.tar.sha256     # 校验合并结果
+
+# 2) 载入镜像（得到 ezpdf-pyserver:cpu 与 ezpdf-pyserver:v0.1.1-cpu 两个名字）
+docker load -i ezpdf-pyserver-v0.1.1-cpu.tar
+
+# 3) 起服务：GPU 快照加 --gpus all，其余相同
+docker run -d --name ezpdf-pyserver -p 127.0.0.1:9055:9055 -v ./data:/data ezpdf-pyserver:cpu
+docker logs ezpdf-pyserver | grep "auth token"        # 令牌粘到 应用 → 设置 → OCR 服务
+```
+
+快照与发版同源（workflow 会 checkout 对应 tag 的源码来构建），CPU 约 2.1GB、GPU 约 4.5GB 分片后上传；
+模型已打进镜像，容器不需要联网也不需要挂载卷。快照由仓库的 **Pyserver images** workflow 手动构建
+（`Actions → Pyserver images → Run workflow`，可选择只构建某个变体）；本机镜像已构建好时也可以用同一条
+打包路径：`bash scripts/docker-snapshot.sh cpu v0.1.1`。
 
 ## 路线图
 
