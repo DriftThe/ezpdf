@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useParseStore } from "../../../stores/parse";
 import { useSettingsStore } from "../../../stores/settings";
+import SelectArrow from "../../common/SelectArrow.vue";
 
 const parse = useParseStore();
 const settings = useSettingsStore();
@@ -146,9 +147,7 @@ const lights = computed(() => [
           <option value="local">{{ t("ocr.modeLocal") }}</option>
           <option value="online">{{ t("ocr.modeOnline") }}</option>
         </select>
-        <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-        </svg>
+        <SelectArrow />
       </span>
     </div>
 
@@ -202,9 +201,7 @@ const lights = computed(() => [
               <option value="gpu">GPU</option>
               <option value="cpu">CPU</option>
             </select>
-            <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
-              <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-            </svg>
+            <SelectArrow />
           </span>
           <label class="set-check">
             <input v-model="settings.ocr.installMirror" type="checkbox" />

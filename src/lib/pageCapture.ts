@@ -11,10 +11,9 @@ export const RENDER_SCALE = 2.0;
 export async function renderPageToDataUrl(
   doc: PDFDocumentProxy,
   pageNumber: number,
-  scale: number = RENDER_SCALE,
 ): Promise<string> {
   const page = await doc.getPage(pageNumber);
-  const viewport = page.getViewport({ scale });
+  const viewport = page.getViewport({ scale: RENDER_SCALE });
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.floor(viewport.width));
   canvas.height = Math.max(1, Math.floor(viewport.height));

@@ -10,6 +10,7 @@ import {
   thinkingHint,
 } from "../../../lib/piModels";
 import { CUSTOM_TARGET_LANG, TARGET_LANG_OPTIONS, isPresetTargetLang } from "../../../lib/languages";
+import SelectArrow from "../../common/SelectArrow.vue";
 
 const settings = useSettingsStore();
 const parse = useParseStore();
@@ -78,9 +79,7 @@ function onPickLang(e: Event): void {
           </option>
           <option :value="CUSTOM_PROVIDER">{{ t("llm.providerCustom") }}</option>
         </select>
-        <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-        </svg>
+        <SelectArrow />
       </span>
     </div>
 
@@ -118,7 +117,7 @@ function onPickLang(e: Event): void {
           v-model="settings.llm.model"
           list="llm-models"
           placeholder="deepseek-chat"
-          @change="settings.refreshPreset()"
+          @change="settings.applyModelInput()"
         />
         <datalist id="llm-models">
           <option v-for="m in settings.modelOptions" :key="m" :value="m" />
@@ -136,9 +135,7 @@ function onPickLang(e: Event): void {
           <option v-for="o in TARGET_LANG_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
           <option :value="CUSTOM_TARGET_LANG">{{ t("llm.targetLangCustom") }}</option>
         </select>
-        <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-        </svg>
+        <SelectArrow />
       </span>
     </div>
     <label v-if="langPick === CUSTOM_TARGET_LANG" class="set-field">

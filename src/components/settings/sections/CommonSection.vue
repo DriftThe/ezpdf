@@ -3,6 +3,7 @@ import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "../../../stores/settings";
 import type { AppLocale } from "../../../locales";
 import { BLOCK_TYPE_OPTIONS, DEFAULT_TRANSLATED_TYPES } from "../../../lib/blocks";
+import SelectArrow from "../../common/SelectArrow.vue";
 
 const settings = useSettingsStore();
 const { t } = useI18n();
@@ -41,9 +42,7 @@ function isTypeOn(kind: string): boolean {
           <option value="zh-TW">{{ t("settings.general.langZhTW") }}</option>
           <option value="en">{{ t("settings.general.langEn") }}</option>
         </select>
-        <svg class="set-select-arrow" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-        </svg>
+        <SelectArrow />
       </span>
     </div>
     <label class="set-check">

@@ -1,6 +1,6 @@
 import { ref } from "vue";
 
-export interface ToastItem {
+interface ToastItem {
   id: number;
   text: string;
   kind: "info" | "warn" | "error";

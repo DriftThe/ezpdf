@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineProps<{
   title: string;
-  desc?: string;
+  desc: string;
 }>();
 </script>
 
@@ -15,7 +15,7 @@ defineProps<{
       </svg>
     </div>
     <div class="empty-title">{{ title }}</div>
-    <div v-if="desc" class="empty-desc">{{ desc }}</div>
+    <div class="empty-desc">{{ desc }}</div>
     <div class="empty-slot">
       <slot />
     </div>

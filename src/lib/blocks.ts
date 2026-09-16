@@ -37,19 +37,13 @@ export const BLOCK_TYPE_OPTIONS: readonly string[] = [
   "table",
 ];
 
-/** 默认送翻集合（与 Rust translate.rs 的 TRANSLATABLE_TYPES 同步） */
-export const DEFAULT_TRANSLATED_TYPES: readonly string[] = [
-  "text",
-  "paragraph_title",
-  "doc_title",
-  "abstract",
-  "aside_text",
-  "footnote",
-  "footer",
-  "vision_footnote",
-  "figure_title",
-  "content",
-];
+/** 默认勾选项数 = BLOCK_TYPE_OPTIONS 开头「默认送翻」那一段的长度 */
+const DEFAULT_TYPE_COUNT = 10;
+
+/** 默认送翻集合 = 上面列表的前 N 项（同一份字面量，避免同一份清单写两遍；
+ *  与 Rust translate.rs 的 TRANSLATABLE_TYPES 同步——那边是跨语言副本，改这里要一起改） */
+export const DEFAULT_TRANSLATED_TYPES: readonly string[] =
+  BLOCK_TYPE_OPTIONS.slice(0, DEFAULT_TYPE_COUNT);
 
 /** 公式类型：始终覆盖渲染（KaTeX），与是否送翻无关 */
 const FORMULA_TYPE = "formula";

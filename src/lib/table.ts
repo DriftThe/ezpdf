@@ -12,7 +12,7 @@
 import type { TableGrid } from "../types/domain";
 
 /** 译文矩阵：行 × 真实单元格；null = 该格内容与目标语言相同（渲染回落原文） */
-export type TableMatrix = (string | null)[][];
+type TableMatrix = (string | null)[][];
 
 /** 解析 `block.translation` 的矩阵 JSON；不是合法矩阵（或形状对不上网格）→ null */
 export function parseTableMatrix(translation: string | null, grid: TableGrid): TableMatrix | null {
@@ -41,7 +41,7 @@ export function parseTableMatrix(translation: string | null, grid: TableGrid): T
 }
 
 /** 单元格显示文本：译文优先，null（与目标语言相同）/缺译文回落原文 */
-export function cellText(grid: TableGrid, matrix: TableMatrix | null, row: number, col: number): string {
+function cellText(grid: TableGrid, matrix: TableMatrix | null, row: number, col: number): string {
   const translated = matrix?.[row]?.[col];
   return typeof translated === "string" ? translated : grid.rows[row].cells[col].text;
 }

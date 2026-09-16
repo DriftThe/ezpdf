@@ -11,76 +11,42 @@ export const SUPPORTED_API = "openai-completions";
 export const CUSTOM_PROVIDER = "custom";
 
 /**
- * 供应商显示名（pi-ai 目录只有 id）。用户 2026-09-15 要求「方便识别」，
- * 所以这里用人话 + 品牌：冷门供应商直接沿用 id。
+ * 供应商显示名（pi-ai 目录只有 id）。用户 2026-09-15 要求「方便识别」，所以这里用人话 + 品牌：
+ * 冷门供应商直接沿用 id。显示名是数据不是 i18n key（见 AGENTS），中英同一张表：
+ * 一个供应商一行，避免两张表键集悄悄漂移。
  */
-const PROVIDER_LABELS: Record<string, string> = {
-  "opencode-go": "OpenCode Zen（Go 套餐）",
-  opencode: "OpenCode Zen",
-  deepseek: "DeepSeek 深度求索",
-  zai: "Z.ai 智谱 GLM",
-  "moonshotai-cn": "Moonshot 月之暗面（国内）",
-  moonshotai: "Moonshot 月之暗面",
-  xiaomi: "Xiaomi MiMo 小米",
-  "xiaomi-token-plan-cn": "Xiaomi MiMo（国内 Token 包）",
-  "xiaomi-token-plan-sgp": "Xiaomi MiMo（新加坡 Token 包）",
-  "xiaomi-token-plan-ams": "Xiaomi MiMo（阿姆斯特丹 Token 包）",
-  "minimax-cn": "MiniMax 稀宇（国内）",
-  minimax: "MiniMax 稀宇",
-  "kimi-coding": "Kimi Coding",
-  openrouter: "OpenRouter（聚合）",
-  huggingface: "Hugging Face（聚合）",
-  cerebras: "Cerebras",
-  groq: "Groq",
-  xai: "xAI Grok",
-  mistral: "Mistral",
-  fireworks: "Fireworks",
-  "vercel-ai-gateway": "Vercel AI Gateway（聚合）",
-  "cloudflare-workers-ai": "Cloudflare Workers AI",
-  "cloudflare-ai-gateway": "Cloudflare AI Gateway（聚合）",
-  openai: "OpenAI",
-  "openai-codex": "OpenAI Codex",
-  anthropic: "Anthropic Claude",
-  google: "Google Gemini",
-  "google-vertex": "Google Vertex AI",
-  "azure-openai-responses": "Azure OpenAI",
-  "amazon-bedrock": "Amazon Bedrock",
-  "github-copilot": "GitHub Copilot",
-};
-
-/** 英文供应商显示名（生成目录的 PiProvider 无 name 字段，这里补齐；en 界面用） */
-const PROVIDER_LABELS_EN: Record<string, string> = {
-  "opencode-go": "OpenCode Zen (Go plan)",
-  opencode: "OpenCode Zen",
-  deepseek: "DeepSeek",
-  zai: "Z.ai GLM",
-  "moonshotai-cn": "Moonshot (China)",
-  moonshotai: "Moonshot",
-  xiaomi: "Xiaomi MiMo",
-  "xiaomi-token-plan-cn": "Xiaomi MiMo (China token plan)",
-  "xiaomi-token-plan-sgp": "Xiaomi MiMo (Singapore token plan)",
-  "xiaomi-token-plan-ams": "Xiaomi MiMo (Amsterdam token plan)",
-  "minimax-cn": "MiniMax (China)",
-  minimax: "MiniMax",
-  "kimi-coding": "Kimi Coding",
-  openrouter: "OpenRouter (aggregator)",
-  huggingface: "Hugging Face (aggregator)",
-  cerebras: "Cerebras",
-  groq: "Groq",
-  xai: "xAI Grok",
-  mistral: "Mistral",
-  fireworks: "Fireworks",
-  "vercel-ai-gateway": "Vercel AI Gateway (aggregator)",
-  "cloudflare-workers-ai": "Cloudflare Workers AI",
-  "cloudflare-ai-gateway": "Cloudflare AI Gateway (aggregator)",
-  openai: "OpenAI",
-  "openai-codex": "OpenAI Codex",
-  anthropic: "Anthropic Claude",
-  google: "Google Gemini",
-  "google-vertex": "Google Vertex AI",
-  "azure-openai-responses": "Azure OpenAI",
-  "amazon-bedrock": "Amazon Bedrock",
-  "github-copilot": "GitHub Copilot",
+const PROVIDER_LABELS: Record<string, { zh: string; en: string }> = {
+  "opencode-go": { zh: "OpenCode Zen（Go 套餐）", en: "OpenCode Zen (Go plan)" },
+  opencode: { zh: "OpenCode Zen", en: "OpenCode Zen" },
+  deepseek: { zh: "DeepSeek 深度求索", en: "DeepSeek" },
+  zai: { zh: "Z.ai 智谱 GLM", en: "Z.ai GLM" },
+  "moonshotai-cn": { zh: "Moonshot 月之暗面（国内）", en: "Moonshot (China)" },
+  moonshotai: { zh: "Moonshot 月之暗面", en: "Moonshot" },
+  xiaomi: { zh: "Xiaomi MiMo 小米", en: "Xiaomi MiMo" },
+  "xiaomi-token-plan-cn": { zh: "Xiaomi MiMo（国内 Token 包）", en: "Xiaomi MiMo (China token plan)" },
+  "xiaomi-token-plan-sgp": { zh: "Xiaomi MiMo（新加坡 Token 包）", en: "Xiaomi MiMo (Singapore token plan)" },
+  "xiaomi-token-plan-ams": { zh: "Xiaomi MiMo（阿姆斯特丹 Token 包）", en: "Xiaomi MiMo (Amsterdam token plan)" },
+  "minimax-cn": { zh: "MiniMax 稀宇（国内）", en: "MiniMax (China)" },
+  minimax: { zh: "MiniMax 稀宇", en: "MiniMax" },
+  "kimi-coding": { zh: "Kimi Coding", en: "Kimi Coding" },
+  openrouter: { zh: "OpenRouter（聚合）", en: "OpenRouter (aggregator)" },
+  huggingface: { zh: "Hugging Face（聚合）", en: "Hugging Face (aggregator)" },
+  cerebras: { zh: "Cerebras", en: "Cerebras" },
+  groq: { zh: "Groq", en: "Groq" },
+  xai: { zh: "xAI Grok", en: "xAI Grok" },
+  mistral: { zh: "Mistral", en: "Mistral" },
+  fireworks: { zh: "Fireworks", en: "Fireworks" },
+  "vercel-ai-gateway": { zh: "Vercel AI Gateway（聚合）", en: "Vercel AI Gateway (aggregator)" },
+  "cloudflare-workers-ai": { zh: "Cloudflare Workers AI", en: "Cloudflare Workers AI" },
+  "cloudflare-ai-gateway": { zh: "Cloudflare AI Gateway（聚合）", en: "Cloudflare AI Gateway (aggregator)" },
+  openai: { zh: "OpenAI", en: "OpenAI" },
+  "openai-codex": { zh: "OpenAI Codex", en: "OpenAI Codex" },
+  anthropic: { zh: "Anthropic Claude", en: "Anthropic Claude" },
+  google: { zh: "Google Gemini", en: "Google Gemini" },
+  "google-vertex": { zh: "Google Vertex AI", en: "Google Vertex AI" },
+  "azure-openai-responses": { zh: "Azure OpenAI", en: "Azure OpenAI" },
+  "amazon-bedrock": { zh: "Amazon Bedrock", en: "Amazon Bedrock" },
+  "github-copilot": { zh: "GitHub Copilot", en: "GitHub Copilot" },
 };
 
 /** 排序权重：常用/可直连的国内可达服务排前面（未列出的按显示名排序） */
@@ -103,8 +69,9 @@ const PROVIDER_PRIORITY = [
 ];
 
 export function providerLabel(id: string): string {
-  if (currentLocale() === "en") return PROVIDER_LABELS_EN[id] ?? id;
-  return PROVIDER_LABELS[id] ?? id;
+  const label = PROVIDER_LABELS[id];
+  if (!label) return id;
+  return currentLocale() === "en" ? label.en : label.zh;
 }
 
 export function sortProviders(providers: PiProvider[]): PiProvider[] {
@@ -119,7 +86,7 @@ export function sortProviders(providers: PiProvider[]): PiProvider[] {
   });
 }
 
-export function isUsable(model: PiModel): boolean {
+function isUsable(model: PiModel): boolean {
   return model.api === SUPPORTED_API;
 }
 
@@ -218,14 +185,3 @@ export function thinkingHint(compat: LlmPresetCompat, strategy: string): string 
   return t("pi.thinkingHintDetail", { kind, fmt, strategy: strategy || "auto" });
 }
 
-/** 上下文窗口（K/M 缩写） */
-export function contextLabel(tokens: number): string {
-  if (!tokens) return "?";
-  return tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1000)}K`;
-}
-
-/** 价格（美元/百万 token；免费 = 免费） */
-export function costLabel(model: PiModel): string {
-  if (!model.cost) return t("pi.free");
-  return `$${model.cost.in}/$${model.cost.out}`;
-}

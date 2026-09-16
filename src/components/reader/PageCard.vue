@@ -8,6 +8,7 @@ import type { Block } from "../../types/domain";
 import { isOverlayType } from "../../lib/blocks";
 import { renderRichText } from "../../lib/richText";
 import { parseTableMatrix, tableToText } from "../../lib/table";
+import { fitFontSize } from "../../composables/fitFont";
 import PdfPageCanvas from "./PdfPageCanvas.vue";
 import TableCover from "./TableCover.vue";
 
@@ -56,13 +57,11 @@ const rects = computed<Rect[]>(() =>
   })),
 );
 
-/** 原文栏：块类型 → 虚线框颜色（figure/image 绿、formula 紫、table 橙、标题加底边） */
+/** 原文栏：块类型 → 虚线框颜色（image 绿、formula 紫、table 橙、标题加底边） */
 const TYPE_CLASS: Record<string, string> = {
-  figure: "lbl-figure",
   image: "lbl-figure",
   formula: "lbl-formula",
   table: "lbl-table",
-  title: "lbl-title",
   paragraph_title: "lbl-title",
   doc_title: "lbl-title",
 };
@@ -211,21 +210,15 @@ function fitCoverText(box: HTMLElement): void {
     box.clientHeight - (parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom));
   if (inner <= 0) return;
   const MIN = 5;
-  const fits = (size: number): boolean => {
-    span.style.fontSize = `${size}px`;
-    return span.scrollHeight <= inner;
-  };
-  if (!fits(MIN)) return; // 最小号仍溢出：保持 MIN，overflow:hidden 兜底截断
-  let lo = MIN;
-  let hi = Math.max(MIN, inner); // 单行封顶 = 框内容高（再大必然纵向溢出）
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (fits(mid)) lo = mid;
-    else hi = mid - 1;
-  }
-  // 显式收敛到最终值：循环里最后一次探测可能是"失败"的更大字号，
-  // 不重设的话元素停留在溢出字号上（部分框溢出的根因）
-  span.style.fontSize = `${lo}px`;
+  const size = fitFontSize(
+    (s) => {
+      span.style.fontSize = `${s}px`;
+      return span.scrollHeight <= inner;
+    },
+    MIN,
+    inner, // 单行封顶 = 框内容高（再大必然纵向溢出）
+  );
+  span.style.fontSize = `${size}px`; // 最小号仍溢出时保持最小号，overflow:hidden 兜底截断
 }
 
 /** 请求适配：离屏框只标脏等 IO；视口内框入批，帧末统一量算（updated/RO 同帧去重） */
@@ -314,7 +307,7 @@ const vFit: Directive<HTMLElement> = {
           v-for="(r, ri) in coverRects"
           :key="ri"
           v-fit
-          class="blk-cover"
+          class="blk-cover cover-box"
           :class="{ 'cover-formula': r.block.type === 'formula' }"
           :style="rectStyle(r)"
           :title="r.block.type"
@@ -416,12 +409,8 @@ const vFit: Directive<HTMLElement> = {
 }
 
 /* ---- 译文：白底覆盖（不送翻类型零覆盖） ---- */
+/* 底样式见 main.css 的 .cover-box（与 TableCover 共用） */
 .blk-cover {
-  position: absolute;
-  background: #fff;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 2px;
-  overflow: hidden;
   padding: 0;
 }
 /* 公式：KaTeX 垂直居中（用户 2026-09-14）；KaTeX display 公式自带 1em 上下

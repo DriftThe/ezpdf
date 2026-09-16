@@ -5,7 +5,7 @@
  * value = 直接写进提示词的语言名（英文，模型识别最稳）；label = 母语名 + 英文名，
  * 各界面语言下都能认（故不进 i18n 目录）。
  */
-export interface TargetLangOption {
+interface TargetLangOption {
   value: string;
   label: string;
 }

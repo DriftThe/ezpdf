@@ -237,13 +237,22 @@ textarea {
   color: var(--err);
 }
 /* 设置页：日志区（OCR 服务 stderr/pip、LLM 翻译链路；流式输出） */
+/* 译文栏白底覆盖框（PageCard 文本块 / TableCover 表格共用底样式；位置与尺寸由调用方给） */
+.cover-box {
+  position: absolute;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
 .log-box {
   margin: 0;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-hover);
-  font-family: var(--font-mono, monospace);
+  font-family: monospace;
   font-size: 11px;
   line-height: 1.5;
   max-height: 180px;

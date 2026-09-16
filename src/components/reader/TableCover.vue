@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { fitFontSize } from "../../composables/fitFont";
 import type { TableGrid } from "../../types/domain";
 import { renderRichText } from "../../lib/richText";
 import { parseTableMatrix } from "../../lib/table";
@@ -42,26 +43,22 @@ const fitted = ref(true);
 const MIN = 5;
 const MAX = 20;
 
-function measureFits(box: HTMLElement, px: number): boolean {
-  box.style.setProperty("--tbl-font", `${px}px`);
-  return box.scrollHeight <= box.clientHeight + 1 && box.scrollWidth <= box.clientWidth + 1;
-}
-
 function fit(): void {
   const box = el.value;
   if (!box) return;
-  if (!measureFits(box, MIN)) {
-    fitted.value = false;
+  const size = fitFontSize(
+    (px) => {
+      box.style.setProperty("--tbl-font", `${px}px`);
+      return box.scrollHeight <= box.clientHeight + 1 && box.scrollWidth <= box.clientWidth + 1;
+    },
+    MIN,
+    MAX,
+  );
+  if (size === MIN && !(box.scrollHeight <= box.clientHeight + 1)) {
+    fitted.value = false; // 最小号仍溢出：整框透明（截断会丢表格内容）
     return;
   }
-  let lo = MIN;
-  let hi = MAX;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (measureFits(box, mid)) lo = mid;
-    else hi = mid - 1;
-  }
-  box.style.setProperty("--tbl-font", `${lo}px`); // 收敛到最终值（最后一次探测可能是溢出字号）
+  box.style.setProperty("--tbl-font", `${size}px`);
   fitted.value = true;
 }
 
@@ -102,7 +99,7 @@ watch([() => props.translation, () => props.grid], scheduleFit);
 <template>
   <div
     ref="el"
-    class="tbl-cover"
+    class="tbl-cover cover-box"
     :class="{ 'is-unfit': !fitted }"
     :style="{ ...style, '--tbl-cols': grid.cols }"
     :title="`table ${grid.cols}×${grid.rows.length}`"
@@ -125,13 +122,8 @@ watch([() => props.translation, () => props.grid], scheduleFit);
 </template>
 
 <style scoped>
-/* 白底覆盖框：与 PageCard 的 .blk-cover 同视觉，但内容是一张表格（尺寸由 loc 百分比定） */
+/* 底样式见 main.css 的 .cover-box（与 PageCard 的文本块共用）；尺寸由 loc 百分比定 */
 .tbl-cover {
-  position: absolute;
-  background: #fff;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 2px;
-  overflow: hidden;
   padding: 1px;
   --tbl-font: 10px;
 }

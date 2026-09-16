@@ -7,7 +7,7 @@ import { t } from "../lib/i18n";
  * 渲染器组件），调用方 `await confirmDialog({...})` 拿布尔结果。
  * 单实例：新请求会先取消旧请求（旧 Promise 以 false 结束）。
  */
-export interface ConfirmOptions {
+interface ConfirmOptions {
   title: string;
   message: string;
   /** 确认按钮文案（默认「删除」，destructive 场景主导） */
