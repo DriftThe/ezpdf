@@ -61,6 +61,8 @@ jobs:
 
       # 镜像 Release 与应用 Release 分开（用户 2026-09-17）：另建 pyserver-<tag>，首次为 draft，
       # 自检后手动转正（gh release edit pyserver-<tag> --draft=false）；应用 Release 不背镜像附件。
+      # 正文用本步骤里的双语说明（不从仓库文件取）；tag 可能已经推好，没有再就地建一个
+      # （--verify-tag 要求 tag 已存在，这里刻意不用它——否则忘了推 tag 就会在这一步失败）。
       - name: Ensure pyserver draft release
         run: |
           set -euo pipefail
@@ -71,23 +73,31 @@ jobs:
             exit 0
           fi
           cat > /tmp/notes.md <<EOF
-          解析服务（pyserver）的自包含镜像快照，对应应用版本 `$tag`；与应用安装包分开发布。
+          解析服务（pyserver）的自包含镜像快照，对应应用版本 \`$tag\`；与应用安装包分开发布。
 
-          - `ezpdf-pyserver-$tag-cpu.tar.part-*` — CPU 镜像（模型内置）
-          - `ezpdf-pyserver-$tag-gpu.tar.part-*` — GPU 镜像（CUDA 版 torch + triton，模型内置）
-          - 每个变体附 `.sha256` 校验文件
+          - \`ezpdf-pyserver-$tag-cpu.tar.part-*\` — CPU 镜像（模型内置），约 2.1GB，分 2 片
+          - \`ezpdf-pyserver-$tag-gpu.tar.part-*\` — GPU 镜像（CUDA 版 torch + triton，模型内置），约 4.5GB，分 3 片
+          - \`ezpdf-pyserver-$tag-<变体>.tar.sha256\` — 合并后的 tar 校验值
 
-          合并分片（Linux cat / Windows copy /b）→ 核对 sha256 → docker load，完整说明见仓库 README
-          「用 Docker 部署解析服务」。镜像自包含，容器启动即可推理，不需要挂载卷、不依赖联网；
-          服务端每次启动都会打印访问令牌。
+          分片是因为单个 Release 附件上限 2GiB。合并分片（Linux \`cat\` / Windows \`copy /b\`）→ 核对 sha256
+          → \`docker load\` → \`docker run -p 127.0.0.1:9055:9055 -v ./data:/data ezpdf-pyserver:cpu\`（GPU 变体加
+          \`--gpus all\`），启动日志里会打印访问令牌，填到应用「设置 → OCR 服务 → 在线服务」即可。镜像自包含，
+          容器启动即可推理，不需要挂载卷、也不依赖联网；完整说明见仓库 README「用 Docker 部署解析服务」。
 
           Self-contained pyserver image snapshots for app $tag, published separately from the
           application installers. Concatenate the parts (Linux cat, Windows copy /b), verify the
-          sha256, then docker load — see the README section on running the parse service with
-          Docker. The models are baked in; no volume and no network are needed.
+          sha256, then docker load and run it (add --gpus all for the GPU variant); the access token
+          is printed on every start and goes into Settings - OCR service. The models are baked in -
+          no volume and no network needed. See the README section on running the parse service with
+          Docker.
           EOF
-          gh release create "$rel" --draft --verify-tag --title "ezpdf pyserver $tag" --notes-file /tmp/notes.md
-
+          if git rev-parse --verify "refs/tags/$rel" >/dev/null 2>&1; then
+            gh release create "$rel" --draft --title "ezpdf pyserver $tag" --notes-file /tmp/notes.md
+          else
+            gh release create "$rel" --draft --target "$(git rev-parse HEAD)" \
+              --title "ezpdf pyserver $tag" --notes-file /tmp/notes.md
+          fi
+          echo "created draft release $rel"
 
       - uses: actions/setup-python@v5
         with:
