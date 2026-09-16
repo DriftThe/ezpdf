@@ -120,12 +120,14 @@ docker compose --profile cpu build \n  --build-arg BASE_IMAGE=docker.m.daocloud.
 docker compose --profile cpu up -d
 ```
 
-模型（约 1.9GB）已直接打进镜像，容器启动即可推理，不依赖联网下载；成品镜像 CPU 约 6GB、GPU 约 12.5GB（torch 与 CUDA 运行库未压缩所致，属预期）。服务端**每次启动都会把访问令牌
+模型（约 1.9GB）已直接打进镜像，容器启动即可推理，不依赖联网下载。镜像体积：CPU 约 5.6GB、GPU 约 10GB（docker 报数；容器内实际内容 CPU 3.4GB = 模型 1.9GB + torch 0.75GB + 依赖与基础镜像）。想再小就把 `models/` 从构建上下文排除、改用挂卷。服务端**每次启动都会把访问令牌
 打印在终端**，把它复制到 应用 → 设置 → OCR 服务 → 服务令牌（地址填 `http://127.0.0.1:9055`）：
 
 ```bash
 docker compose logs -f ezpdf-pyserver-cpu      # 找 "auth token: ..." 那一行
 ```
+
+> 构建缓存在 BuildKit 里，**不要执行 `docker builder prune`**：清掉之后下次构建要重新下载几个 GB（torch 轮子）。Dockerfile 已给 apt 与 pip 挂 cache mount，改上层时不会重下大轮子。
 
 令牌会落在挂载卷 `pyserver/data/token.txt`，重启或重建容器都不会变，客户端无需重新粘贴。默认只监听
 `127.0.0.1:9055`；要给内网/公网使用需修改 `docker-compose.yml` 的端口映射，并注意本协议是明文 HTTP +

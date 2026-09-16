@@ -28,32 +28,48 @@ ENV PYTHONUNBUFFERED=1 \
     EZPDF_TOKEN_FILE=/data/token.txt \
     EZPDF_MAX_BATCH_PAGES=32
 
-# opencv-contrib-python 需要 libgl/libglib（slim 镜像不自带）；
+# 服务端只用 opencv 做数组运算/解码（见 app/services/pipeline.py），不需要 GUI：
+# 所以下面装的是 **headless** 轮子，也就不用 libgl1——省掉它拖来的 mesa/libllvm（约 200MB）。
 # 可选换 apt 源（deb.debian.org 在部分地区会 502）
-RUN set -eux; \
+# apt 缓存挂 BuildKit cache mount（列表/包都在缓存里，不进镜像层）：
+# 改了这层重跑也只从缓存解包，不会再下一遍 deb
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -eux; \
     if [ -n "$APT_MIRROR" ]; then \
         for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
             if [ -f "$f" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g; s|security.debian.org|$APT_MIRROR|g" "$f"; fi; \
         done; \
     fi; \
     apt-get update -o Acquire::Retries=3; \
-    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 curl; \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends libglib2.0-0 curl
 
 WORKDIR /app
 
 COPY requirements.txt requirements-torch-cpu.txt requirements-torch-cuda.txt ./
-RUN set -eux; \
+# pip 缓存同样挂 cache mount：改这层重跑时 torch 那几个大轮子直接从缓存装，
+# 不再重新下载（--no-cache-dir 会把这个缓存废掉，所以这里不传）
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
     extra=""; [ -n "$PIP_INDEX" ] && extra="--extra-index-url $PIP_INDEX"; \
-    pip install --no-cache-dir -r requirements.txt $extra; \
+    pip install -r requirements.txt $extra; \
+    # headless 版：去掉 libGL（GUI）依赖，服务端不需要 imshow/highgui
+    pip uninstall -y opencv-contrib-python; \
+    pip install "opencv-contrib-python-headless==4.10.0.84" $extra; \
     if [ "$VARIANT" = "gpu" ]; then torch_index="https://download.pytorch.org/whl/cu132"; \
     else torch_index="https://download.pytorch.org/whl/cpu"; fi; \
     # Linux 的 PyPI torch 轮子默认捆绑 CUDA（~5GB），CPU 变体必须走 /cpu 索引
     [ -n "$TORCH_INDEX" ] && torch_index="$TORCH_INDEX"; \
     if [ "$VARIANT" = "gpu" ]; then \
-        pip install --no-cache-dir -r requirements-torch-cuda.txt --index-url "$torch_index" $extra; \
+        pip install -r requirements-torch-cuda.txt --index-url "$torch_index" $extra; \
+        # 只卸 triton（691MB，torch.compile/inductor 的代码生成器）：pipeline.py 全是 eager
+        # no_grad 前向，不用 compile。**必须与安装同一个 RUN**——卸载写在单独一层里，
+        # 被删的文件仍然占着上面那层。
+        # 注意 nvidia-nccl/cusparselt/nvshmem/cupti 看着像"只有多卡/稀疏才用"，其实
+        # libtorch_cuda 等 .so 直接链接它们（ldd 全是 not found），卸了 torch 直接 import 失败
+        pip uninstall -y triton; \
     else \
-        pip install --no-cache-dir -r requirements-torch-cpu.txt --index-url "$torch_index" $extra; \
+        pip install -r requirements-torch-cpu.txt --index-url "$torch_index" $extra; \
     fi
 
 COPY app ./app

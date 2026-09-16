@@ -122,12 +122,16 @@ docker compose --profile cpu up -d
 ```
 
 The models (~1.9 GB) are baked straight into the image, so a container can infer as soon as it boots
-without downloading anything. Expect roughly 6 GB for the CPU image and 12.5 GB for the GPU one (uncompressed torch and CUDA runtime). The server **prints its access token on every start** — copy it into
+without downloading anything. Image size: about 5.6 GB for CPU and 10 GB for GPU as reported by docker (the CPU image really contains 3.4 GB: 1.9 GB models + 0.75 GB torch + dependencies and base image). Exclude `models/` from the build context and mount it as a volume instead if you want it smaller. The server **prints its access token on every start** — copy it into
 Settings → OCR service → Service token (address: `http://127.0.0.1:9055`):
 
 ```bash
 docker compose logs -f ezpdf-pyserver-cpu      # look for the "auth token: ..." line
 ```
+
+> The build cache lives inside BuildKit - **never run `docker builder prune`**: clearing it makes the
+> next build re-download several GB of torch wheels. The Dockerfile mounts apt and pip caches, so
+> touching an upper layer does not re-download them.
 
 The token is kept in the mounted volume at `pyserver/data/token.txt`, so restarts and container
 rebuilds never invalidate what the client has saved. It listens on `127.0.0.1:9055` only by default;
