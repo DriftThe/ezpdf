@@ -120,7 +120,7 @@ docker compose --profile cpu build \n  --build-arg BASE_IMAGE=docker.m.daocloud.
 docker compose --profile cpu up -d
 ```
 
-模型（约 1.9GB）已直接打进镜像，容器启动即可推理，不依赖联网下载。镜像体积：CPU 约 5.6GB、GPU 约 10GB（docker 报数；容器内实际内容 CPU 3.4GB = 模型 1.9GB + torch 0.75GB + 依赖与基础镜像）。想再小就把 `models/` 从构建上下文排除、改用挂卷。服务端**每次启动都会把访问令牌
+模型（约 1.9GB）已直接打进镜像，容器启动即可推理、**不需要任何挂载卷、不依赖联网**——离线或公网隔离的服务器拉起来就能用。镜像实际内容（容器内实测文件大小）：CPU 约 3.6GB、GPU 约 7.3GB，其中模型 1.9GB、torch 0.75GB / 1.2GB（GPU 另含 CUDA 运行库约 2.6GB）。体积不是优化目标——按「忠实打包已验证环境」来，模型那一份是刻意的。（`docker images` 显示的体积按层统计口径会偏大，以容器内文件大小为准。）服务端**每次启动都会把访问令牌
 打印在终端**，把它复制到 应用 → 设置 → OCR 服务 → 服务令牌（地址填 `http://127.0.0.1:9055`）：
 
 ```bash

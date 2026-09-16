@@ -122,7 +122,7 @@ docker compose --profile cpu up -d
 ```
 
 The models (~1.9 GB) are baked straight into the image, so a container can infer as soon as it boots
-without downloading anything. Image size: about 5.6 GB for CPU and 10 GB for GPU as reported by docker (the CPU image really contains 3.4 GB: 1.9 GB models + 0.75 GB torch + dependencies and base image). Exclude `models/` from the build context and mount it as a volume instead if you want it smaller. The server **prints its access token on every start** — copy it into
+without downloading anything. What the image actually contains (file sizes measured inside the container): about 3.6 GB for CPU and 7.3 GB for GPU, of which 1.9 GB models and 0.75 / 1.2 GB torch (the GPU one adds ~2.6 GB of CUDA runtime). `docker images` reports a larger number because of how it accounts for layers - trust the file sizes. Size is not a goal here - the image is a faithful package of the verified environment, and the baked-in models are deliberate: the container needs no volume and no network, so it boots straight into inference on an air-gapped or network-isolated server. The server **prints its access token on every start** — copy it into
 Settings → OCR service → Service token (address: `http://127.0.0.1:9055`):
 
 ```bash
