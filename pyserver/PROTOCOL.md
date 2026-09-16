@@ -15,10 +15,10 @@
 | 形态 | 谁启动 | 地址 | 鉴权 | 用途 |
 | --- | --- | --- | --- | --- |
 | **本地托管** | 客户端 spawn `python -m app.main` | 由服务自选临时端口（见 §7.1） | 每次启动的随机会话 token（必带） | 默认形态；需先装环境与模型 |
-| **在线服务** | 部署方自己（或开发联调 `server_test.py`） | 固定端口，如 `http://127.0.0.1:9055` | 默认无（`--token` 可开） | 基础环境（没装 torch/模型）也能用；也可放内网/公网 |
+| **在线服务** | 部署方自己（`app/server_docker.py`，见 §7.4；开发联调 `server_test.py`） | 固定端口，如 `http://127.0.0.1:9055` | 服务端部署形态一律校验（`token.txt`）；`server_test.py` 默认无 | 基础环境（没装 torch/模型）也能用；也可放内网/公网 |
 
-客户端在 设置 → OCR 服务 → 服务来源 里二选一；在线服务只需填地址，点「测试」探活、点
-「启动服务」登记。两种形态用的是**同一套 HTTP 契约**，服务端不需要知道自己是哪一种。
+客户端在 设置 → OCR 服务 → 服务来源 里二选一；在线服务填地址（+ 服务令牌），点「测试」探活、
+点「启动服务」登记。两种形态用的是**同一套 HTTP 契约**，服务端不需要知道自己是哪一种。
 
 ## 2. 传输与鉴权
 
@@ -26,8 +26,12 @@
 - 鉴权头：`x-ezpdf-token: <token>`。
   - 本地托管：客户端每次 spawn 生成随机 token，经环境变量 `EZPDF_TOKEN` 传给服务；服务
     **必须**校验（本实现用常量时间比较，不匹配回 `403`）。
-  - 在线服务：部署方决定要不要校验。`server_test.py` 默认不校验；带 `--token X` 时校验。
-  - 客户端在在线模式下也会带一个空串头，服务可以忽略。
+  - 在线服务：部署方决定要不要校验。`server_test.py` 默认不校验；带 `--token X` 时校验；
+    服务端部署形态（`python -m app.server_docker`，见 §7.4）**一律校验**，令牌由服务端
+    自己生成并落在 `token.txt`。
+  - 令牌范围为**所有路由**（含 `/health`）：服务端开了鉴权，客户端连健康探测都会带这个头。
+  - 客户端在设置 → OCR 服务 → 服务令牌 里填同一串令牌（每次 OCR 前都会重新握手，所以
+    填错的表现是每一批都失败、连败 3 次后暂停该书解析，日志里是 `HTTP 403`）。
 - 请求体上限 **64 MB**（本实现按 `Content-Length` 在读体之前拦掉，超限 `413`）。一批 ≤4 页
   PNG（scale 2.0）远小于此值，单张图另有 12k px 单边 / 40 MP 总像素上限。
 - **OCR 请求没有客户端超时**：引擎首次请求要懒加载模型（分钟级），服务端不要设过短的
@@ -184,6 +188,25 @@ pt 换算，更不要把 `bbox_px` 归一化到 0..1 或返回原始 PDF 尺寸�
 在线模式下这个握手**每条 OCR 批次前都会重跑**，所以 `/health` 挂掉等价于"这一批解析失败"
 （计入连败，见 §8）；翻译不受影响。
 
+### 7.4 服务端部署（Docker / 裸机）：token 文件
+
+`python -m app.server_docker` 是给"没有客户端 spawn"的部署形态准备的入口（容器、内网/公网
+服务器），与 `app.main` 的差别只有三处：绑定 `EZPDF_HOST:EZPDF_PORT`（默认 `0.0.0.0:9055`）
+而不是自选临时端口、没有 stdin-EOF 看门狗（容器里 stdin 是 `/dev/null`，看门狗会立刻自杀）、
+不打 `EZPDF_READY` 行（没有父进程要读）。
+
+令牌解析优先级（`app/config.py::resolve_token`）：
+
+1. `EZPDF_TOKEN` 环境变量（显式指定，最高优先）；
+2. `EZPDF_TOKEN_FILE` 指定的文件（默认 `<pyserver>/token.txt`）里已有的令牌；
+3. 都没有 → `secrets.token_urlsafe(24)` 生成，写入该文件（POSIX 下 `0600`）。
+
+**每次启动都把令牌打到终端**，部署方从日志里复制到客户端的「服务令牌」。文件存在即复用，
+所以重启服务、重建容器都不会让客户端已保存的令牌失效——容器里请把 `token.txt` 所在目录
+挂成卷（本仓库的 `docker-compose.yml` 用 `./data:/data` + `EZPDF_TOKEN_FILE=/data/token.txt`）。
+
+裸机开发联调仍可用 `server_test.py`（默认不校验，`--token X` 开启），它不读令牌文件。
+
 ## 8. 错误与重试
 
 | 状态码 | 何时 | 客户端行为 |
@@ -207,9 +230,12 @@ pt 换算，更不要把 `bbox_px` 归一化到 0..1 或返回原始 PDF 尺寸�
       不要因为多了字段而报错——客户端将来会加字段）。
 - [ ] 本地托管形态：支持 `EZPDF_READY` 就绪行、`x-ezpdf-token` 校验、stdin-EOF 自退。
 - [ ] 无状态、可并发（客户端一次只发一批，但可能重连后立刻再发）。
+- [ ] 服务端部署形态（可选）：固定地址启动、令牌可复现（见 §7.4）。
 
-参考实现：本目录 `app/`（`routers/ocr.py` 是端点、`services/pipeline.py` 是版面+识别流程）。
+参考实现：本目录 `app/`（`routers/ocr.py` 是端点、`services/pipeline.py` 是版面+识别流程；
+`app/server_docker.py` 是服务端/容器入口）。
 开发联调：`python server_test.py`（默认 `127.0.0.1:9055`）。
+容器部署：`pyserver/Dockerfile` + `docker compose --profile cpu|gpu up -d`（见 `docker-compose.yml`）。
 
 ## 10. 兼容性规则
 
@@ -229,7 +255,16 @@ LLM itself (`src-tauri/src/translate.rs`), independently of the parse service.
   `python -m app.main`, gets an ephemeral port from an `EZPDF_READY {"port":..,"pid":..}` stdout
   line, talks with a per-spawn `x-ezpdf-token`, and stops the service by closing its stdin) and
   **online service** (any address the user types, e.g. `http://127.0.0.1:9055` started with
-  `python server_test.py`; token optional).
+  `python -m app.server_docker` for a deployed/containerised server, or `python server_test.py`
+  for local development).
+- **Auth**: a single shared bearer secret in the `x-ezpdf-token` header, checked on *every* route
+  including `/health` (403 otherwise). The managed shape has the client generate a random
+  per-spawn token and pass it via `EZPDF_TOKEN`. A deployed server resolves its own token —
+  `EZPDF_TOKEN` env > `EZPDF_TOKEN_FILE` (`token.txt`, default `<pyserver>/token.txt`) > generate
+  and persist — and prints it on every start, so the operator can paste it into
+  Settings → OCR service → Service token. Container images run `python -m app.server_docker`,
+  bind `EZPDF_HOST:EZPDF_PORT` (`0.0.0.0:9055`), bake the models into the image and keep
+  `token.txt` on a volume so recreating the container does not invalidate the client's token.
 - Endpoints: `GET /health` (`{"status":"ok","pid":..,"max_batch_pages":N}`), `POST /ocr/page`
   (single image, debug), `POST /ocr/pages` (as many pages as `/health` advertises).
 - **Batch size is the server's call**: the client calls `/health` *before every* `/ocr/pages`

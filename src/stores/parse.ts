@@ -137,8 +137,10 @@ export const useParseStore = defineStore("parse", () => {
    *  每次 OCR 请求前都会调一次——服务端换负载/换配置后客户端立刻跟上；
    *  失败即抛错，让这一批按失败计连败（不要拿过期数字继续发） */
   async function handshakeOnline(): Promise<ParseServiceHealth> {
+    const ocr = useSettingsStore().ocr;
     const health = await invoke<ParseServiceHealth>("ocr_health", {
-      url: useSettingsStore().ocr.url,
+      url: ocr.url,
+      token: ocr.token.trim(),
     });
     onlineHealth.value = health;
     return health;
@@ -160,7 +162,10 @@ export const useParseStore = defineStore("parse", () => {
 
   /** 在线模式连接（探活通过才登记为 OCR 目标）；失败抛错，调用方决定 toast 还是日志 */
   async function connectOnline(url: string): Promise<ParseServiceHealth> {
-    const health = await invoke<ParseServiceHealth>("ocr_start_remote", { url });
+    const health = await invoke<ParseServiceHealth>("ocr_start_remote", {
+      url,
+      token: useSettingsStore().ocr.token.trim(),
+    });
     onlineHealth.value = health;
     return health;
   }

@@ -163,6 +163,14 @@ const lights = computed(() => [
           </button>
         </div>
       </div>
+      <!-- 服务令牌（服务端部署形态才有，见 pyserver/app/server_docker.py）：服务端每次启动
+           会把 token 打到终端，粘过来即可；服务端没开鉴权就留空 -->
+      <div class="set-field">
+        <span>{{ t("ocr.token") }}</span>
+        <div class="set-field-row url-row">
+          <input v-model="settings.ocr.token" class="url-input" :placeholder="t('ocr.tokenPlaceholder')" />
+        </div>
+      </div>
       <!-- 服务端公布的单批页数（点「测试」或连接后出现；每次 OCR 请求前会重新握手） -->
       <p v-if="parse.onlineHealth" class="set-hint batch-hint">
         {{ t("ocr.batchHint", { batch: parse.onlineHealth.maxBatchPages }) }}

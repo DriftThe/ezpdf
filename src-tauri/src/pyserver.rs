@@ -93,10 +93,12 @@ impl PyService {
         Some((base, token))
     }
 
-    /// 在线模式（用户 2026-09-15）：把远端解析服务登记为 OCR 目标（无会话 token）。
-    /// 探测通过由调用方负责；这里只落端点 + 置 Connected（前端「服务」灯靠它）
-    pub fn set_remote(&self, app: &AppHandle, base: String) {
-        self.set_endpoint(base, String::new());
+    /// 在线模式（用户 2026-09-15）：把远端解析服务登记为 OCR 目标。
+    /// 探测通过由调用方负责；这里只落端点 + token + 置 Connected（前端「服务」灯靠它）。
+    /// token 由服务端决定要不要（Docker/裸机部署见 app/server_docker.py 的 token.txt），
+    /// 本地托管形态才是「服务端随机生成、客户端拿着用」的那一套。
+    pub fn set_remote(&self, app: &AppHandle, base: String, token: String) {
+        self.set_endpoint(base, token);
         self.set_status(app, ServiceStatus::Connected);
     }
 
@@ -380,7 +382,7 @@ pub const FALLBACK_BATCH_PAGES: u32 = 4;
 
 /// 解析服务探活：GET {base}/health → (pid, 耗时 ms, 服务端公布的批大小)。失败给出可读
 /// 原因（前端「测试」按钮、在线模式连接前确认、每次 OCR 请求前的批大小握手共用）。
-pub async fn probe_health(base: &str) -> Result<ParseServiceHealth, String> {
+pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth, String> {
     let base = normalize_base(base)?;
     let url = format!("{base}/health");
     let mut builder = reqwest::Client::builder().timeout(HEALTH_TIMEOUT);
@@ -389,13 +391,20 @@ pub async fn probe_health(base: &str) -> Result<ParseServiceHealth, String> {
     }
     let client = builder.build().map_err(|e| format!("failed to create HTTP client: {e}"))?;
     let started = std::time::Instant::now();
-    let resp = client
-        .get(&url)
+    let mut req = client.get(&url);
+    if !token.is_empty() {
+        req = req.header("x-ezpdf-token", token);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("cannot reach {url}: {e}"))?;
     let status = resp.status();
     if !status.is_success() {
+        // 403 基本都是令牌不对/没填：给出可操作的提示（服务端开了鉴权才会有）
+        if status.as_u16() == 403 {
+            return Err(format!("{url} answered HTTP 403: service token rejected"));
+        }
         return Err(format!("{url} answered HTTP {status}"));
     }
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);

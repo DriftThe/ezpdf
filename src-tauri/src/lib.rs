@@ -616,8 +616,8 @@ async fn ocr_stop(
 /// 在线模式探活（OCR 设置页地址框右侧「测试」）：只探测，不改连接状态。
 /// 返回服务端公布的批大小（前端拿它做提示 + 后续每批的协商值）
 #[tauri::command]
-async fn ocr_health(url: String) -> Result<pyserver::ParseServiceHealth, String> {
-    pyserver::probe_health(&url).await
+async fn ocr_health(url: String, token: String) -> Result<pyserver::ParseServiceHealth, String> {
+    pyserver::probe_health(&url, &token).await
 }
 
 /// 在线模式连接：探活通过才登记为 OCR 目标（用户 2026-09-15，见 pyserver/PROTOCOL.md）
@@ -626,10 +626,11 @@ async fn ocr_start_remote(
     app: tauri::AppHandle,
     svc: tauri::State<'_, pyserver::PyService>,
     url: String,
+    token: String,
 ) -> Result<pyserver::ParseServiceHealth, String> {
     let base = pyserver::normalize_base(&url)?;
-    let health = pyserver::probe_health(&base).await?;
-    svc.set_remote(&app, base.clone());
+    let health = pyserver::probe_health(&base, &token).await?;
+    svc.set_remote(&app, base.clone(), token);
     let _ = app.emit(
         "ocr://log",
         format!(

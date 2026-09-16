@@ -1,0 +1,42 @@
+# ezpdf 解析服务：两个变体共用一份配置，用 profile 选一个起
+#
+#   docker compose --profile cpu up -d      # CPU 镜像（镜像小、任何机器可跑）
+#   docker compose --profile gpu up -d      # GPU 镜像（宿主需 nvidia-container-toolkit）
+#
+# 起好后看日志里的 auth token，粘到 应用 → 设置 → OCR 服务 → 服务令牌：
+#   docker compose logs -f ezpdf-pyserver-cpu
+services:
+  ezpdf-pyserver-cpu:
+    build:
+      context: .
+      args:
+        VARIANT: cpu
+        # PIP_INDEX: https://pypi.tuna.tsinghua.edu.cn/simple
+    image: ezpdf-pyserver:cpu
+    profiles: ["cpu"]
+    # 默认只绑本机；要给内网/公网用就改成 "9055:9055"（并注意这是明文 HTTP，
+    # 公网请自行套 HTTPS 反向代理）
+    ports:
+      - "127.0.0.1:9055:9055"
+    volumes:
+      # 模型已在镜像内，这里只持久化 token.txt（重建容器不换令牌）
+      - ./data:/data
+
+  ezpdf-pyserver-gpu:
+    build:
+      context: .
+      args:
+        VARIANT: gpu
+    image: ezpdf-pyserver:gpu
+    profiles: ["gpu"]
+    ports:
+      - "127.0.0.1:9055:9055"
+    volumes:
+      - ./data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,8 @@
+# 构建上下文只保留运行所需：app/ + 模型 + 依赖清单
+.venv/
+**/__pycache__/
+**/*.pyc
+token.txt
+data/
+server_test.py
+PROTOCOL.md

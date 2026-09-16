@@ -84,7 +84,7 @@ Useful commands:
 3. **Configure a translation model**: open Settings → **LLM**, choose a **provider** and a **preset model** (or type a model name), enter your **API key**, then click **Verify** to confirm connectivity. The OpenAI-compatible protocol is used by default. If you do not need translation yet, turn off **Enable translation** (the first switch on that page): OCR text is then written into the translation field as-is and marked done, and re-enabling translation later will not re-translate those pages.
 4. **Get an OCR service ready**: open Settings → **OCR** and pick a **service source**.
    - **Managed locally** (default): click **Install service** to install the Python dependencies (including torch) and download the models (~1.9 GB; a China-mainland mirror is available). Once all five status lights are green the service is ready; pick CUDA if you have an NVIDIA GPU.
-   - **Online service**: enter the address of a deployed instance of the same parse service (e.g. `http://127.0.0.1:9055`) and click **Test** to probe it — no local dependencies or models needed, and the batch size is whatever that service advertises (re-negotiated before every request). See [`pyserver/PROTOCOL.md`](pyserver/PROTOCOL.md) for the full contract to build your own server, or run `python pyserver/server_test.py` (port 9055) for development.
+   - **Online service**: enter the address of a deployed instance of the same parse service (e.g. `http://127.0.0.1:9055`) and click **Test** to probe it — no local dependencies or models needed, and the batch size is whatever that service advertises (re-negotiated before every request). If the server requires auth (deployed instances do by default), paste the token it printed on startup into **Service token**. See [`pyserver/PROTOCOL.md`](pyserver/PROTOCOL.md) for the full contract to build your own server, run `python pyserver/server_test.py` (port 9055) for development, or use the container images below.
 5. **Start translating**: the toolbar shows **Start translation** because the app boots paused to save power. Click it once to begin, or enable **Wake the OCR service on launch** and **Resume on launch** under Settings → General for automatic operation.
 6. **Read**: click a book in the sidebar to open the two-pane reader. The toolbar switches between four layouts (original│translation, translation│original, original only, translation only) and controls zoom and paging; the status bar at the bottom shows overall progress.
 
@@ -101,6 +101,31 @@ Useful commands:
 | Bundled Python environment / models | Linux: `~/.ezpdf/venv`, `~/.ezpdf/models`; Windows: `python/` in the install directory and `~/.ezpdf/models` |
 
 > The API key is stored in `config.json` in plain text — mind the file permissions.
+
+### Running the parse service with Docker (optional)
+
+If you would rather not install the Python dependencies and models on your machine, run just the parse
+service in a container and point the app at it via **Online service**:
+
+```bash
+cd pyserver
+docker compose --profile cpu up -d --build     # CPU image (runs anywhere)
+docker compose --profile gpu up -d --build     # GPU image (host needs a driver + nvidia-container-toolkit)
+```
+
+The models (~1.9 GB) are baked straight into the image, so a container can infer as soon as it boots
+without downloading anything. The server **prints its access token on every start** — copy it into
+Settings → OCR service → Service token (address: `http://127.0.0.1:9055`):
+
+```bash
+docker compose logs -f ezpdf-pyserver-cpu      # look for the "auth token: ..." line
+```
+
+The token is kept in the mounted volume at `pyserver/data/token.txt`, so restarts and container
+rebuilds never invalidate what the client has saved. It listens on `127.0.0.1:9055` only by default;
+change the port mapping in `docker-compose.yml` to expose it to a LAN or the internet, and remember
+this protocol is plain HTTP with a bearer token — put it behind an HTTPS reverse proxy if it is
+publicly reachable.
 
 ## Roadmap
 

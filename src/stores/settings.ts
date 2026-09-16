@@ -124,6 +124,8 @@ export interface OcrSettings {
   mode: OcrMode;
   /** 在线模式的解析服务地址（如 http://127.0.0.1:9055）；local 模式忽略 */
   url: string;
+  /** 在线模式的服务令牌（部署方 token.txt 里那串）；服务端没开鉴权就留空 */
+  token: string;
 }
 
 /**
@@ -286,6 +288,7 @@ export const useSettingsStore = defineStore("settings", () => {
     installMirror: true,
     mode: "local",
     url: "",
+    token: "",
   });
 
   /** 上次选择的仓库根目录（config.json 持久化；library 启动时据此自动打开） */

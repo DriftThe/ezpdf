@@ -1,6 +1,8 @@
 """pyserver 运行配置：全部经环境变量注入（Rust spawn 时传入），无配置文件。
 
-- EZPDF_TOKEN        会话 token；为空则不做校验（仅手动调试）
+- EZPDF_TOKEN        会话 token；为空则不做校验（仅手动调试 / 本地托管由客户端生成）
+- EZPDF_TOKEN_FILE   token 文件路径（默认 <pyserver>/token.txt）；仅 server_docker.py 用，
+                     服务端部署形态下没有客户端生成 token，改为读/生成这个文件
 - EZPDF_MODELS_DIR   模型根目录（默认 <pyserver>/models）
 - EZPDF_MAX_BATCH_PAGES
                     单次 /ocr/pages 允许的最大页数（默认 32）。客户端请求前会先读
@@ -10,13 +12,39 @@
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 
 # pyserver 根目录（app/ 的上一级）
 ROOT = Path(__file__).resolve().parents[1]
 
 TOKEN = os.environ.get("EZPDF_TOKEN", "")
+TOKEN_FILE = Path(os.environ.get("EZPDF_TOKEN_FILE", str(ROOT / "token.txt")))
 MODELS_DIR = Path(os.environ.get("EZPDF_MODELS_DIR", str(ROOT / "models")))
+
+
+def resolve_token() -> tuple[str, bool]:
+    """服务端形态的 token 解析：环境变量 > token 文件 > 生成并落盘。
+
+    返回 (token, generated)。生成时写入 TOKEN_FILE（POSIX 下 0600），供部署方重启复用；
+    客户端记下的令牌不会因为重启/重建容器而失效。
+    """
+    if TOKEN:
+        return TOKEN, False
+    try:
+        existing = TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        existing = ""
+    if existing:
+        return existing, False
+    token = secrets.token_urlsafe(24)
+    try:
+        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN_FILE.write_text(token + "\n", encoding="utf-8")
+        os.chmod(TOKEN_FILE, 0o600)
+    except OSError:
+        pass
+    return token, True
 
 
 def _max_batch_pages() -> int:

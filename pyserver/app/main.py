@@ -32,17 +32,22 @@ logger = logging.getLogger("ezpdf.pyserver")
 MAX_BODY_BYTES = 64 * 1024 * 1024
 
 
-def create_app() -> FastAPI:
+def create_app(token: str | None = None) -> FastAPI:
+    """token=None 取环境变量（Rust 托管形态）；显式传入者优先（server_docker.py）。
+
+    校验覆盖所有路由（含 /health）：客户端若配了令牌，健康探测也要带 `x-ezpdf-token`。
+    """
+    expected = TOKEN if token is None else token
     app = FastAPI(title="ezpdf-pyserver", lifespan=None)
     app.include_router(health.router)
     app.include_router(ocr.router)
 
-    if TOKEN:
+    if expected:
         @app.middleware("http")
         async def _token_guard(request, call_next):
             # 常量时间比较（非常量时间比较可被本机进程按响应时间逐字节爆破）
             supplied = (request.headers.get("x-ezpdf-token") or "").encode("utf-8", "ignore")
-            if not hmac.compare_digest(supplied, TOKEN.encode()):
+            if not hmac.compare_digest(supplied, expected.encode()):
                 return JSONResponse(status_code=403, content={"detail": "forbidden"})
             return await call_next(request)
 
