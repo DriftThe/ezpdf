@@ -77,7 +77,6 @@ function detectCompat(model) {
   const isZai = provider === "zai" || baseUrl.includes("api.z.ai");
   const isMoonshot = provider === "moonshotai" || provider === "moonshotai-cn" || baseUrl.includes("api.moonshot.");
   const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || baseUrl.includes("gateway.ai.cloudflare.com");
-  const isGrok = provider === "xai" || baseUrl.includes("api.x.ai");
   const isDeepSeek = provider === "deepseek" || baseUrl.includes("deepseek.com");
   const useMaxTokens = baseUrl.includes("chutes.ai") || isMoonshot || isCloudflareAiGateway;
   return {
@@ -89,7 +88,6 @@ function detectCompat(model) {
         : provider === "openrouter" || baseUrl.includes("openrouter.ai")
           ? "openrouter"
           : "openai",
-    supportsReasoningEffort: !isGrok && !isZai && !isMoonshot && !isCloudflareAiGateway,
   };
 }
 
@@ -138,16 +136,10 @@ function toCatalog(MODELS, envKeys, version) {
       baseUrlCount.set(model.baseUrl, (baseUrlCount.get(model.baseUrl) ?? 0) + 1);
       models.push({
         id: model.id,
-        name: model.name,
         api: model.api,
         baseUrl: model.baseUrl,
-        input: model.input,
         reasoning: model.reasoning,
-        contextWindow: model.contextWindow,
-        maxTokens: model.maxTokens,
-        cost: model.cost.input || model.cost.output ? { in: model.cost.input, out: model.cost.output } : null,
         maxTokensField: compat.maxTokensField,
-        supportsReasoningEffort: compat.supportsReasoningEffort,
         thinkingFormat: compat.thinkingFormat,
         thinkingOffKind: shape.kind,
         thinkingOffValue: shape.value ?? null,
@@ -179,20 +171,13 @@ function render(catalog) {
 
 export interface PiModel {
   id: string;
-  name: string;
   /** pi-ai 线上协议：只有 "openai-completions" 能走我们当前的 Rust 客户端 */
   api: string;
   baseUrl: string;
-  input: Array<"text" | "image">;
   /** 是否有思考模式（false = 无需关思考参数） */
   reasoning: boolean;
-  contextWindow: number;
-  maxTokens: number;
-  /** 每 100 万 token 的美元价（输入/输出）；0/0 或缺省为 null */
-  cost: { in: number; out: number } | null;
   /** 请求体里 max tokens 的字段名（pi-ai compat 判定） */
   maxTokensField: "max_tokens" | "max_completion_tokens";
-  supportsReasoningEffort: boolean;
   /** pi-ai 的关思考参数形态（openai | openrouter | deepseek | zai | qwen | qwen-chat-template） */
   thinkingFormat: string;
   /** 我们施加关思考参数的方式（none = 预设表示无法通过参数关闭） */

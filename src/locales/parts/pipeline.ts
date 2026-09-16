@@ -18,7 +18,6 @@ export default defineMessages({
     "pi.thinkingKindUnknown": "未知（自定义端点靠验证探测）",
     "pi.thinkingHintFormatSuffix": "（pi-ai {fmt} 格式）",
     "pi.thinkingHintDetail": "关思考参数：{kind}{fmt}；验证策略：{strategy}",
-    "pi.free": "免费",
   },
   "zh-TW": {
 
@@ -37,7 +36,6 @@ export default defineMessages({
     "pi.thinkingKindUnknown": "未知（自訂端點靠驗證探測）",
     "pi.thinkingHintFormatSuffix": "（pi-ai {fmt} 格式）",
     "pi.thinkingHintDetail": "關思考參數：{kind}{fmt}；驗證策略：{strategy}",
-    "pi.free": "免費",
   },
   en: {
 
@@ -56,6 +54,5 @@ export default defineMessages({
     "pi.thinkingKindUnknown": "unknown (custom endpoints rely on verify probing)",
     "pi.thinkingHintFormatSuffix": " (pi-ai {fmt} format)",
     "pi.thinkingHintDetail": "thinking-off parameter: {kind}{fmt}; verify strategy: {strategy}",
-    "pi.free": "Free",
   },
 });
