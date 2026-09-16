@@ -4,7 +4,7 @@
  * 在线解析服务的握手结果（在线模式「测试」按钮 + 每次 OCR 请求前的批大小协商）。
  * `max_batch_pages` 由服务端公布（PROTOCOL.md §4），已夹到 1..=32
  */
-export type ParseServiceHealth = { status: string, 
+export type ParseServiceHealth = { 
 /**
  * u32 而非 u64：ts-rs 会把 u64 映射成 bigint，前端只想拿它显示
  */

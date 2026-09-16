@@ -5,4 +5,4 @@ import type { PageInfo } from "./PageInfo";
 /**
  * parse_pdf 返回：进度摘要 + 本批实际更新的页
  */
-export type ParseOutcome = { pdfId: string, bookStatus: PDFStatus, finishedPages: number, totalPages: number, updatedPages: Array<PageInfo>, };
+export type ParseOutcome = { bookStatus: PDFStatus, updatedPages: Array<PageInfo>, };

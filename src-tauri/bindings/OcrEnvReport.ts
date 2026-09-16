@@ -5,4 +5,4 @@ import type { OcrModels } from "./OcrModels";
 /**
  * 环境分层报告（OCR 设置页状态灯数据源）；Rust 持有并整份推给前端缓存渲染
  */
-export type OcrEnvReport = { python: string | null, pythonPath: string | null, inVenv: boolean, deps: { [key in string]: string | null }, missing: Array<string>, torchBuild: string | null, gpu: GpuInfo | null, models: OcrModels | null, error: string | null, };
+export type OcrEnvReport = { python: string | null, pythonPath: string | null, deps: { [key in string]: string | null }, missing: Array<string>, torchBuild: string | null, gpu: GpuInfo | null, models: OcrModels | null, error: string | null, };

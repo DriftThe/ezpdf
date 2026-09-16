@@ -13,14 +13,6 @@ current: string,
  */
 latest: string | null, 
 /**
- * 发布页地址（Releases 页面）
- */
-url: string | null, 
-/**
  * 是否有更新（语义化数字比较）
  */
-newer: boolean, 
-/**
- * 发布说明（截断）
- */
-notes: string | null, };
+newer: boolean, };

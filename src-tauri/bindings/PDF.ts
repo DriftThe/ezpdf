@@ -6,7 +6,6 @@ import type { PageInfo } from "./PageInfo";
  * 一份 PDF 的完整实体（身份字段 + 绑定 JSON 内容）。
  * id = 稳定唯一标识符（与 .ezrepo 条目一致，前端一切键都以它为准）；
  * bind = 绑定 JSON 的仓库相对路径，None = 未绑定（旧条目）；
- * json_path = 同一份 JSON 的绝对路径（load_pdf 运行时由 bind 解析，与 bind 同生同灭：bind None 时为 None）；
  * status/pages = 绑定 JSON 的内容（bind None 时为 Pending/空）。
  */
-export type PDF = { id: string, name: string, pdfPath: string, jsonPath: string | null, bind: string | null, status: PDFStatus, pages: Array<PageInfo>, };
+export type PDF = { id: string, name: string, pdfPath: string, bind: string | null, status: PDFStatus, pages: Array<PageInfo>, };

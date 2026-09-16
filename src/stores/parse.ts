@@ -9,7 +9,6 @@ import type {
   ParseOutcome,
   ParsePageInput,
   PDF,
-  PDFStruct,
   ServiceStatus,
 } from "../types/domain";
 import { invoke } from "@tauri-apps/api/core";
@@ -21,6 +20,7 @@ import { isTauri } from "../lib/env";
 import { DEFAULT_TRANSLATED_TYPES } from "../lib/blocks";
 import { useLibraryStore } from "./library";
 import { useReaderStore } from "./reader";
+import type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
 import { useSettingsStore, type LlmInvokePayload } from "./settings";
 
 /** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，调度整体静默（同 listen().catch 哲学） */
@@ -488,19 +488,15 @@ export const useParseStore = defineStore("parse", () => {
     const lib = useLibraryStore();
     const llm = llmPayload();
     if (!llm) throw new Error("LLM not configured (baseUrl/apiKey/model empty)");
+    const root = lib.repoRoot;
+    if (!root) throw new Error("no repository open");
     const pages = ringCollect(book, (page) => (needsWork(page) ? page.index : null));
     if (pages.length === 0) return; // 竞态：已全部翻译
     pushLlmLog(`[ui] translation retry batch p${pages.join(",")} (${book.name})`);
-    const outcome = await invoke<ParseOutcome>("translate_pdf", {
-      root: lib.repoRoot,
-      id: book.id,
-      pages,
-      llm,
-    });
+    const outcome = await invokeTranslate(root, book.id, pages, llm);
     if (outcome.updatedPages.length === 0) {
       throw new Error("translation made no progress"); // 计入 strike，防止坏页空转
     }
-    applyOutcome(book.id, outcome);
   }
 
   /** OCR 批次：环形取 ≤批大小 未完成页 → 离屏渲染 → parse_pdf → 排翻译链。
@@ -549,13 +545,7 @@ export const useParseStore = defineStore("parse", () => {
       if (paused.value) return true; // 暂停：跳过本批，恢复时由 wake 续跑
       const root = useLibraryStore().repoRoot;
       if (!root) return false;
-      const outcome = await invoke<ParseOutcome>("translate_pdf", {
-        root,
-        id: bookId,
-        pages,
-        llm,
-      });
-      applyOutcome(bookId, outcome);
+      const outcome = await invokeTranslate(root, bookId, pages, llm);
       return outcome.updatedPages.length === 0;
     };
     const prev = translateChains.get(bookId) ?? Promise.resolve();
@@ -576,6 +566,18 @@ export const useParseStore = defineStore("parse", () => {
       const cached = useLibraryStore().pdfs[bookId];
       if (noProgress || cached?.pages.some(needsWork)) wake(false);
     });
+  }
+
+  /** 调一次 translate_pdf 并把结果并回 store（翻译重试支路与翻译链共用同一份 invoke 参数） */
+  async function invokeTranslate(
+    root: string,
+    bookId: string,
+    pages: number[],
+    llm: LlmInvokePayload,
+  ): Promise<ParseOutcome> {
+    const outcome = await invoke<ParseOutcome>("translate_pdf", { root, id: bookId, pages, llm });
+    applyOutcome(bookId, outcome);
+    return outcome;
   }
 
   /** 批量结果落地：聚焦书（有缓存）就地 patch（译文栏响应式刷新）；后台书无缓存，
@@ -607,8 +609,7 @@ export const useParseStore = defineStore("parse", () => {
     try {
       await invoke("prefill_pages", { root: lib.repoRoot, id, total: numPages });
       if (lib.currentPdfId !== id) return; // 已切书：JSON 已补，store 无需动
-      const loaded = await invoke<PDF>("load_pdf", { root: lib.repoRoot, id });
-      lib.pdfs[id] = { ...loaded, id };
+      await lib.loadPdf(id);
       wake(); // 骨架就位 → 立即开跑
     } catch (e) {
       toast(String(e), "error");

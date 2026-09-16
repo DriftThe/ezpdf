@@ -33,9 +33,10 @@ use crate::parse::truncate;
 use crate::{BindDoc, PageInfo};
 
 /// invoke 传入的 LLM 配置（前端 settings store；dev 期由项目根 auth.cfg 临时填充）。
-/// 后 8 个字段是 pi-ai 预设目录派生（用户 2026-09-15）：前端选供应商/模型时算好随
-/// invoke 下发，Rust 只按数据施加，不内置目录（明细见 src/lib/piModels.ts）。
-#[derive(Debug, Clone, Deserialize, Default)]
+/// api/thinkingOffKind/thinkingOffValue/maxTokensField/modelReasoning/extraHeaders 是
+/// pi-ai 预设目录派生（用户 2026-09-15）：前端选供应商/模型时算好随 invoke 下发，
+/// Rust 只按数据施加，不内置目录（明细见 src/lib/piModels.ts）。
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmConfig {
     pub base_url: String,
@@ -50,16 +51,10 @@ pub struct LlmConfig {
     /// 由设置页「验证」按钮探测后写入（用户 2026-09-14）；显式值优先于预设形态。
     #[serde(default)]
     pub thinking_off: String,
-    /// 预设供应商 id（pi-ai 目录；"" = 自定义）
-    #[serde(default)]
-    pub provider: String,
     /// 预设协议（pi-ai api 字段；"" = 未知 → 按 OpenAI 兼容处理）。
     /// 非 "openai-completions" 的模型直接报错——当前客户端只说这一种协议。
     #[serde(default)]
     pub api: String,
-    /// pi-ai thinkingFormat（openai | openrouter | deepseek | zai | qwen | qwen-chat-template）
-    #[serde(default)]
-    pub thinking_format: String,
     /// 预设派生的关思考施加方式（"" = 未知 → 退回端点 URL 规则）
     #[serde(default)]
     pub thinking_off_kind: String,
@@ -90,6 +85,30 @@ pub struct LlmConfig {
 /// 缺省 true：只有显式关掉翻译才走 bypass 路径
 fn translate_enabled_default() -> bool {
     true
+}
+
+/// 手写 Default（不能用 derive）：derive 会让 translate_enabled 变 false，
+/// 与 serde 的缺省 true 相反——测试里的 `..Default::default()` 会悄悄走 bypass 路径。
+/// 与 [`translate_enabled_default`] 保持一致。
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            target_lang: String::new(),
+            smart_context: false,
+            thinking_off: String::new(),
+            api: String::new(),
+            thinking_off_kind: String::new(),
+            thinking_off_value: None,
+            max_tokens_field: String::new(),
+            model_reasoning: None,
+            extra_headers: std::collections::BTreeMap::new(),
+            translate_types: Vec::new(),
+            translate_enabled: translate_enabled_default(),
+        }
+    }
 }
 
 /// opencode zen 端点：除 bearer 外还要带会话路由头（PLAN-LLM.md §5）
@@ -149,22 +168,71 @@ const MAX_ROUNDS: usize = 4;
 const MAX_TOKENS: u32 = 8192;
 const REQUEST_TIMEOUT_SECS: u64 = 180;
 
-/// 提示词路径：EZPDF_SYSTEM_PROMPT_DIR 优先（环境变化只改这一处），
-/// 否则 dev/源码态的仓库根 `system_prompt/`；按模式选用对应文件。
+/// 提示词目录：setup 钩子里解析一次（EZPDF_SYSTEM_PROMPT_DIR 覆盖 > 生产资源目录 >
+/// dev 仓库根）。不能只在 prompt_path 里用编译期 CARGO_MANIFEST_DIR——那是构建机的路径，
+/// 而打包安装后 system_prompt/ 是安装包里的资源（tauri.conf 的 bundle.resources），
+/// 只有 resource_dir() 能找到（生产漏解析 = 装完翻译取不到提示词）。
+static PROMPT_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// setup 钩子调用：解析提示词目录并存入全局（与 pyenv 的 PyPaths 同一范式）
+pub fn init_prompt_dir(app: &AppHandle) {
+    let dir = resolve_prompt_dir(app);
+    println!("[ezpdf] system_prompt dir = {}", dir.display());
+    let _ = PROMPT_DIR.set(dir);
+}
+
+/// 纯函数便于单测：优先级 = env 覆盖（非空白）> 资源目录（含提示词文件）> dev 仓库根
+fn pick_prompt_dir(env: Option<&str>, resource: Option<&std::path::Path>, dev: &std::path::Path) -> PathBuf {
+    if let Some(dir) = env {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir.trim());
+        }
+    }
+    if let Some(dir) = resource {
+        return dir.to_path_buf();
+    }
+    dev.to_path_buf()
+}
+
+fn dev_prompt_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../system_prompt")
+}
+
+fn resolve_prompt_dir(app: &AppHandle) -> PathBuf {
+    let env = std::env::var("EZPDF_SYSTEM_PROMPT_DIR").ok();
+    #[cfg(dev)]
+    {
+        let _ = app; // dev 分支用不到 AppHandle
+        pick_prompt_dir(env.as_deref(), None, &dev_prompt_dir())
+    }
+    #[cfg(not(dev))]
+    {
+        // 与 pyenv 的 server_root 同口径：bundle.resources 的 target 相对资源根，
+        // 再兼容一层 resources/ 子目录（自定义打包布局）
+        let resource = tauri::Manager::path(app)
+            .resource_dir()
+            .ok()
+            .map(|res| [res.join("system_prompt"), res.join("resources").join("system_prompt")])
+            .and_then(|candidates| {
+                candidates.into_iter().find(|dir| dir.join("intelli_context.md").is_file())
+            });
+        pick_prompt_dir(env.as_deref(), resource.as_deref(), &dev_prompt_dir())
+    }
+}
+
+/// 提示词路径：按模式选用对应文件
 fn prompt_path(smart: bool) -> PathBuf {
     let file = if smart {
         "intelli_context.md"
     } else {
         "standard_translate.md"
     };
-    if let Ok(dir) = std::env::var("EZPDF_SYSTEM_PROMPT_DIR") {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir).join(file);
-        }
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../system_prompt")
-        .join(file)
+    let dir = match PROMPT_DIR.get() {
+        Some(dir) => dir.clone(),
+        // 未经 setup（单测）：退回 env 覆盖 / dev 仓库根
+        None => pick_prompt_dir(std::env::var("EZPDF_SYSTEM_PROMPT_DIR").ok().as_deref(), None, &dev_prompt_dir()),
+    };
+    dir.join(file)
 }
 
 /// 读系统提示词 + 替换 {{target_language}}（文件按 smart_context 选择：智能/标准两套互不裁剪）
@@ -212,7 +280,7 @@ struct RequestItem {
 /// 表块网格：优先用绑定 JSON 里已落盘的 grid，缺失（老 JSON/首次处理）就现场解析 content。
 /// 解析失败 → None（该块不送翻、不覆盖）
 fn grid_for(block: &crate::Block) -> Option<crate::table::TableGrid> {
-    if block.kind != "table" {
+    if block.kind != crate::table::TABLE {
         return None;
     }
     block.grid.clone().or_else(|| crate::table::parse_markup(&block.content))
@@ -221,7 +289,7 @@ fn grid_for(block: &crate::Block) -> Option<crate::table::TableGrid> {
 /// 该页是否有"可解析且尚未翻译"的表格（table 在送翻类型里才算）——已翻页的补翻依据
 fn has_pending_tables(cfg: &LlmConfig, page: &PageInfo) -> bool {
     page.blocks.iter().any(|b| {
-        b.kind == "table"
+        b.kind == crate::table::TABLE
             && b.translation.is_none()
             && is_translatable(cfg, &b.kind, &b.content)
             && grid_for(b).is_some()
@@ -238,11 +306,11 @@ fn collect_requests(cfg: &LlmConfig, page: &PageInfo, only_tables: bool) -> Vec<
         }
         // 已翻页的补翻批次只处理表格；其余类型即使 translation 为空也绝不重发
         // （同语种块被判 null 的就在这里，重发会变成无限回翻）
-        if only_tables && b.kind != "table" {
+        if only_tables && b.kind != crate::table::TABLE {
             continue;
         }
         // 表块：标记解析不出网格就整块跳过（不送 token、不覆盖，页面照常标 translated）
-        let (q, table) = if b.kind == "table" {
+        let (q, table) = if b.kind == crate::table::TABLE {
             let Some(grid) = grid_for(b) else { continue };
             (crate::table::payload(&grid), Some(grid))
         } else {
@@ -306,7 +374,7 @@ fn context_candidates(cfg: &LlmConfig, doc: &BindDoc, neighbor: u32, direction: 
             index: i.to_string(),
             // 表块给模型看网格 JSON（送翻负载同形），而不是它读不懂的标记流
             c: match grid_for(b) {
-                Some(grid) if b.kind == "table" => crate::table::payload(&grid).to_string(),
+                Some(grid) if b.kind == crate::table::TABLE => crate::table::payload(&grid).to_string(),
                 _ => b.content.clone(),
             },
             block_pos: pos,
@@ -817,7 +885,7 @@ pub fn apply_bypass(doc: &mut BindDoc, page_index: u32, cfg: &LlmConfig) -> bool
         if block.translation.is_some() || !is_translatable(cfg, &block.kind, &block.content) {
             continue;
         }
-        if block.kind == "table" {
+        if block.kind == crate::table::TABLE {
             let Some(grid) = grid_for(block) else { continue };
             if block.grid.is_none() {
                 block.grid = Some(grid.clone());
@@ -1072,6 +1140,20 @@ mod tests {
             model_reasoning: reasoning,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn prompt_dir_priority_env_resource_dev() {
+        let dev = std::path::Path::new("/dev-repo/system_prompt");
+        let res = std::path::Path::new("/usr/lib/ezpdf/system_prompt");
+        // env 覆盖最高（含去空白）
+        assert_eq!(pick_prompt_dir(Some("  /custom  "), Some(res), dev), PathBuf::from("/custom"));
+        // 其次安装包资源目录（生产路径）
+        assert_eq!(pick_prompt_dir(None, Some(res), dev), res);
+        // 空白 env 视为未设置
+        assert_eq!(pick_prompt_dir(Some("   "), Some(res), dev), res);
+        // 都没有 → dev 仓库根（单测/源码态）
+        assert_eq!(pick_prompt_dir(None, None, dev), dev);
     }
 
     #[test]

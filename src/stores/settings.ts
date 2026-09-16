@@ -33,7 +33,7 @@ import type { AppLocale } from "../locales";
 
 /** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，持久化整体静默 */
 
-export interface LlmSettings {
+interface LlmSettings {
   /**
    * 是否启用翻译（用户 2026-09-15，设置→LLM 首项）：关闭时 OCR 出的文本直接以
    * content 作为译文落盘并标记完成（不请求 LLM，也不留 null），避免以后重新打开
@@ -49,7 +49,7 @@ export interface LlmSettings {
   /** 预设模型派生的兼容性快照（选供应商/模型时重算；自定义 = 全空） */
   preset: LlmPresetCompat;
   baseUrl: string;
-  apiKey: string; // 阶段1起改存系统凭据库（keyring）
+  apiKey: string; // 明文存在 config.json（README「数据存放位置」有说明）
   model: string;
   targetLang: string;
   /** 智能上下文翻译：跨页截断文本经 agent loop 请求上下文联合翻译（默认开） */
@@ -70,9 +70,7 @@ export interface LlmInvokePayload {
   targetLang: string;
   smartContext: boolean;
   thinkingOff: string;
-  provider: string;
   api: string;
-  thinkingFormat: string;
   thinkingOffKind: string;
   thinkingOffValue: string | null;
   maxTokensField: string;
@@ -96,7 +94,7 @@ export interface LlmInvokePayload {
  */
 export type ThemeMode = "system" | "light" | "dark";
 
-export interface GeneralSettings {
+interface GeneralSettings {
   autoLaunch: boolean;
   resumeOnStart: boolean;
   theme: ThemeMode;
@@ -116,10 +114,10 @@ export interface GeneralSettings {
  * - online：远端解析服务（同款 HTTP 协议，见 pyserver/PROTOCOL.md），只需一个可达
  *   的 URL——基础环境（没装 torch/模型）也能用；翻译不依赖它（Rust 直连 LLM）。
  */
-export type OcrMode = "local" | "online";
+type OcrMode = "local" | "online";
 
 /** OCR 服务设置：安装镜像源 + 服务来源（本地托管 / 在线服务） */
-export interface OcrSettings {
+interface OcrSettings {
   installMirror: boolean;
   mode: OcrMode;
   /** 在线模式的解析服务地址（如 http://127.0.0.1:9055）；local 模式忽略 */
@@ -171,11 +169,9 @@ async function fillLlmFromAuthCfg(llm: { value: LlmSettings }): Promise<void> {
 interface PersistedConfig {
   llm?: Partial<LlmSettings>;
   general?: Partial<GeneralSettings>;
-  ocr?: Partial<OcrSettings> & { autoLaunch?: unknown };
+  ocr?: Partial<OcrSettings>;
   /** 上次打开的仓库根目录（启动时自动打开；空 = 未选择） */
   repo?: string | null;
-  /** 旧版分节（仅迁移用，保存时不再写出） */
-  parse?: { resumeOnStart?: unknown };
 }
 
 /** 逐段浅合并（未知字段/类型不符一律忽略，坏配置不能把设置页打挂） */
@@ -327,11 +323,8 @@ export const useSettingsStore = defineStore("settings", () => {
           delete patch.preset;
           mergeSection(llm.value, patch);
           mergePreset(llm.value.preset, cfg.llm?.preset);
-          // 旧版迁移：ocr.autoLaunch / parse.resumeOnStart → general（先落旧值，新节覆盖）
-          if (typeof cfg.ocr?.autoLaunch === "boolean") general.value.autoLaunch = cfg.ocr.autoLaunch;
-          if (typeof cfg.parse?.resumeOnStart === "boolean") general.value.resumeOnStart = cfg.parse.resumeOnStart;
           mergeSection(general.value, cfg.general);
-          mergeSection(ocr.value, cfg.ocr); // installMirror（autoLaunch 键不在目标对象上，被忽略）
+          mergeSection(ocr.value, cfg.ocr);
           if (typeof cfg.repo === "string" && cfg.repo.trim()) repoPath.value = cfg.repo;
         }
       } catch (e) {
@@ -379,7 +372,7 @@ export const useSettingsStore = defineStore("settings", () => {
   }
 
   /** 手填模型后重算快照（设置页输入框 change 事件） */
-  function refreshPreset(): void {
+  function applyModelInput(): void {
     syncPreset();
   }
 
@@ -416,9 +409,7 @@ export const useSettingsStore = defineStore("settings", () => {
       targetLang: s.targetLang,
       smartContext: s.smartContext,
       thinkingOff: s.thinkingOff,
-      provider: s.provider,
       api: s.preset.api,
-      thinkingFormat: s.preset.thinkingFormat,
       thinkingOffKind: s.preset.thinkingOffKind,
       thinkingOffValue: s.preset.thinkingOffValue,
       maxTokensField: s.preset.maxTokensField,
@@ -428,8 +419,6 @@ export const useSettingsStore = defineStore("settings", () => {
       translateEnabled: s.translateEnabled,
     };
   }
-
-  /** 供应商是不是「可用预设」（OpenAI 兼容）：UI 显示兼容性提示用 */
 
   function openPage(): void {
     pageOpen.value = true;
@@ -478,26 +467,26 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
-  /** 仓库选择变化即时持久化（不弹 toast；失败仅控制台告警，不阻塞打开仓库） */
-  async function setRepoPath(path: string | null): Promise<void> {
-    repoPath.value = path;
+  /** 立即生效的设置的即时持久化：不弹 toast，失败只控制台告警（不阻塞当前操作） */
+  async function persistNow(what: string): Promise<void> {
     if (!isTauri) return;
     try {
       await doSave();
     } catch (e) {
-      console.warn("[settings] 仓库路径持久化失败:", e);
+      console.warn(`[settings] ${what}持久化失败:`, e);
     }
+  }
+
+  /** 仓库选择变化即时持久化（失败不阻塞打开仓库） */
+  async function setRepoPath(path: string | null): Promise<void> {
+    repoPath.value = path;
+    await persistNow("仓库路径");
   }
 
   /** 主题切换即时持久化（用户 2026-09-14）：无需等设置页退出保存；localStorage 镜像由 theme.ts 维护 */
   async function setTheme(mode: ThemeMode): Promise<void> {
     general.value.theme = mode;
-    if (!isTauri) return;
-    try {
-      await doSave();
-    } catch (e) {
-      console.warn("[settings] 主题持久化失败:", e);
-    }
+    await persistNow("主题");
   }
 
   /** 界面语言切换（用户 2026-09-15）：即时生效 + 即时持久化（localStorage 镜像由 i18n.ts 维护） */
@@ -505,12 +494,7 @@ export const useSettingsStore = defineStore("settings", () => {
     general.value.lang = locale;
     langTouched = true;
     setLocale(locale);
-    if (!isTauri) return;
-    try {
-      await doSave();
-    } catch (e) {
-      console.warn("[settings] 界面语言持久化失败:", e);
-    }
+    await persistNow("界面语言");
   }
 
   /** 验证 LLM（用户 2026-09-14）：连通性 + 关思考策略探测；策略回写 thinkingOff */
@@ -536,17 +520,17 @@ export const useSettingsStore = defineStore("settings", () => {
   }
 
   /** 拉取 /models 列表（失败 toast 兜底；成功不打扰） */
-  async function fetchModels(silent = false): Promise<void> {
+  async function fetchModels(): Promise<void> {
     if (modelsFetching.value) return;
     const { baseUrl, apiKey } = llm.value;
     if (!baseUrl.trim() || !apiKey.trim()) {
-      if (!silent) toast(t("llm.fillBaseKey"), "warn");
+      toast(t("llm.fillBaseKey"), "warn");
       return;
     }
     modelsFetching.value = true;
     try {
       modelOptions.value = await invoke<string[]>("fetch_llm_models", { baseUrl, apiKey });
-      if (!silent) toast(t("llm.modelsFetched", { count: modelOptions.value.length }));
+      toast(t("llm.modelsFetched", { count: modelOptions.value.length }));
     } catch (e) {
       toast(t("llm.fetchModelsFailed", { error: String(e) }), "error");
     } finally {
@@ -589,7 +573,6 @@ export const useSettingsStore = defineStore("settings", () => {
     appVersion,
     updateBusy,
     updateText,
-    catalog,
     usableProviders,
     otherProviders,
     presetProvider,
@@ -600,7 +583,7 @@ export const useSettingsStore = defineStore("settings", () => {
     setLang,
     ensureCatalog,
     applyProvider,
-    refreshPreset,
+    applyModelInput,
     llmInvokePayload,
     verifyLlm,
     fetchModels,

@@ -15,6 +15,9 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+/// 表块类型名（Block.kind）：Rust 侧多处比较用它，避免字面量漂移
+pub const TABLE: &str = "table";
+
 /// 网格上限：超出一律当解析失败（畸形标记不该把 LLM 请求或渲染拖垮）
 const MAX_ROWS: usize = 200;
 const MAX_SLOTS: usize = 64;

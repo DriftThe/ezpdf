@@ -52,7 +52,6 @@ pub struct PyPaths {
     pub root: PathBuf,
     /// stdlib 环境探测脚本（纯标准库，随包解释器/venv 均可运行）
     pub bootstrap: PathBuf,
-    pub requirements: PathBuf,
     /// 服务解释器（真正跑 pyserver 的那一个，装依赖也装给它）：
     /// Windows 生产 = 随包可重定位 Python（安装目录可写）；
     /// Linux 生产 = 用户级 venv（安装目录只读，见 venv_dir）；
@@ -71,14 +70,12 @@ impl PyPaths {
         let (root, bundled) = server_root(app)?;
         let models = models_dir(app, &root);
         let bootstrap = root.join("bootstrap.py");
-        let requirements = root.join("requirements.txt");
         // 运行期覆盖解释器（dev 模拟生产布局 / 非标准部署）：不建 venv，直接用
         if let Ok(p) = std::env::var("EZPDF_PYTHON_EXE") {
             if !p.trim().is_empty() {
                 let python = PathBuf::from(p);
                 return Ok(Self {
                     bootstrap,
-                    requirements,
                     python: python.clone(),
                     base_python: Some(python),
                     venv_dir: None,
@@ -100,7 +97,6 @@ impl PyPaths {
         };
         Ok(Self {
             bootstrap,
-            requirements,
             python,
             base_python: bundled_py,
             venv_dir,
@@ -233,8 +229,6 @@ struct BootstrapRaw {
     python_path: Option<String>,
     /// 探测脚本自身崩溃时只会吐 {"error": ...}：其余字段给默认值，别把原因弄丢
     #[serde(default)]
-    in_venv: bool,
-    #[serde(default)]
     deps: BTreeMap<String, Option<String>>,
     #[serde(default)]
     missing: Vec<String>,
@@ -266,7 +260,6 @@ struct BootstrapModels {
 pub struct OcrEnvReport {
     pub python: Option<String>,
     pub python_path: Option<String>,
-    pub in_venv: bool,
     pub deps: BTreeMap<String, Option<String>>,
     pub missing: Vec<String>,
     pub torch_build: Option<String>,
@@ -296,7 +289,6 @@ fn compose(raw: BootstrapRaw) -> OcrEnvReport {
     OcrEnvReport {
         python: raw.python,
         python_path: raw.python_path,
-        in_venv: raw.in_venv,
         deps: raw.deps,
         missing: raw.missing,
         torch_build: raw.torch_build,
@@ -312,7 +304,6 @@ fn failed_report(error: String) -> OcrEnvReport {
     OcrEnvReport {
         python: None,
         python_path: None,
-        in_venv: false,
         deps: BTreeMap::new(),
         missing: Vec::new(),
         torch_build: None,
@@ -324,7 +315,7 @@ fn failed_report(error: String) -> OcrEnvReport {
 
 /// 跑一次 bootstrap.py（服务解释器优先；不存在时系统 python 兜底——仅 dev 会走到）。
 /// 探测自身失败不作为错误抛出——报告即数据（error 字段），前端据此显示引导。
-pub fn probe_blocking(paths: &PyPaths) -> OcrEnvReport {
+fn probe_blocking(paths: &PyPaths) -> OcrEnvReport {
     // 优先服务解释器（Linux 生产 = 用户级 venv）；venv 还没建时用随包基础解释器
     // （报告要描述「我们真正会用的解释器」，而不是系统 python）
     let python = std::iter::once(&paths.python)
@@ -451,12 +442,12 @@ async fn emit_progress(app: &AppHandle, phase: &str, percent: u32) {
     );
 }
 
-/// 子进程输出逐行转发：每 3 行按阶段区间插值推一次进度（百分比只能估算——pip 进度条已关）
-async fn forward_lines_counted<R: tokio::io::AsyncRead + Unpin>(
+/// 子进程输出逐行转发（stdout/stderr 都用它）：每 3 行按阶段区间插值推一次进度
+/// （百分比只能估算——pip 进度条已关）。counter 由调用方共享，两个流合并计数。
+pub(crate) async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(
     r: &mut R,
     app: &AppHandle,
-    progress: &Option<(String, u32, u32)>,
-    counter: &AtomicU32,
+    progress: Option<(&(String, u32, u32), &AtomicU32)>,
 ) {
     use tokio::io::AsyncBufReadExt;
     let mut buf = tokio::io::BufReader::new(r);
@@ -471,7 +462,7 @@ async fn forward_lines_counted<R: tokio::io::AsyncRead + Unpin>(
                     continue;
                 }
                 emit_log(app, trimmed.to_string()).await;
-                if let Some((phase, from, to)) = progress {
+                if let Some(((phase, from, to), counter)) = progress {
                     let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
                     if n % 3 == 0 {
                         let step = (n / 3).min(to.saturating_sub(*from));
@@ -520,10 +511,10 @@ async fn run_streamed(
     let progress_out = progress.clone();
     let progress_err = progress;
     let t_out = tauri::async_runtime::spawn(async move {
-        forward_lines_counted(&mut out_r, &app_out, &progress_out, &c_out).await;
+        forward_lines(&mut out_r, &app_out, progress_out.as_ref().map(|p| (p, c_out.as_ref()))).await;
     });
     let t_err = tauri::async_runtime::spawn(async move {
-        forward_lines_counted(&mut err_r, &app_err, &progress_err, &c_err).await;
+        forward_lines(&mut err_r, &app_err, progress_err.as_ref().map(|p| (p, c_err.as_ref()))).await;
     });
     let status = child
         .wait()
@@ -535,24 +526,6 @@ async fn run_streamed(
         return Err(format!("command failed ({status})"));
     }
     Ok(())
-}
-
-pub(crate) async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(r: &mut R, app: &AppHandle) {
-    use tokio::io::AsyncBufReadExt;
-    let mut buf = tokio::io::BufReader::new(r);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match buf.read_line(&mut line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                let trimmed = line.trim_end();
-                if !trimmed.is_empty() {
-                    emit_log(app, trimmed.to_string()).await;
-                }
-            }
-        }
-    }
 }
 
 fn svec(args: &[&str]) -> Vec<String> {

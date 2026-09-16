@@ -20,12 +20,8 @@ pub struct UpdateInfo {
     pub current: String,
     /// 最新发布版本（tag 去掉 v 前缀）；无发布时应为 Err 而非 None
     pub latest: Option<String>,
-    /// 发布页地址（Releases 页面）
-    pub url: Option<String>,
     /// 是否有更新（语义化数字比较）
     pub newer: bool,
-    /// 发布说明（截断）
-    pub notes: Option<String>,
 }
 
 /// 版本比较：`v1.2.3` vs `1.2.3` 均可；按数字段比较（缺失段视作 0），
@@ -81,21 +77,11 @@ pub async fn check_update(current: &str) -> Result<UpdateInfo, String> {
     }
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("release info is not JSON: {e}"))?;
     let latest = v["tag_name"].as_str().map(|s| s.trim_start_matches('v').to_string());
-    let html = v["html_url"].as_str().map(String::from);
-    let notes = v["body"].as_str().map(|b| {
-        let mut s: String = b.chars().take(600).collect();
-        if s.len() < b.len() {
-            s.push('…');
-        }
-        s
-    });
     let newer = latest.as_deref().map(|l| version_gt(l, current)).unwrap_or(false);
     Ok(UpdateInfo {
         current: current.to_string(),
         latest,
-        url: html,
         newer,
-        notes,
     })
 }
 

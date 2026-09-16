@@ -72,7 +72,7 @@ impl PyService {
         }))
     }
 
-    pub fn status(&self) -> ServiceStatus {
+    fn status(&self) -> ServiceStatus {
         self.0.status.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
@@ -247,7 +247,7 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
     if let Some(mut stderr) = child.stderr.take() {
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
-            pyenv::forward_lines(&mut stderr, &app2).await;
+            pyenv::forward_lines(&mut stderr, &app2, None).await;
         });
     }
 
@@ -368,7 +368,6 @@ fn is_loopback(base: &str) -> bool {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ParseServiceHealth {
-    pub status: String,
     /// u32 而非 u64：ts-rs 会把 u64 映射成 bigint，前端只想拿它显示
     pub pid: Option<u32>,
     /// 服务端允许的单批最大页数
@@ -378,7 +377,7 @@ pub struct ParseServiceHealth {
 }
 
 /// 服务端没公布/公布得不可信时的批大小：与客户端本地托管的批大小一致
-pub const FALLBACK_BATCH_PAGES: u32 = 4;
+const FALLBACK_BATCH_PAGES: u32 = 4;
 
 /// 解析服务探活：GET {base}/health → (pid, 耗时 ms, 服务端公布的批大小)。失败给出可读
 /// 原因（前端「测试」按钮、在线模式连接前确认、每次 OCR 请求前的批大小握手共用）。
@@ -409,7 +408,6 @@ pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth,
     }
     let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
     Ok(ParseServiceHealth {
-        status: body["status"].as_str().unwrap_or("ok").to_string(),
         pid: body["pid"].as_u64().map(|p| p.min(u32::MAX as u64) as u32),
         max_batch_pages: advertised_batch_pages(&body),
         elapsed_ms: started.elapsed().as_millis().min(u32::MAX as u128) as u32,
@@ -420,7 +418,7 @@ pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth,
 /// 夹上界是硬要求——本地 Rust 侧的批次上限就是 32，超了整批会被拒
 fn advertised_batch_pages(body: &serde_json::Value) -> u32 {
     match body["max_batch_pages"].as_u64() {
-        Some(n) if n >= 1 => (n.min(32)) as u32,
+        Some(n) if n >= 1 => (n.min(crate::parse::MAX_BATCH_PAGES as u64)) as u32,
         _ => FALLBACK_BATCH_PAGES,
     }
 }

@@ -95,7 +95,6 @@ pub struct BindDoc {
 /// 一份 PDF 的完整实体（身份字段 + 绑定 JSON 内容）。
 /// id = 稳定唯一标识符（与 .ezrepo 条目一致，前端一切键都以它为准）；
 /// bind = 绑定 JSON 的仓库相对路径，None = 未绑定（旧条目）；
-/// json_path = 同一份 JSON 的绝对路径（load_pdf 运行时由 bind 解析，与 bind 同生同灭：bind None 时为 None）；
 /// status/pages = 绑定 JSON 的内容（bind None 时为 Pending/空）。
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
@@ -104,7 +103,6 @@ pub struct PDF {
     pub id: String,
     pub name: String,
     pub pdf_path: String,
-    pub json_path: Option<String>,
     pub bind: Option<String>,
     pub status: PDFStatus,
     pub pages: Vec<PageInfo>,
@@ -172,11 +170,43 @@ pub(crate) fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
     fs::rename(&tmp, path).map_err(|e| format!("failed to replace file: {e}"))
 }
 
+/// pretty JSON 原子写（索引 / 绑定 JSON 共用）
+pub(crate) fn write_json_atomic<T: serde::Serialize>(
+    path: &Path,
+    value: &T,
+    what: &str,
+) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("Failed when serializing {what}: {e}"))?;
+    write_text_atomic(path, &text)
+}
+
 /// 回写仓库索引（pretty JSON）
 fn write_index(root: &str, index: &RepoTree) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(index)
-        .map_err(|e| format!("Failed when serializing .ezrepo: {e}"))?;
-    write_text_atomic(&Path::new(root).join(".ezrepo"), &text)
+    write_json_atomic(&Path::new(root).join(".ezrepo"), index, ".ezrepo")
+}
+
+/// 索引里没有这个 id：读/删/移/解析四处共用同一句文案
+pub(crate) fn pdf_not_found(id: &str) -> String {
+    format!("PDF id not found in repo: {id}")
+}
+
+/// 按 id 取索引条目快照（只读入口：load_pdf / parse::load_bind）
+pub(crate) fn find_pdf(root: &str, id: &str) -> Result<PDFStruct, String> {
+    read_index(root)?
+        .pdfs
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| pdf_not_found(id))
+}
+
+/// 磁盘命名（导入时生成，天然免重名）：`<name>-<id>.pdf` / `<name>-<id>.json`
+fn pdf_file_name(name: &str, id: &str) -> String {
+    format!("{name}-{id}.pdf")
+}
+
+fn bind_file_name(name: &str, id: &str) -> String {
+    format!("{name}-{id}.json")
 }
 
 /// 仓库相对路径词法校验：非空、无绝对路径/盘符前缀/`..`（允许 `./`）。
@@ -229,18 +259,14 @@ pub(crate) fn read_bind_doc(abs: &Path) -> Result<BindDoc, String> {
 #[tauri::command]
 async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
     let dir = Path::new(_root);
-    let entry = read_index(_root)?
-        .pdfs
-        .into_iter()
-        .find(|p| p.id == _id)
-        .ok_or_else(|| format!("PDF id not found in repo: {_id}"))?;
+    let entry = find_pdf(_root, _id)?;
 
     // 物理命名（导入时生成）：name-id.pdf / name-id.json，天然免重名
     let name = entry.name.clone();
-    let pdf_name = format!("{name}-{}.pdf", entry.id);
+    let pdf_name = pdf_file_name(&name, &entry.id);
     check_relative(&pdf_name)?; // 手写 .ezrepo 可带 ../ 的 name/id，拼装后同样拒绝
     let pdf_path = dir.join(&pdf_name).to_string_lossy().to_string();
-    let (json_path, status, pages) = match &entry.bind {
+    let (status, pages) = match &entry.bind {
         Some(rel) => {
             let json_abs = resolve_bind_path(_root, rel)?;
             let mut doc = read_bind_doc(&json_abs)?;
@@ -254,20 +280,15 @@ async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
                     eprintln!("Failed to persist table grids for {_id}: {e}");
                 }
             }
-            (
-                Some(json_abs.to_string_lossy().to_string()),
-                doc.status,
-                doc.pages,
-            )
+            (doc.status, doc.pages)
         }
-        None => (None, PDFStatus::Pending, Vec::new()),
+        None => (PDFStatus::Pending, Vec::new()),
     };
 
     Ok(PDF {
         id: entry.id,
         name,
         pdf_path,
-        json_path,
         bind: entry.bind,
         status,
         pages,
@@ -322,8 +343,8 @@ fn import_one(
     }
 
     // 物理命名 name-id：不同目录导入同名文件也不会互相覆盖
-    let pdf_name = format!("{name}-{id}.pdf");
-    let json_name = format!("{name}-{id}.json");
+    let pdf_name = pdf_file_name(&name, &id);
+    let json_name = bind_file_name(&name, &id);
     fs::write(dir.join(&pdf_name), &bytes).map_err(|e| format!("failed to store into repo: {e}"))?;
     let page_count = pdf_page_count(&bytes);
     let pages = match page_count {
@@ -440,7 +461,7 @@ fn create_folder(root: &str, name: String) -> Result<RepoTree, String> {
 /// 删除一份 PDF 的库内文件（PDF + 绑定 JSON）：best-effort——索引条目为准，
 /// bind 越界/文件缺失不致命（残留文件不影响使用）
 fn remove_pdf_files(root: &str, entry: &PDFStruct) {
-    let pdf_name = format!("{}-{}.pdf", entry.name, entry.id);
+    let pdf_name = pdf_file_name(&entry.name, &entry.id);
     if check_relative(&pdf_name).is_ok() {
         let _ = fs::remove_file(Path::new(root).join(&pdf_name));
     }
@@ -485,7 +506,7 @@ fn delete_pdf(root: &str, id: &str) -> Result<RepoTree, String> {
         .pdfs
         .iter()
         .position(|p| p.id == id)
-        .ok_or_else(|| format!("PDF id not found in repo: {id}"))?;
+        .ok_or_else(|| pdf_not_found(id))?;
     let entry = index.pdfs.remove(pos);
     remove_pdf_files(root, &entry);
     write_index(root, &index)?;
@@ -505,7 +526,7 @@ fn move_pdf(root: &str, id: &str, belong: Option<String>) -> Result<RepoTree, St
         .pdfs
         .iter_mut()
         .find(|p| p.id == id)
-        .ok_or_else(|| format!("PDF id not found in repo: {id}"))?;
+        .ok_or_else(|| pdf_not_found(id))?;
     entry.belong = belong;
     write_index(root, &index)?;
     Ok(index)
@@ -729,6 +750,7 @@ pub fn run() {
             app.manage(paths);
             app.manage(pyserver::PyService::new());
             translate::init_log(app.handle()); // 翻译日志 → llm://log（LLM 设置页底部）
+            translate::init_prompt_dir(app.handle()); // 提示词目录：生产 = 安装目录资源
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

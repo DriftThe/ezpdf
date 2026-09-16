@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::translate::{self, LlmConfig};
-use crate::{read_index, resolve_bind_path, BindDoc, Block, PageInfo, PDFStatus};
+use crate::table::TABLE;
+use crate::{resolve_bind_path, BindDoc, Block, PageInfo, PDFStatus};
 
 /// 书级文件锁（键 = root/id）：OCR 批次与翻译批次并发落盘时序列化读改写
 static FILE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
@@ -45,10 +46,7 @@ pub struct ParsePageInput {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ParseOutcome {
-    pub pdf_id: String,
     pub book_status: PDFStatus,
-    pub finished_pages: u32,
-    pub total_pages: u32,
     pub updated_pages: Vec<PageInfo>,
 }
 
@@ -132,7 +130,7 @@ pub(crate) fn backfill_table_grids(doc: &mut BindDoc) -> bool {
     let mut changed = false;
     for page in doc.pages.iter_mut() {
         for block in page.blocks.iter_mut() {
-            if block.kind != "table" || block.grid.is_some() {
+            if block.kind != TABLE || block.grid.is_some() {
                 continue;
             }
             if let Some(grid) = crate::table::parse_markup(&block.content) {
@@ -147,18 +145,12 @@ pub(crate) fn backfill_table_grids(doc: &mut BindDoc) -> bool {
 /// 原子写绑定 JSON：tmp + rename（Windows fs::rename = MOVEFILE_REPLACE_EXISTING，
 /// 覆盖已存在目标）
 pub(crate) fn write_bind_atomic(json_path: &Path, doc: &BindDoc) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(doc)
-        .map_err(|e| format!("Failed when serializing bound JSON: {e}"))?;
-    crate::write_text_atomic(json_path, &text)
+    crate::write_json_atomic(json_path, doc, "bound JSON")
 }
 
 /// 读索引定位绑定 JSON 并解析为 BindDoc（parse_batch / prefill_pages 共用入口）
 fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
-    let entry = read_index(root)?
-        .pdfs
-        .into_iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| format!("PDF id not found in repo: {id}"))?;
+    let entry = crate::find_pdf(root, id)?;
     let bind = entry
         .bind
         .as_ref()
@@ -177,12 +169,9 @@ fn pages_by_index(doc: &BindDoc, indices: &[u32]) -> Vec<PageInfo> {
 }
 
 /// 批量结果摘要（parse_batch / translate_batch 共用）
-fn outcome(id: &str, doc: &BindDoc, updated: Vec<PageInfo>) -> ParseOutcome {
+fn outcome(doc: &BindDoc, updated: Vec<PageInfo>) -> ParseOutcome {
     ParseOutcome {
-        pdf_id: id.to_string(),
         book_status: doc.status,
-        finished_pages: doc.pages.iter().filter(|p| p.finished).count() as u32,
-        total_pages: doc.pages.len() as u32,
         updated_pages: updated,
     }
 }
@@ -200,8 +189,11 @@ pub async fn parse_batch(
     if pages.is_empty() {
         return Err("OCR batch is empty".into());
     }
-    if pages.len() > 32 {
-        return Err(format!("batch page count exceeds limit: {} > 32", pages.len()));
+    if pages.len() > MAX_BATCH_PAGES as usize {
+        return Err(format!(
+            "batch page count exceeds limit: {} > {MAX_BATCH_PAGES}",
+            pages.len()
+        ));
     }
 
     // 快速失败：书/绑定 JSON 不存在就没必要跑模型
@@ -265,7 +257,7 @@ pub async fn parse_batch(
         let updated = pages_by_index(&doc, &touched);
         finalize_status(&mut doc);
         write_bind_atomic(&json_path, &doc)?;
-        outcome(id, &doc, updated)
+        outcome(&doc, updated)
     };
 
     Ok(result)
@@ -298,8 +290,11 @@ pub async fn translate_batch(
     if indices.is_empty() {
         return Err("translate batch is empty".into());
     }
-    if indices.len() > 32 {
-        return Err(format!("batch page count exceeds limit: {} > 32", indices.len()));
+    if indices.len() > MAX_BATCH_PAGES as usize {
+        return Err(format!(
+            "batch page count exceeds limit: {} > {MAX_BATCH_PAGES}",
+            indices.len()
+        ));
     }
     // 翻译被用户关掉（2026-09-15）：不碰网络，原文当译文落盘并标记完成
     if !llm.translate_enabled {
@@ -375,7 +370,7 @@ pub async fn translate_batch(
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         load_bind(root, id)?
     };
-    Ok(outcome(id, &doc, pages_by_index(&doc, &touched)))
+    Ok(outcome(&doc, pages_by_index(&doc, &touched)))
 }
 
 /// 翻译禁用路径（用户 2026-09-15）：不碰网络/提示词，逐页把原文复制成译文并标记完成，
@@ -409,7 +404,7 @@ fn bypass_batch(
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         load_bind(root, id)?
     };
-    Ok(outcome(id, &doc, pages_by_index(&doc, &touched)))
+    Ok(outcome(&doc, pages_by_index(&doc, &touched)))
 }
 
 /// 打开书补骨架：pages 为空（lopdf 解析失败的书）时按实测页数重建 1..=N 骨架；
@@ -443,7 +438,11 @@ pub fn reset_pdf_state(root: &str, id: &str, total: u32) -> Result<PDFStatus, St
 
 /// 页数上限：正常 PDF 远低于此；畸形/恶意文件（或前端传错）不能让我们分配巨型 Vec——
 /// release 下 panic=abort，OOM 会直接杀掉进程
-pub(crate) const MAX_PAGES: u32 = 20_000;
+/// 单批页数上限（Rust 侧硬上限：OCR 批与翻译批共用；服务端公布值会被夹到它）
+pub(crate) const MAX_BATCH_PAGES: u32 = 32;
+
+/// 导入预填充的页数上限（畸形 PDF 保护）
+const MAX_PAGES: u32 = 20_000;
 
 /// 1..=N 空页骨架（导入预填充 / 打开书补骨架共用）
 pub(crate) fn build_skeleton(total: u32) -> Result<Vec<PageInfo>, String> {
