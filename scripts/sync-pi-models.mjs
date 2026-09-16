@@ -153,7 +153,6 @@ function toCatalog(MODELS, envKeys, version) {
         baseUrl: model.baseUrl,
         reasoning: model.reasoning,
         maxTokensField: compat.maxTokensField,
-        thinkingFormat: compat.thinkingFormat,
         thinkingOffKind: shape.kind,
         thinkingOffValue: shape.value ?? null,
         headers: model.headers ?? null,
@@ -192,8 +191,6 @@ export interface PiModel {
   reasoning: boolean;
   /** 请求体里 max tokens 的字段名（pi-ai compat 判定） */
   maxTokensField: "max_tokens" | "max_completion_tokens";
-  /** pi-ai 的关思考参数形态（openai | openrouter | deepseek | zai | qwen | qwen-chat-template） */
-  thinkingFormat: string;
   /** 我们施加关思考参数的方式（none = 预设表示无法通过参数关闭；按协议不同写法：
    *  openai-completions → 顶层 reasoning_effort 等、anthropic-messages → thinking.type、
    *  openai-responses → reasoning.effort） */

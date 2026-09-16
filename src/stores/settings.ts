@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import type { LlmVerifyReport } from "../../src-tauri/bindings/LlmVerifyReport";
@@ -93,7 +93,7 @@ export interface LlmInvokePayload {
  * - resumeOnStart：启动时自动续跑未完成的解析；关闭则启动后为暂停态
  *   （工具栏显示「启动翻译」）；两者都开才会自动进入运行态
  * 两者默认关闭（用户 2026-09-15 核对：首启即暂停、不主动拉起服务，与 README
- * 「出于省电考虑，启动后为暂停状态」及设置页提示的「开启后…」措辞一致）——
+ * 「出于省电考虑，启动后为暂停状态」一致）——
  * 已存在的配置照旧生效，改默认值只影响首次启动（无 config.json）。
  * - theme：界面主题（浅色/深色/跟随系统；标题栏右侧切换）
  */
@@ -359,6 +359,7 @@ export const useSettingsStore = defineStore("settings", () => {
         llm.value.provider = detectProviderId(catalog.value ?? [], llm.value.baseUrl);
       }
       syncPreset();
+      autosaveArmed = true; // 到这一步内存里的值都来自磁盘，自动保存可以开始了
     })();
     return loadPromise;
   }
@@ -450,8 +451,44 @@ export const useSettingsStore = defineStore("settings", () => {
     useLibraryStore().sidebarOpen = true;
   }
 
-  /** 整份写盘（save 与仓库路径即时持久化共用） */
+  /**
+   * 改动即自动落盘（用户 2026-09-17）：任何设置改动 **2 秒**后写一次 config.json，
+   * 不必等退出设置页——写盘本来就是整份写，所以只是把时机提前（返回键仍会立即写一次）。
+   * 两个前提：非 Tauri 环境不写；读盘成功前不写（否则内存里的默认值会覆盖用户配置，
+   * 与 `loaded` 那道闸同一个理由）。
+   */
+  const AUTOSAVE_DEBOUNCE_MS = 2000;
+  let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let autosaveArmed = false;
+
+  function cancelAutosave(): void {
+    if (autosaveTimer !== null) {
+      clearTimeout(autosaveTimer);
+      autosaveTimer = null;
+    }
+  }
+
+  function scheduleAutosave(): void {
+    if (!isTauri || !autosaveArmed) return;
+    cancelAutosave();
+    autosaveTimer = setTimeout(() => {
+      autosaveTimer = null;
+      void (async () => {
+        try {
+          await doSave();
+        } catch (e) {
+          console.warn("[settings] 自动保存失败:", e); // 不打扰：下一次改动/退出时还会写
+        }
+      })();
+    }, AUTOSAVE_DEBOUNCE_MS);
+  }
+
+  // 同步 flush：读盘期间的赋值（auth.cfg 填充、默认值补全、预设迁移）不能触发写盘
+  watch([llm, general, ocr, repoPath], scheduleAutosave, { deep: true, flush: "sync" });
+
+  /** 整份写盘（自动保存 / 返回键 / 即时持久化共用） */
   async function doSave(): Promise<void> {
+    cancelAutosave(); // 这次写入取代等待中的自动保存
     // 界面语言只允许由 setLang 改动：写盘前若发现它偏离读盘值（且用户没动过设置），
     // 说明被某个默认值流程顶掉了——按读盘值写回，避免把系统语言覆盖进用户配置
     // （2026-09-15 真的发生过：一次启动把 en 写成 zh-CN，来源未复现）。

@@ -49,21 +49,13 @@ function isTypeOn(kind: string): boolean {
       <input v-model="settings.general.autoLaunch" type="checkbox" />
       <span>{{ t("settings.general.autoLaunch") }}</span>
     </label>
-    <p class="set-hint">
-      {{ t("settings.general.autoLaunchHint") }}
-    </p>
     <label class="set-check">
       <input v-model="settings.general.resumeOnStart" type="checkbox" />
       <span>{{ t("settings.general.resumeOnStart") }}</span>
     </label>
-    <p class="set-hint">
-      {{ t("settings.general.resumeOnStartHint") }}
-    </p>
-    <p class="set-hint">{{ t("settings.general.saveHint") }}</p>
 
     <!-- 翻译块类型（用户 2026-09-15）：勾选的类型送翻并在译文栏覆盖显示 -->
     <h3 class="block-type-title">{{ t("settings.general.blockTypes") }}</h3>
-    <p class="set-hint">{{ t("settings.general.blockTypesHint") }}</p>
     <div class="block-types">
       <label v-for="kind in BLOCK_TYPE_OPTIONS" :key="kind" class="set-check block-type">
         <input type="checkbox" :checked="isTypeOn(kind)" @change="onToggleType(kind, $event)" />

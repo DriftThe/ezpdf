@@ -7,9 +7,7 @@ import {
   CUSTOM_PROVIDER,
   PROTOCOL_LABELS,
   SUPPORTED_APIS,
-  isSupportedApi,
   providerLabel,
-  thinkingHint,
 } from "../../../lib/piModels";
 import { CUSTOM_TARGET_LANG, TARGET_LANG_OPTIONS, isPresetTargetLang } from "../../../lib/languages";
 import SelectArrow from "../../common/SelectArrow.vue";
@@ -23,11 +21,6 @@ onMounted(() => void settings.ensureCatalog());
 
 const isCustom = computed(() => settings.llm.provider === CUSTOM_PROVIDER);
 
-/** 兼容性/关思考说明：预设已定则不需要靠验证按钮慢慢试 */
-const hint = computed(() => thinkingHint(settings.llm.preset, settings.llm.thinkingOff));
-const unsupported = computed(
-  () => !!settings.llm.preset.api && !isSupportedApi(settings.llm.preset.api),
-);
 /** 当前供应商是「协议不支持」那一类（旧配置残留）：下拉里只留一个禁用项显示它 */
 const unsupportedProvider = computed(() =>
   settings.otherProviders.some((p) => p.id === settings.llm.provider),
@@ -77,7 +70,6 @@ function onPickLang(e: Event): void {
       <input v-model="settings.llm.translateEnabled" type="checkbox" />
       <span>{{ t("llm.translateEnabled") }}</span>
     </label>
-    <p class="set-hint">{{ t("llm.translateEnabledHint") }}</p>
 
     <!--
       供应商预设（用户 2026-09-15 整合 pi-ai 目录）：选供应商 → 自动填端点 + 列出预设模型，
@@ -117,15 +109,11 @@ function onPickLang(e: Event): void {
         <SelectArrow />
       </span>
     </div>
-    <p class="set-hint">{{ isCustom ? t("llm.protocolHintCustom") : t("llm.protocolFromPreset") }}</p>
+    <p v-if="isCustom" class="set-hint">{{ t("llm.protocolHintCustom") }}</p>
 
-    <!-- 预设元信息：端点 / Key 环境变量 / 关思考形态 -->
-    <p class="set-hint llm-meta" :class="{ err: unsupported }">
-      <template v-if="!isCustom && settings.presetProvider">
-        <code class="llm-url">{{ settings.llm.baseUrl }}</code>
-        <span v-if="settings.presetProvider.envKeys.length">{{ t("llm.envKeys", { keys: settings.presetProvider.envKeys.join(" / ") }) }}</span>
-      </template>
-      {{ hint }}
+    <!-- 预设端点（用户 2026-09-17：关思考/环境变量一类的说明文字不再展示） -->
+    <p v-if="!isCustom && settings.presetProvider" class="set-hint llm-meta">
+      <code class="llm-url">{{ settings.llm.baseUrl }}</code>
     </p>
 
     <label v-if="isCustom" class="set-field">
@@ -212,9 +200,6 @@ function onPickLang(e: Event): void {
   gap: 4px 12px;
   align-items: center;
   margin: 2px 0 10px;
-}
-.llm-meta.err {
-  color: var(--err);
 }
 .llm-url {
   font-size: 11px;

@@ -2,7 +2,7 @@
 // 定位：LLM 设置页的「供应商 / 模型预设」数据源 + 给 Rust 客户端的协议适配快照。
 // 运行时网络请求仍在 Rust（translate.rs 的三种协议），这里只提供目录与元数据。
 import type { PiModel, PiProvider } from "./piModels.generated";
-import { currentLocale, t } from "./i18n";
+import { currentLocale } from "./i18n";
 
 /** Rust 客户端实现的三种线协议（pi-ai 目录的 api 字段；见 docs/protocols.md） */
 export const SUPPORTED_APIS = ["openai-completions", "anthropic-messages", "openai-responses"] as const;
@@ -153,8 +153,6 @@ export function detectProviderId(catalog: PiProvider[], baseUrl: string): string
 export interface LlmPresetCompat {
   /** pi-ai 协议；"" = 未知（自定义端点按 openai-completions 处理） */
   api: string;
-  /** pi-ai thinkingFormat；"" = 未知 */
-  thinkingFormat: string;
   /** 施加关思考参数的方式（none = 预设表示无法通过参数关闭） */
   thinkingOffKind: "none" | "thinking_type" | "enable_thinking" | "chat_template_kwargs" | "reasoning_effort" | "";
   thinkingOffValue: string | null;
@@ -168,7 +166,6 @@ export interface LlmPresetCompat {
 
 export const EMPTY_PRESET: LlmPresetCompat = {
   api: "",
-  thinkingFormat: "",
   thinkingOffKind: "",
   thinkingOffValue: null,
   maxTokensField: "",
@@ -180,7 +177,6 @@ export function presetCompat(model: PiModel | null): LlmPresetCompat {
   if (!model) return { ...EMPTY_PRESET, extraHeaders: {} };
   return {
     api: model.api,
-    thinkingFormat: model.thinkingFormat,
     thinkingOffKind: model.thinkingOffKind,
     thinkingOffValue: model.thinkingOffValue,
     maxTokensField: model.maxTokensField,
@@ -188,20 +184,3 @@ export function presetCompat(model: PiModel | null): LlmPresetCompat {
     extraHeaders: model.headers ?? {},
   };
 }
-
-/** 关思考说明文案（设置页；预设已定则不再需要验证按钮探测） */
-export function thinkingHint(compat: LlmPresetCompat, strategy: string): string {
-  if (compat.api && !isSupportedApi(compat.api)) {
-    return t("pi.thinkingHintIncompatible", { api: compat.api });
-  }
-  if (compat.reasoning === false) return t("pi.thinkingHintNoReasoning");
-  // 预设没给出关思考参数：不做预警（用户 2026-09-15）——后端验证按钮会按四种形态逐个探测
-  // 并把手感正确的那种写进 config；实在关不掉才 toast 警告
-  if (compat.thinkingOffKind === "none") return "";
-  const kind = compat.thinkingOffKind || t("pi.thinkingKindUnknown");
-  const fmt = compat.thinkingFormat
-    ? t("pi.thinkingHintFormatSuffix", { fmt: compat.thinkingFormat })
-    : "";
-  return t("pi.thinkingHintDetail", { kind, fmt, strategy: strategy || "auto" });
-}
-
