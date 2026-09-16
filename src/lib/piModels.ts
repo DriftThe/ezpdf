@@ -1,11 +1,31 @@
 // pi-ai 目录（scripts/sync-pi-models.mjs 生成）的封装：供应商显示名、分组、兼容性快照。
 // 定位：LLM 设置页的「供应商 / 模型预设」数据源 + 给 Rust 客户端的协议适配快照。
-// 运行时网络请求仍在 Rust（translate.rs，OpenAI 兼容），这里只提供目录与元数据。
+// 运行时网络请求仍在 Rust（translate.rs 的三种协议），这里只提供目录与元数据。
 import type { PiModel, PiProvider } from "./piModels.generated";
 import { currentLocale, t } from "./i18n";
 
-/** 当前 Rust 客户端唯一支持的协议（其他协议只在 UI 里「可识别」，不可用） */
-export const SUPPORTED_API = "openai-completions";
+/** Rust 客户端实现的三种线协议（pi-ai 目录的 api 字段；见 docs/protocols.md） */
+export const SUPPORTED_APIS = ["openai-completions", "anthropic-messages", "openai-responses"] as const;
+
+/** 协议 id（也是 pi-ai api 字段的取值） */
+export type SupportedApi = (typeof SUPPORTED_APIS)[number];
+
+/** 自定义端点的默认协议（旧配置 `api` 为空也按它处理） */
+export const DEFAULT_API: SupportedApi = "openai-completions";
+
+/**
+ * 协议显示名：三种协议名各语言通用，所以是数据不是 i18n key（与 PROVIDER_LABELS 同理，
+ * 说明文字才进目录）。顺序即下拉顺序。
+ */
+export const PROTOCOL_LABELS: Record<SupportedApi, string> = {
+  "openai-completions": "Chat Completions",
+  "anthropic-messages": "Messages",
+  "openai-responses": "Responses",
+};
+
+export function isSupportedApi(api: string): api is SupportedApi {
+  return (SUPPORTED_APIS as readonly string[]).includes(api);
+}
 
 /** 自定义供应商（不走目录：手填 Base URL + 模型，关思考靠验证按钮探测） */
 export const CUSTOM_PROVIDER = "custom";
@@ -87,7 +107,7 @@ export function sortProviders(providers: PiProvider[]): PiProvider[] {
 }
 
 function isUsable(model: PiModel): boolean {
-  return model.api === SUPPORTED_API;
+  return isSupportedApi(model.api);
 }
 
 export function usableModels(provider: PiProvider): PiModel[] {
@@ -171,7 +191,7 @@ export function presetCompat(model: PiModel | null): LlmPresetCompat {
 
 /** 关思考说明文案（设置页；预设已定则不再需要验证按钮探测） */
 export function thinkingHint(compat: LlmPresetCompat, strategy: string): string {
-  if (compat.api && compat.api !== SUPPORTED_API) {
+  if (compat.api && !isSupportedApi(compat.api)) {
     return t("pi.thinkingHintIncompatible", { api: compat.api });
   }
   if (compat.reasoning === false) return t("pi.thinkingHintNoReasoning");

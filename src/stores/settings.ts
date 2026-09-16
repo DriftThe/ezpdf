@@ -7,11 +7,13 @@ import type { UpdateInfo } from "../../src-tauri/bindings/UpdateInfo";
 import type { PiProvider } from "../lib/piModels.generated";
 import {
   CUSTOM_PROVIDER,
+  DEFAULT_API,
   EMPTY_PRESET,
   type LlmPresetCompat,
   detectProviderId,
   findModel,
   findProvider,
+  isSupportedApi,
   loadCatalog,
   presetCompat,
   sortProviders,
@@ -42,11 +44,14 @@ interface LlmSettings {
   translateEnabled: boolean;
   /**
    * 供应商预设（用户 2026-09-15 整合 pi-ai）：pi-ai 目录的供应商 id，或 "custom"。
-   * 预设只负责「识别 + 填端点 + 协议/关思考参数适配」，网络请求仍是 Rust 的
-   * OpenAI 兼容客户端（见 lib/piModels.ts）。
+   * 预设只负责「识别 + 填端点 + 协议/关思考参数适配」，网络请求仍是 Rust 客户端
+   * （三种线协议，见 lib/piModels.ts 与 docs/protocols.md）。
    */
   provider: string;
-  /** 预设模型派生的兼容性快照（选供应商/模型时重算；自定义 = 全空） */
+  /**
+   * 兼容性快照：预设模型由目录派生（选供应商/模型时重算）；自定义端点由用户选协议
+   * （preset.api），其余字段留空 → 关思考靠验证按钮探测。
+   */
   preset: LlmPresetCompat;
   baseUrl: string;
   apiKey: string; // 明文存在 config.json（README「数据存放位置」有说明）
@@ -364,16 +369,35 @@ export const useSettingsStore = defineStore("settings", () => {
   }
   void fillDefaults();
 
-  /** 由当前「供应商 + 模型」重算兼容快照（目录未加载/自定义/模型不在目录 → 空快照） */
+  /**
+   * 由当前「供应商 + 模型」重算兼容快照（目录未加载/模型不在目录 → 空快照）。
+   * 自定义端点保留用户手选的协议——否则每次改模型名都会把协议清成空（= 退回 Chat
+   * Completions），用户明明选着 Messages 却发出 chat 请求。
+   */
   function syncPreset(): void {
-    llm.value.preset = presetCompat(
+    const preset = presetCompat(
       findModel(catalog.value ?? [], llm.value.provider, llm.value.model),
     );
+    if (llm.value.provider === CUSTOM_PROVIDER) {
+      preset.api = isSupportedApi(llm.value.preset.api) ? llm.value.preset.api : DEFAULT_API;
+    }
+    llm.value.preset = preset;
   }
 
   /** 手填模型后重算快照（设置页输入框 change 事件） */
   function applyModelInput(): void {
     syncPreset();
+  }
+
+  /** 当前生效协议：预设来自目录、自定义来自用户选择；空 = Chat Completions */
+  const protocol = computed<string>(() =>
+    isSupportedApi(llm.value.preset.api) ? llm.value.preset.api : DEFAULT_API,
+  );
+
+  /** 手选协议（用户 2026-09-16）：只有自定义端点能改，预设的协议由目录决定 */
+  function applyProtocol(api: string): void {
+    if (llm.value.provider !== CUSTOM_PROVIDER || !isSupportedApi(api)) return;
+    llm.value.preset = { ...llm.value.preset, api };
   }
 
   /** 选预设供应商：填端点；模型若不属于该供应商则自动取第一个可用模型 */
@@ -509,8 +533,9 @@ export const useSettingsStore = defineStore("settings", () => {
     try {
       const report = await invoke<LlmVerifyReport>("verify_llm", { llm: payload });
       llm.value.thinkingOff = report.strategy;
-      // 找不到关思考参数时明确警告；预设标记为非思考模型则不警告（用户 2026-09-15）
-      const warn = report.strategy === "none" && !report.presetNoThinking;
+      // 探测到的响应里仍带思考内容才警告（strategy "none" 也可能是"这个端点不需要参数"）；
+      // 预设标记为非思考模型则不警告（用户 2026-09-15）
+      const warn = report.thinkingOn && !report.presetNoThinking;
       toast(report.message, warn ? "warn" : "info");
     } catch (e) {
       toast(t("llm.verifyFailed", { error: String(e) }), "error");
@@ -529,7 +554,11 @@ export const useSettingsStore = defineStore("settings", () => {
     }
     modelsFetching.value = true;
     try {
-      modelOptions.value = await invoke<string[]>("fetch_llm_models", { baseUrl, apiKey });
+      modelOptions.value = await invoke<string[]>("fetch_llm_models", {
+        baseUrl,
+        apiKey,
+        api: protocol.value,
+      });
       toast(t("llm.modelsFetched", { count: modelOptions.value.length }));
     } catch (e) {
       toast(t("llm.fetchModelsFailed", { error: String(e) }), "error");
@@ -576,6 +605,7 @@ export const useSettingsStore = defineStore("settings", () => {
     usableProviders,
     otherProviders,
     presetProvider,
+    protocol,
     openPage,
     save,
     setRepoPath,
@@ -583,6 +613,7 @@ export const useSettingsStore = defineStore("settings", () => {
     setLang,
     ensureCatalog,
     applyProvider,
+    applyProtocol,
     applyModelInput,
     llmInvokePayload,
     verifyLlm,

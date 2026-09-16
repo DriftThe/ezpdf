@@ -24,6 +24,9 @@ const outFile = path.join(root, "src", "lib", "piModels.generated.ts");
 /** 与仓库内生成文件对齐的版本；--latest 时从 npm 解析 */
 const PINNED_VERSION = "0.73.1";
 
+/** Rust 客户端实现的三种协议（translate.rs 的 Protocol）：统计与注释用 */
+const SUPPORTED_APIS = ["openai-completions", "anthropic-messages", "openai-responses"];
+
 const args = process.argv.slice(2);
 const checkOnly = args.includes("--check");
 const useLatest = args.includes("--latest");
@@ -92,8 +95,18 @@ function detectCompat(model) {
 }
 
 /** pi-ai 的关思考参数形态（openai-completions buildParams 的那串 if/else 的等价物）。
- *  "off" 级别下 pi-ai 实际写入的字段 → 我们的 Rust 侧按同一张表施加。 */
-function thinkingOffShape(format, offValue) {
+ *  "off" 级别下 pi-ai 实际写入的字段 → 我们的 Rust 侧按同一张表施加。
+ *
+ *  协议不同、写法不同（用户 2026-09-16 接入 Messages / Responses）：
+ *  - anthropic-messages：只有 `thinking: {type:"disabled"}` 一种写法（pi-ai 的
+ *    anthropic provider 在 thinkingEnabled=false 时写这个，与目录里的 off 值无关）；
+ *  - openai-responses：`reasoning.effort`，值取目录的 off（GPT-5 目录标 off: null =
+ *    关不掉，此时不写任何参数——与 pi-ai 的 buildParams 判定一致）；
+ *  - 其余（含 openai-completions）：沿用 detectCompat 的形态表。 */
+function thinkingOffShape(api, reasoning, format, offValue) {
+  if (api === "anthropic-messages") {
+    return { kind: reasoning ? "thinking_type" : "none" };
+  }
   switch (format) {
     case "deepseek":
       return { kind: "thinking_type" };
@@ -105,7 +118,7 @@ function thinkingOffShape(format, offValue) {
     case "openrouter":
       return { kind: "reasoning_effort", value: offValue ?? "none" };
     default:
-      // openai：仅当模型给了 off 值才写 reasoning_effort，否则 pi-ai 什么都不加
+      // openai：仅当模型给了 off 值才写 effort，否则 pi-ai 什么都不加
       return typeof offValue === "string"
         ? { kind: "reasoning_effort", value: offValue }
         : { kind: "none" };
@@ -132,7 +145,7 @@ function toCatalog(MODELS, envKeys, version) {
     for (const model of Object.values(MODELS[providerId])) {
       const compat = { ...detectCompat(model), ...(model.compat ?? {}) };
       const offValue = model.thinkingLevelMap?.off ?? null;
-      const shape = thinkingOffShape(compat.thinkingFormat, offValue);
+      const shape = thinkingOffShape(model.api, model.reasoning, compat.thinkingFormat, offValue);
       baseUrlCount.set(model.baseUrl, (baseUrlCount.get(model.baseUrl) ?? 0) + 1);
       models.push({
         id: model.id,
@@ -161,17 +174,18 @@ function render(catalog) {
   const stats = {
     providers: catalog.providers.length,
     models: catalog.providers.reduce((n, p) => n + p.models.length, 0),
-    usable: catalog.providers.reduce((n, p) => n + p.models.filter((m) => m.api === "openai-completions").length, 0),
+    usable: catalog.providers.reduce((n, p) => n + p.models.filter((m) => SUPPORTED_APIS.includes(m.api)).length, 0),
   };
   return `// 本文件由 scripts/sync-pi-models.mjs 生成，请勿手改。
 // 数据源：@mariozechner/pi-ai@${catalog.version} 的 dist/models.generated.js（模型目录，
 // 零 import 的纯数据）+ dist/env-api-keys.js（API Key 环境变量表）+ 移植的 detectCompat。
 // 刷新：node scripts/sync-pi-models.mjs --latest
-// 规模：${stats.providers} 个供应商 / ${stats.models} 个模型（其中 ${stats.usable} 个可用当前 OpenAI 兼容客户端直连）
+// 规模：${stats.providers} 个供应商 / ${stats.models} 个模型（其中 ${stats.usable} 个可用当前客户端直连：
+// Chat Completions / Messages / Responses 三种协议，见 src-tauri/src/translate.rs）
 
 export interface PiModel {
   id: string;
-  /** pi-ai 线上协议：只有 "openai-completions" 能走我们当前的 Rust 客户端 */
+  /** pi-ai 线上协议：openai-completions / anthropic-messages / openai-responses 三种可直连 */
   api: string;
   baseUrl: string;
   /** 是否有思考模式（false = 无需关思考参数） */
@@ -180,7 +194,9 @@ export interface PiModel {
   maxTokensField: "max_tokens" | "max_completion_tokens";
   /** pi-ai 的关思考参数形态（openai | openrouter | deepseek | zai | qwen | qwen-chat-template） */
   thinkingFormat: string;
-  /** 我们施加关思考参数的方式（none = 预设表示无法通过参数关闭） */
+  /** 我们施加关思考参数的方式（none = 预设表示无法通过参数关闭；按协议不同写法：
+   *  openai-completions → 顶层 reasoning_effort 等、anthropic-messages → thinking.type、
+   *  openai-responses → reasoning.effort） */
   thinkingOffKind: "none" | "thinking_type" | "enable_thinking" | "chat_template_kwargs" | "reasoning_effort";
   thinkingOffValue: string | null;
   /** 模型特有请求头（pi-ai 目录里少数模型有） */

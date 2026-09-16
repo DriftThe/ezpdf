@@ -5,7 +5,9 @@ import { useParseStore } from "../../../stores/parse";
 import { useSettingsStore } from "../../../stores/settings";
 import {
   CUSTOM_PROVIDER,
-  SUPPORTED_API,
+  PROTOCOL_LABELS,
+  SUPPORTED_APIS,
+  isSupportedApi,
   providerLabel,
   thinkingHint,
 } from "../../../lib/piModels";
@@ -24,7 +26,7 @@ const isCustom = computed(() => settings.llm.provider === CUSTOM_PROVIDER);
 /** 兼容性/关思考说明：预设已定则不需要靠验证按钮慢慢试 */
 const hint = computed(() => thinkingHint(settings.llm.preset, settings.llm.thinkingOff));
 const unsupported = computed(
-  () => !!settings.llm.preset.api && settings.llm.preset.api !== SUPPORTED_API,
+  () => !!settings.llm.preset.api && !isSupportedApi(settings.llm.preset.api),
 );
 /** 当前供应商是「协议不支持」那一类（旧配置残留）：下拉里只留一个禁用项显示它 */
 const unsupportedProvider = computed(() =>
@@ -34,6 +36,22 @@ const unsupportedProvider = computed(() =>
 function onProvider(e: Event): void {
   settings.applyProvider((e.target as HTMLSelectElement).value);
 }
+
+function onProtocol(e: Event): void {
+  settings.applyProtocol((e.target as HTMLSelectElement).value);
+}
+
+/** Base URL 示例跟着协议走（自定义端点最容易填错路径） */
+const baseUrlPlaceholder = computed(() => {
+  switch (settings.protocol) {
+    case "anthropic-messages":
+      return "https://api.anthropic.com";
+    case "openai-responses":
+      return "https://api.openai.com/v1";
+    default:
+      return "https://api.deepseek.com/v1";
+  }
+});
 
 /** 目标语言：预设命中就直接用，否则显示"自定义"并展开输入框（用户 2026-09-15） */
 const customLang = ref(false);
@@ -64,8 +82,8 @@ function onPickLang(e: Event): void {
     <!--
       供应商预设（用户 2026-09-15 整合 pi-ai 目录）：选供应商 → 自动填端点 + 列出预设模型，
       并把「协议 / max tokens 字段 / 关思考参数形态」派生给 Rust 客户端（lib/piModels.ts）。
-      协议不是 openai-completions 的供应商不列出（客户端只实现了这一种协议，见 docs/protocols.md）；
-      旧配置若正指向这类供应商，只把它作为禁用项显示，避免下拉框空掉。
+      协议暂不支持（google/bedrock/mistral/azure 等）的供应商不列出；旧配置若正指向这类
+      供应商，只把它作为禁用项显示，避免下拉框空掉。
     -->
     <div class="set-field">
       <span>{{ t("llm.provider") }}</span>
@@ -83,6 +101,24 @@ function onPickLang(e: Event): void {
       </span>
     </div>
 
+    <!--
+      协议（用户 2026-09-16）：三种线协议各有一套请求体/认证头/取字段方式
+      （见 docs/protocols.md）。预设模型的协议由 pi-ai 目录决定，这里只读展示；
+      选「自定义」才能手挑协议，Base URL 的路径也按协议自动补。
+    -->
+    <div class="set-field">
+      <span>{{ t("llm.protocol") }}</span>
+      <span class="set-select-wrap">
+        <select class="set-select" :value="settings.protocol" :disabled="!isCustom" @change="onProtocol">
+          <option v-for="api in SUPPORTED_APIS" :key="api" :value="api">
+            {{ PROTOCOL_LABELS[api] }}
+          </option>
+        </select>
+        <SelectArrow />
+      </span>
+    </div>
+    <p class="set-hint">{{ isCustom ? t("llm.protocolHintCustom") : t("llm.protocolFromPreset") }}</p>
+
     <!-- 预设元信息：端点 / Key 环境变量 / 关思考形态 -->
     <p class="set-hint llm-meta" :class="{ err: unsupported }">
       <template v-if="!isCustom && settings.presetProvider">
@@ -94,7 +130,7 @@ function onPickLang(e: Event): void {
 
     <label v-if="isCustom" class="set-field">
       <span>{{ t("llm.baseUrl") }}</span>
-      <input v-model="settings.llm.baseUrl" placeholder="https://api.deepseek.com/v1" />
+      <input v-model="settings.llm.baseUrl" :placeholder="baseUrlPlaceholder" />
     </label>
 
     <!-- API Key + 验证（用户 2026-09-14）：验证按钮检查连通性并探测关闭思考的参数策略；

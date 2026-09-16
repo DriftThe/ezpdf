@@ -13,7 +13,7 @@ export default defineMessages({
     "toast.llmMissing": "LLM 未配置，翻译已跳过（设置页填写或配置 auth.cfg）",
 
 
-    "pi.thinkingHintIncompatible": "该模型使用 {api} 协议，当前版本只能识别、不能调用（仅 OpenAI 兼容协议可用）",
+    "pi.thinkingHintIncompatible": "该模型使用 {api} 协议；当前版本只支持 Chat Completions / Messages / Responses 三种协议",
     "pi.thinkingHintNoReasoning": "预设模型无思考模式，无需关思考参数",
     "pi.thinkingKindUnknown": "未知（自定义端点靠验证探测）",
     "pi.thinkingHintFormatSuffix": "（pi-ai {fmt} 格式）",
@@ -31,7 +31,7 @@ export default defineMessages({
     "toast.llmMissing": "LLM 未設定，翻譯已跳過（設定頁填寫或設定 auth.cfg）",
 
 
-    "pi.thinkingHintIncompatible": "該模型使用 {api} 協議，目前版本只能辨識、不能呼叫（僅 OpenAI 相容協議可用）",
+    "pi.thinkingHintIncompatible": "該模型使用 {api} 協議；目前版本只支援 Chat Completions / Messages / Responses 三種協議",
     "pi.thinkingHintNoReasoning": "預設模型無思考模式，無需關思考參數",
     "pi.thinkingKindUnknown": "未知（自訂端點靠驗證探測）",
     "pi.thinkingHintFormatSuffix": "（pi-ai {fmt} 格式）",
@@ -49,7 +49,7 @@ export default defineMessages({
     "toast.llmMissing": "LLM not configured, translation skipped (fill in Settings or configure auth.cfg)",
 
 
-    "pi.thinkingHintIncompatible": "This model uses the {api} protocol; this version can only identify it, not call it (only OpenAI-compatible protocols work)",
+    "pi.thinkingHintIncompatible": "This model uses the {api} protocol; this version supports Chat Completions / Messages / Responses only",
     "pi.thinkingHintNoReasoning": "Preset model has no thinking mode; no thinking-off parameter needed",
     "pi.thinkingKindUnknown": "unknown (custom endpoints rely on verify probing)",
     "pi.thinkingHintFormatSuffix": " (pi-ai {fmt} format)",
