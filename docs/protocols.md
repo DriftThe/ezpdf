@@ -2,43 +2,53 @@
 
 简体中文 | [English](#english)
 
-## 为什么只支持 OpenAI 兼容协议
+## 支持的三种线协议
 
-ezpdf 的翻译客户端（`src-tauri/src/translate.rs`）只实现了一族线协议：
+翻译客户端（`src-tauri/src/translate.rs`）实现三种协议，`api` 字段（pi-ai 目录的标注，
+随设置持久化成 `llm.preset.api`）决定用哪一种：
 
-- 请求：`POST {baseUrl}/chat/completions`，`messages: [{role, content}]`，从 `choices[].message.content` 取回复；
-- 关思考：按端点/预设注入 `reasoning_effort` 等参数（见 AGENTS.md）；
-- 模型列表：`GET {baseUrl}/models`。
+| `api` | 协议 | 请求 | 认证 | 回复取字段 |
+| --- | --- | --- | --- | --- |
+| `openai-completions` | Chat Completions | `POST {base}/chat/completions`，`messages: [{role, content}]` | `Authorization: Bearer` | `choices[0].message.content` |
+| `anthropic-messages` | Messages | `POST {base}/v1/messages`，`system` 顶层 + `messages` 数组 | `x-api-key` + `anthropic-version: 2023-06-01` | `content[]` 里 `type: "text"` 的块 |
+| `openai-responses` | Responses | `POST {base}/responses`，`instructions` + `input[]` 项 | `Authorization: Bearer` | `output[]` 里 `type: "message"` 的 `output_text` |
 
-pi-ai 目录为每个模型标注了它所属厂商的线协议（`api` 字段）。当前目录中的分布（按模型数）：
+流程（送翻块打包、上下文协议、纠正重试、关思考）三份协议完全共用，只有
+「请求体形状 / 认证头 / 回复取字段」三处分叉，都收在 `Protocol` 的三个小函数里。
+`""`（旧配置没这个键）按 Chat Completions 处理。
 
-| `api` 取值 | 模型数 | 本客户端 |
+另外两处按协议分组：
+
+- **关思考**：Chat 保持原有矩阵（`reasoning`/`enable_thinking`/`thinking_type`/
+  `chat_template_kwargs`/`reasoning_effort`，见 AGENTS.md）；Messages 只有
+  `thinking: {type: "disabled"}` 一种写法；Responses 写 `reasoning.effort`（目录给了
+  off 值就用它，否则只在显式策略下写 `none` —— GPT-5.1+ 支持，更早的推理模型目录标
+  `off: null` 即关不掉）。两种新协议下，若模型可能仍在思考就不写 `temperature`：这两个
+  API 都会因为「温度 + 思考」同时出现而报错。
+- **模型列表**：`GET {base}/models`；Messages 是 `GET {base}/v1/models`（同一个
+  `x-api-key`）。Messages 的 Base URL 按 Anthropic SDK 约定不带版本段
+  （`https://api.anthropic.com` → `/v1/messages`），也容忍已经带了 `/v1` 甚至完整
+  `/v1/messages` 的写法。
+
+## 仍未支持
+
+| `api` 取值 | 模型数 | 原因 |
 | --- | --- | --- |
-| `openai-completions` | 405 | 支持 |
-| `anthropic-messages` | 263 | 不支持 |
-| `bedrock-converse-stream` | 93 | 不支持 |
-| `openai-responses` | 86 | 不支持 |
-| `azure-openai-responses` | 42 | 不支持 |
-| `google-generative-ai` | 29 | 不支持 |
-| `mistral-conversations` | 28 | 不支持 |
-| `google-vertex` | 13 | 不支持 |
-| `openai-codex-responses` | 10 | 不支持 |
+| `bedrock-converse-stream` | 93 | 走 SigV4 签名 + AWS 凭据链，不只是 API Key |
+| `azure-openai-responses` | 42 | 同 Responses 但 base URL 带 deployment、认证头是 `api-key` |
+| `google-generative-ai` | 29 | `systemInstruction` + `candidates[].content.parts[]`，另有 `x-goog-api-key` |
+| `mistral-conversations` | 28 | Mistral 自家的对话协议（工具/回复形状都不同） |
+| `google-vertex` | 13 | 同 Google + GCP 认证 |
+| `openai-codex-responses` | 10 | ChatGPT 后端专用（OAuth + 特殊头） |
 
-不支持的三种原因（不是「懒得做」，而是三处结构都不一样）：
+这些供应商**不在设置页的供应商下拉里列出**（避免「选了才发现不能用」）；旧配置如果
+正指向其中之一，会显示为一个禁用项并标注不可用，调用时 Rust 报错并说明支持哪三种。
 
-1. **请求体结构不同**：system 提示词的位置（Anthropic 是顶层 `system` 字段，Google 是 `systemInstruction`）、内容块模型（Anthropic 为 `content: [{type:"text", text}]`）、工具调用表示法都不同。
-2. **响应结构不同**：OpenAI 是 SSE `choices[].delta.content`；Anthropic 是 `content_block_delta`；Google 是 `candidates[].content.parts[]`。流式解析与非流式取字段各要一套。
-3. **认证与额外头不同**：Anthropic 用 `x-api-key` + `anthropic-version`；Google 用 `x-goog-api-key`（或 `?key=`）；Bedrock 走 SigV4 签名（需要 AWS 凭据链，不只是 API Key）。
+## 想再接入一种协议
 
-## 当前的处理方式
-
-- **前端不列出这类供应商**（避免「选了才发现不能调用」）：设置 → LLM 的供应商下拉只列 `openai-completions` 的预设，外加「自定义（手填 Base URL / 模型）」。
-- 旧配置若正指向这类供应商，仍会显示为一个**禁用项**并标注不可用；调用时 Rust 会直接拒绝并说明仅支持 OpenAI 兼容端点。
-- 自定义端点只要实现 OpenAI Chat Completions 协议即可直接使用。
-
-## 想接入新协议
-
-在 `translate.rs` 的 `chat_request` 中按 `api` 值分支：构造请求体、解析响应体（可不做流式），并复用现有的关思考策略、重试与纠正逻辑。约每个协议半天到一天，尚未排期。
+在 `translate.rs` 的 `Protocol` 上加一个分支即可：`chat_url`/`models_url`（路径）、
+`build_body`（请求体 + 认证头）、`completion_of`（取文本 + 判断是否在思考），再按需
+扩展关思考与 `verify_llm` 的候选策略。提示词与调度链路不用动。
 
 ---
 
@@ -46,28 +56,41 @@ pi-ai 目录为每个模型标注了它所属厂商的线协议（`api` 字段�
 
 ## English
 
-The translation client (`src-tauri/src/translate.rs`) implements one wire protocol only: OpenAI Chat Completions (`POST {baseUrl}/chat/completions`, `messages: [{role, content}]`, reply at `choices[].message.content`), plus `GET {baseUrl}/models` for listings.
+The translation client (`src-tauri/src/translate.rs`) speaks three wire protocols; the `api`
+field (pi-ai's per-model tag, persisted as `llm.preset.api`) picks one:
 
-The pi-ai catalog tags every model with the vendor protocol it speaks (`api`). Current distribution by model count:
+| `api` | Protocol | Request | Auth | Reply |
+| --- | --- | --- | --- | --- |
+| `openai-completions` | Chat Completions | `POST {base}/chat/completions`, `messages: [{role, content}]` | `Authorization: Bearer` | `choices[0].message.content` |
+| `anthropic-messages` | Messages | `POST {base}/v1/messages`, top-level `system` + `messages[]` | `x-api-key` + `anthropic-version: 2023-06-01` | `text` blocks inside `content[]` |
+| `openai-responses` | Responses | `POST {base}/responses`, `instructions` + `input[]` items | `Authorization: Bearer` | `output_text` parts of `output[]` message items |
 
-| `api` | Models | This client |
-| --- | --- | --- |
-| `openai-completions` | 405 | supported |
-| `anthropic-messages` | 263 | not supported |
-| `bedrock-converse-stream` | 93 | not supported |
-| `openai-responses` | 86 | not supported |
-| `azure-openai-responses` | 42 | not supported |
-| `google-generative-ai` | 29 | not supported |
-| `mistral-conversations` | 28 | not supported |
-| `google-vertex` | 13 | not supported |
-| `openai-codex-responses` | 10 | not supported |
+Everything else — block packing, the context protocol, correction retries, thinking-off — is
+shared; only the request shape, the auth headers and the reply extraction branch, and those live
+in three small functions behind `Protocol`. An empty `api` (old configs) means Chat Completions.
 
-Three structural differences stand in the way:
+Two more spots are protocol-aware:
 
-1. **Different request shape** — where the system prompt goes (a top-level `system` field for Anthropic, `systemInstruction` for Google), how content blocks are modelled (`content: [{type:"text", text}]` for Anthropic), and how tool calls are represented.
-2. **Different response shape** — OpenAI streams `choices[].delta.content`, Anthropic emits `content_block_delta`, Google nests `candidates[].content.parts[]`; each needs its own parser for both streaming and non-streaming reads.
-3. **Different auth and headers** — Anthropic needs `x-api-key` plus `anthropic-version`, Google uses `x-goog-api-key` (or `?key=`), and Bedrock requires SigV4 signing over an AWS credential chain rather than a plain API key.
+- **Thinking-off** — Chat keeps its matrix (`reasoning`/`enable_thinking`/`thinking_type`/
+  `chat_template_kwargs`/`reasoning_effort`, see AGENTS.md); Messages only has
+  `thinking: {type: "disabled"}`; Responses writes `reasoning.effort` (the catalog's off value
+  when present, otherwise `none` only under an explicit strategy — GPT-5.1+ accepts it, older
+  reasoning models are tagged `off: null`, i.e. cannot be disabled). Under both new protocols
+  `temperature` is omitted while the model may still be thinking, since both APIs reject a
+  temperature combined with an active reasoning mode.
+- **Model listing** — `GET {base}/models`; Anthropic uses `GET {base}/v1/models` with the same
+  `x-api-key`. A Messages base URL follows the Anthropic SDK convention (no version segment:
+  `https://api.anthropic.com` → `/v1/messages`) and also tolerates a base that already ends in
+  `/v1` or the full `/v1/messages`.
 
-As a result, providers speaking those protocols are no longer listed in the provider dropdown (a saved config pointing at one is shown as a disabled entry with a warning, and the backend rejects the call with a clear message). Any endpoint that implements OpenAI Chat Completions works as-is via the custom option.
+Still unsupported (and therefore **not listed** in the provider dropdown; a saved config pointing
+at one shows as a disabled entry, and the backend rejects the call with a message naming the three
+supported protocols): `bedrock-converse-stream` (93 models, SigV4 + AWS credential chain),
+`azure-openai-responses` (42, deployment-based URL and an `api-key` header),
+`google-generative-ai` (29, `systemInstruction` + `candidates[].content.parts[]`),
+`mistral-conversations` (28), `google-vertex` (13), `openai-codex-responses` (10, OAuth backend).
 
-Adding a protocol means branching on the `api` value inside `chat_request`: build the request body, parse the response body (streaming optional) and reuse the existing thinking-off, retry and correction logic — roughly half a day to a day per protocol. Not scheduled yet.
+Adding another protocol means one more branch in `Protocol`: `chat_url`/`models_url` (paths),
+`build_body` (request body + auth headers) and `completion_of` (text + thinking detection), plus
+whatever thinking-off and `verify_llm` candidates it needs. Prompts and the scheduling pipeline
+stay untouched.

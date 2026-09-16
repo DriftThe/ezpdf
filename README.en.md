@@ -20,7 +20,7 @@ ezpdf first splits every page into content blocks with coordinates via OCR, tran
 - **Redrawn tables**: with the `table` type checked, tables (merged cells included) are redrawn as web tables in the translation pane, with KaTeX for formulas inside cells; tables whose structure cannot be parsed are left untouched.
 - **Smart context**: the translation flow embeds a hidden loop that lets the model request surrounding PDF context, keeping terminology and pronouns consistent across page breaks.
 - **Local OCR service**: an embedded Python service (layout analysis + text recognition) with a one-click in-app installer, supporting CPU and GPU (CUDA).
-- **Provider presets**: ships a vendored pi-ai model catalog (31 providers / 969 models) that fills in endpoint, protocol and parameter shape from the chosen provider; any OpenAI-compatible endpoint also works.
+- **Provider presets**: ships a vendored pi-ai model catalog (31 providers / 969 models) that fills in endpoint, protocol and parameter shape from the chosen provider; three wire protocols are supported — OpenAI **Chat Completions**, Anthropic **Messages** and OpenAI **Responses** (custom endpoints let you pick the protocol).
 - **Book repository**: any plain folder is a repository holding PDFs plus an `.ezrepo` index; folders, moving, deleting and multi-file import are supported, and a book's parse state can be cleared in one click to parse it again.
 - **Controllable scope**: pick which block types are translated (text, titles, footnotes, footers, tables, …) under Settings → General. Unchecked types are neither translated nor covered — the original PDF pixels stay. Changes apply only to blocks that are not translated yet (exception: once `table` is checked, tables that were never translated inside already-translated pages get translated on their own).
 - **Self-drawn interface**: no system title bar — chrome and window controls are drawn by the app; light, dark and follow-system themes.
@@ -36,7 +36,7 @@ PDF ──pdfjs──▶ page rendering (self-drawn virtual scroll)
 ```
 
 - **Frontend**: Vue 3 + TypeScript + Vite with Pinia for state. Both panes are drawn by `pdfjs-dist` (no pdf-vue3-style viewer).
-- **Backend**: Rust (Tauri 2) handles the repository index, file locks, translation scheduling and the OpenAI-compatible client. PDF binaries never travel through IPC — the frontend reads them directly over the asset protocol.
+- **Backend**: Rust (Tauri 2) handles the repository index, file locks, translation scheduling and the LLM client (three wire protocols). PDF binaries never travel through IPC — the frontend reads them directly over the asset protocol.
 - **OCR service**: `pyserver/` (Python + FastAPI) runs a single-instance pipeline — **PP-DocLayoutV3** for layout analysis and **PaddleOCR-VL-1.6** for recognition. Models are downloaded on first use.
 - **Parse state**: each book has one JSON file (`{status, pages[{index, finished, translated, blocks[]}]}`), which is the single source of truth and can be edited by hand.
 
@@ -82,7 +82,7 @@ Useful commands:
 
 1. **Create a repository**: click **Select** in the left sidebar and pick a folder (any empty folder works), or reopen a repository you created earlier.
 2. **Import PDFs**: click **Import PDF** and choose files (multiple selection supported). PDFs are copied into the repository and a skeleton JSON is generated next to each one.
-3. **Configure a translation model**: open Settings → **LLM**, choose a **provider** and a **preset model** (or type a model name), enter your **API key**, then click **Verify** to confirm connectivity. The OpenAI-compatible protocol is used by default. If you do not need translation yet, turn off **Enable translation** (the first switch on that page): OCR text is then written into the translation field as-is and marked done, and re-enabling translation later will not re-translate those pages.
+3. **Configure a translation model**: open Settings → **LLM**, choose a **provider** and a **preset model** (or type a model name), enter your **API key**, then click **Verify** to confirm connectivity. A preset model's protocol comes from the catalog; picking a custom endpoint lets you choose Chat Completions / Messages / Responses yourself. If you do not need translation yet, turn off **Enable translation** (the first switch on that page): OCR text is then written into the translation field as-is and marked done, and re-enabling translation later will not re-translate those pages.
 4. **Get an OCR service ready**: open Settings → **OCR** and pick a **service source**.
    - **Managed locally** (default): click **Install service** to install the Python dependencies (including torch) and download the models (~1.9 GB; a China-mainland mirror is available). Once all five status lights are green the service is ready; pick CUDA if you have an NVIDIA GPU.
    - **Online service**: enter the address of a deployed instance of the same parse service (e.g. `http://127.0.0.1:9055`) and click **Test** to probe it — no local dependencies or models needed, and the batch size is whatever that service advertises (re-negotiated before every request). If the server requires auth (deployed instances do by default), paste the token it printed on startup into **Service token**. See [`pyserver/PROTOCOL.md`](pyserver/PROTOCOL.md) for the full contract to build your own server, run `python pyserver/server_test.py` (port 9055) for development, or use the container images below.
@@ -173,7 +173,7 @@ already built the image locally, the same packaging path works:
 
 - **Code signing**: the installers are unsigned. The plan is to apply for [SignPath Foundation](https://signpath.org/)'s free signing for open-source projects (certificate issued to SignPath Foundation, private key held in an HSM); a code signing policy statement will be added here once approved.
 - **AppImage**: not provided yet. An AppImage mounts read-only from a random path, which invalidates the virtual environment derived from the bundled Python runtime; supporting it means copying the interpreter to a stable location (such as `~/.ezpdf/python`) before creating the venv.
-- **Other protocols**: only OpenAI-compatible (`openai-completions`) endpoints can be called, so providers speaking other protocols are no longer listed in the provider dropdown (a saved config pointing at one shows as a disabled entry). See [`docs/protocols.md`](docs/protocols.md) for why, and what adding one would take.
+- **Other protocols**: only Chat Completions / Messages / Responses are implemented, so providers speaking other protocols are not listed in the provider dropdown (a saved config pointing at one shows as a disabled entry). See [`docs/protocols.md`](docs/protocols.md) for why, and what adding one would take.
 
 ## Contributing
 
