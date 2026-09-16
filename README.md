@@ -139,16 +139,17 @@ bearer 令牌，公网部署请自行套一层 HTTPS 反向代理。
 
 #### 从 Release 快照离线部署（公网隔离的服务器）
 
-目标机器不构建（或根本连不上外网）时，直接在 Releases 页下载解析服务的镜像快照：
+目标机器不构建（或根本连不上外网）时，直接下载解析服务的镜像快照。镜像与应用安装包**分开发布**：
+请到 Releases 页找 `pyserver-v<版本>`（首个快照是 draft，仓库维护者转正后才对外可见）：
 
 ```bash
 # 1) 合并分片：GitHub Release 单文件上限 2GiB，所以 tar 被切成约 1.9GiB 的分片
-cat ezpdf-pyserver-v0.1.1-cpu.tar.part-* > ezpdf-pyserver-v0.1.1-cpu.tar
-#    Windows: copy /b ezpdf-pyserver-v0.1.1-cpu.tar.part-* ezpdf-pyserver-v0.1.1-cpu.tar
-sha256sum -c ezpdf-pyserver-v0.1.1-cpu.tar.sha256     # 校验合并结果
+cat ezpdf-pyserver-v0.1.2-cpu.tar.part-* > ezpdf-pyserver-v0.1.2-cpu.tar
+#    Windows: copy /b ezpdf-pyserver-v0.1.2-cpu.tar.part-* ezpdf-pyserver-v0.1.2-cpu.tar
+sha256sum -c ezpdf-pyserver-v0.1.2-cpu.tar.sha256     # 校验合并结果
 
-# 2) 载入镜像（得到 ezpdf-pyserver:cpu 与 ezpdf-pyserver:v0.1.1-cpu 两个名字）
-docker load -i ezpdf-pyserver-v0.1.1-cpu.tar
+# 2) 载入镜像（得到 ezpdf-pyserver:cpu 与 ezpdf-pyserver:v0.1.2-cpu 两个名字）
+docker load -i ezpdf-pyserver-v0.1.2-cpu.tar
 
 # 3) 起服务：GPU 快照加 --gpus all，其余相同
 docker run -d --name ezpdf-pyserver -p 127.0.0.1:9055:9055 -v ./data:/data ezpdf-pyserver:cpu
@@ -157,8 +158,9 @@ docker logs ezpdf-pyserver | grep "auth token"        # 令牌粘到 应用 → 
 
 快照与发版同源（workflow 会 checkout 对应 tag 的源码来构建），CPU 约 2.1GB、GPU 约 4.5GB 分片后上传；
 模型已打进镜像，容器不需要联网也不需要挂载卷。快照由仓库的 **Pyserver images** workflow 手动构建
-（`Actions → Pyserver images → Run workflow`，可选择只构建某个变体）；本机镜像已构建好时也可以用同一条
-打包路径：`bash scripts/docker-snapshot.sh cpu v0.1.1`。
+（`Actions → Pyserver images → Run workflow`，填应用 tag、可选只构建某个变体），产物上传到
+`pyserver-<应用 tag>` 这个独立 Release；本机镜像已构建好时也可以用同一条打包路径：
+`bash scripts/docker-snapshot.sh cpu v0.1.2 pyserver-v0.1.2`。
 
 ## 路线图
 

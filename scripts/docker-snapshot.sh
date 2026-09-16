@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # 把一个已构建好的解析服务镜像打成分片快照并上传到 Release。
 #
-#   bash scripts/docker-snapshot.sh cpu v0.1.1
-#   bash scripts/docker-snapshot.sh gpu v0.1.1
+#   bash scripts/docker-snapshot.sh cpu v0.1.2 pyserver-v0.1.2
+#   bash scripts/docker-snapshot.sh gpu v0.1.2 pyserver-v0.1.2
+#     ↑ 第 2 个参数是构建源 tag（决定文件名），第 3 个是上传目标 Release
+#       （镜像与应用安装包分开发布：pyserver-<应用 tag>；缺省等于第 2 个参数）
 #
 # 前置：镜像已存在（ezpdf-pyserver:cpu / :gpu，见 pyserver/Dockerfile），
 #       本机已登录 gh（CI 里用 GITHUB_TOKEN），依赖 GNU coreutils 的 split/sha256sum（Linux）。
@@ -11,8 +13,9 @@
 # 客户端下载后按 README「用 Docker 部署解析服务」里的说明合并（cat 或 copy /b）再 docker load。
 set -euo pipefail
 
-variant="${1:?usage: docker-snapshot.sh <cpu|gpu> <tag>}"
-tag="${2:?usage: docker-snapshot.sh <cpu|gpu> <tag>}"
+variant="${1:?usage: docker-snapshot.sh <cpu|gpu> <tag> [release]}"
+tag="${2:?usage: docker-snapshot.sh <cpu|gpu> <tag> [release]}"
+release="${3:-$tag}"
 
 tar="ezpdf-pyserver-${tag}-${variant}.tar"
 sha="ezpdf-pyserver-${tag}-${variant}.tar.sha256"
@@ -25,7 +28,7 @@ split -b 1900M -d --suffix-length=2 "$tar" "${tar}.part-"
 rm -f "$tar"
 
 ls -l "${tar}".part-* "$sha" | awk '{printf "%12d  %s\n", $5, $9}'
-gh release upload "$tag" "${tar}".part-* "$sha" --clobber
+gh release upload "$release" "${tar}".part-* "$sha" --clobber
 
 # 分片上传完就删掉：GPU 快照前还要腾一次盘（tar + 镜像同时在会很占地方）
 rm -f "${tar}".part-*

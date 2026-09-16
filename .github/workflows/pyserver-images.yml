@@ -2,17 +2,19 @@ name: Pyserver images
 
 # 解析服务的镜像快照：构建 CPU/GPU 两个自包含镜像（模型打在镜像里，离线可用），
 # 容器冒烟测试（/health 鉴权 + 真实推理）后 docker save、切成 <2GiB 分片，
-# 附到对应 tag 的 Release 下（见 README「用 Docker 部署解析服务」）。
+# 上传到**独立于应用发布**的 `pyserver-<应用 tag>` Release（用户 2026-09-17 拍板：
+# 镜像与应用安装包分开，别把 6.5GB 附件塞进应用 Release）。
 #
 # 为什么手动触发：一次要现下模型（1.9GB）与 torch 轮子（CPU 约 0.3GB / GPU 约 5GB），
-# 单变体约 20-30 分钟，没必要挂在每次发版上。发版流程仍只由 release.yml 负责安装包。
+# 单变体约 20-30 分钟，没必要挂在每次发版上。应用发版仍只由 release.yml 负责安装包。
 # 为什么切分：GitHub Release 单个附件上限 2GiB，实测 tar 为 2.1GB（CPU）/ 4.5GB（GPU），
 # 客户端下载分片后按 README 合并再 docker load。
+# 为什么先 draft：与应用发版同一节奏——草稿自检后再手动转正（`gh release edit --draft=false`）。
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 目标 Release 的 tag（留空 = 用 tauri.conf.json 里的版本）
+        description: 构建源的 tag（留空 = 用 tauri.conf.json 里的版本）；镜像会传到 pyserver-<tag>
         required: false
       variants:
         description: 构建哪些变体
@@ -53,20 +55,39 @@ jobs:
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release=pyserver-${tag}" >> "$GITHUB_OUTPUT"
           echo "building from $(git rev-parse --short HEAD)"
           df -h / | tail -1
 
-      # 分片要挂到 Release 上：还没有就建 draft（正文交给 release.yml 的安装包流程去写）
-      - name: Ensure draft release
+      # 镜像 Release 与应用 Release 分开（用户 2026-09-17）：另建 pyserver-<tag>，首次为 draft，
+      # 自检后手动转正（gh release edit pyserver-<tag> --draft=false）；应用 Release 不背镜像附件。
+      - name: Ensure pyserver draft release
         run: |
           set -euo pipefail
           tag="${{ steps.vars.outputs.tag }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "release $tag already exists"
-          else
-            printf 'Pyserver image snapshots for %s. See the README for how to merge the parts and load the image.\n' "$tag" > /tmp/notes.md
-            gh release create "$tag" --draft --verify-tag --title "ezpdf $tag" --notes-file /tmp/notes.md
+          rel="${{ steps.vars.outputs.release }}"
+          if gh release view "$rel" >/dev/null 2>&1; then
+            echo "release $rel already exists"
+            exit 0
           fi
+          cat > /tmp/notes.md <<EOF
+          解析服务（pyserver）的自包含镜像快照，对应应用版本 `$tag`；与应用安装包分开发布。
+
+          - `ezpdf-pyserver-$tag-cpu.tar.part-*` — CPU 镜像（模型内置）
+          - `ezpdf-pyserver-$tag-gpu.tar.part-*` — GPU 镜像（CUDA 版 torch + triton，模型内置）
+          - 每个变体附 `.sha256` 校验文件
+
+          合并分片（Linux cat / Windows copy /b）→ 核对 sha256 → docker load，完整说明见仓库 README
+          「用 Docker 部署解析服务」。镜像自包含，容器启动即可推理，不需要挂载卷、不依赖联网；
+          服务端每次启动都会打印访问令牌。
+
+          Self-contained pyserver image snapshots for app $tag, published separately from the
+          application installers. Concatenate the parts (Linux cat, Windows copy /b), verify the
+          sha256, then docker load — see the README section on running the parse service with
+          Docker. The models are baked in; no volume and no network are needed.
+          EOF
+          gh release create "$rel" --draft --verify-tag --title "ezpdf pyserver $tag" --notes-file /tmp/notes.md
+
 
       - uses: actions/setup-python@v5
         with:
@@ -128,7 +149,7 @@ jobs:
 
       - name: Package and upload CPU snapshot
         if: contains(inputs.variants, 'cpu')
-        run: bash scripts/docker-snapshot.sh cpu "${{ steps.vars.outputs.tag }}"
+        run: bash scripts/docker-snapshot.sh cpu "${{ steps.vars.outputs.tag }}" "${{ steps.vars.outputs.release }}"
 
       # GPU 镜像比 CPU 大一个量级，构建前把 CPU 镜像与分片清掉，别把 runner 的盘撑爆
       - name: Free disk before the GPU build
@@ -159,11 +180,11 @@ jobs:
 
       - name: Package and upload GPU snapshot
         if: contains(inputs.variants, 'gpu')
-        run: bash scripts/docker-snapshot.sh gpu "${{ steps.vars.outputs.tag }}"
+        run: bash scripts/docker-snapshot.sh gpu "${{ steps.vars.outputs.tag }}" "${{ steps.vars.outputs.release }}"
 
       - name: Summary
         if: always()
         run: |
           df -h / | tail -1
-          gh release view "${{ steps.vars.outputs.tag }}" --json assets \
+          gh release view "${{ steps.vars.outputs.release }}" --json assets \
             -q '.assets[] | "\(.name)\t\(.size)"' || true

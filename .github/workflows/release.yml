@@ -84,12 +84,38 @@ jobs:
             Windows 下载 setup.exe 安装；Linux 用 deb/rpm 包（Debian/Ubuntu 用 deb，Fedora/RHEL 用 rpm）。
             首次运行后在应用内「一键安装服务」下载 OCR 依赖与模型。
 
-            解析服务的离线镜像快照（自包含、模型内置，供离线/公网隔离服务器用）由 **Pyserver images**
-            workflow 手动构建后附在本 Release 下，文件名形如 `ezpdf-pyserver-<tag>-cpu.tar.part-00`：
-            先按 README「用 Docker 部署解析服务」合并分片（Linux `cat` / Windows `copy /b`）并核对
-            `.sha256`，再 `docker load`。若尚未附上，可手动触发该 workflow 生成。
+            解析服务的离线镜像快照（自包含、模型内置，供离线/公网隔离服务器用）单独发布在
+            `pyserver-v<版本>` 这个 Release 下（由 **Pyserver images** workflow 手动构建），
+            与应用安装包分开，下载方式见 README「用 Docker 部署解析服务」。
+
+            详细发布说明见仓库 `docs/release-notes/`（由下面的 notes 作业自动套用）。
           releaseDraft: true
           prerelease: false
           tauriScript: pnpm tauri
           uploadUpdaterJson: false # 未用 Tauri updater 插件（应用自查 GitHub Releases）
           args: ${{ matrix.args }}
+
+  # 发布说明：正文一律取仓库里的 docs/release-notes/v<版本>.md（双语、随 tag 走），
+  # 由矩阵跑完后统一套用——tauri-action 的 releaseBody 只是兜底短文。
+  notes:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply docs/release-notes/<tag>.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          if [ -z "$tag" ] || [ "${tag#v}" = "$tag" ]; then
+            version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+            tag="v${version}"
+          fi
+          file="docs/release-notes/${tag}.md"
+          if [ ! -f "$file" ]; then
+            echo "no release notes at $file, keeping the workflow body"
+            exit 0
+          fi
+          gh release edit "$tag" --notes-file "$file"
+          echo "applied $file to release $tag"

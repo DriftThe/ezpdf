@@ -146,16 +146,18 @@ publicly reachable.
 #### Offline install from a release snapshot (network-isolated servers)
 
 If the target machine cannot build (or cannot reach the internet at all), download the parse service
-image snapshot straight from the Releases page:
+image snapshot directly. Images are **published separately** from the application installers: look for
+the `pyserver-v<version>` release on the Releases page (the first snapshot is a draft until the
+maintainer publishes it):
 
 ```bash
 # 1) Merge the parts: a GitHub Release caps each file at 2GiB, so the tar is split into ~1.9GiB parts
-cat ezpdf-pyserver-v0.1.1-cpu.tar.part-* > ezpdf-pyserver-v0.1.1-cpu.tar
-#    Windows: copy /b ezpdf-pyserver-v0.1.1-cpu.tar.part-* ezpdf-pyserver-v0.1.1-cpu.tar
-sha256sum -c ezpdf-pyserver-v0.1.1-cpu.tar.sha256     # verify the merged tar
+cat ezpdf-pyserver-v0.1.2-cpu.tar.part-* > ezpdf-pyserver-v0.1.2-cpu.tar
+#    Windows: copy /b ezpdf-pyserver-v0.1.2-cpu.tar.part-* ezpdf-pyserver-v0.1.2-cpu.tar
+sha256sum -c ezpdf-pyserver-v0.1.2-cpu.tar.sha256     # verify the merged tar
 
-# 2) Load the image (you get both ezpdf-pyserver:cpu and ezpdf-pyserver:v0.1.1-cpu)
-docker load -i ezpdf-pyserver-v0.1.1-cpu.tar
+# 2) Load the image (you get both ezpdf-pyserver:cpu and ezpdf-pyserver:v0.1.2-cpu)
+docker load -i ezpdf-pyserver-v0.1.2-cpu.tar
 
 # 3) Run it: add --gpus all for the GPU snapshot, everything else is the same
 docker run -d --name ezpdf-pyserver -p 127.0.0.1:9055:9055 -v ./data:/data ezpdf-pyserver:cpu
@@ -165,9 +167,10 @@ docker logs ezpdf-pyserver | grep "auth token"        # paste into Settings → 
 The snapshot is built from the same source as the release (the workflow checks out that tag), and is
 about 2.1GB for CPU and 4.5GB for GPU before splitting; the models are inside, so the container needs
 neither network nor volumes. Snapshots come from the repository's **Pyserver images** workflow, run
-manually (`Actions → Pyserver images → Run workflow`, optionally one variant only). If you have
-already built the image locally, the same packaging path works:
-`bash scripts/docker-snapshot.sh cpu v0.1.1`.
+manually (`Actions → Pyserver images → Run workflow` with the app tag, optionally one variant only);
+the assets are uploaded to a separate `pyserver-<app tag>` release. If you have already built the
+image locally, the same packaging path works:
+`bash scripts/docker-snapshot.sh cpu v0.1.2 pyserver-v0.1.2`.
 
 ## Roadmap
 
