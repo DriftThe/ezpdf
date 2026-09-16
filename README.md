@@ -113,7 +113,14 @@ docker compose --profile cpu up -d --build     # CPU 镜像（任何机器可跑
 docker compose --profile gpu up -d --build     # GPU 镜像（宿主需装好驱动与 nvidia-container-toolkit）
 ```
 
-模型（约 1.9GB）已直接打进镜像，容器启动即可推理，不依赖联网下载。服务端**每次启动都会把访问令牌
+国内网络建议改走镜像源（Docker Hub / deb / pypi / pytorch 四处，与客户端「使用镜像源」同源）：
+
+```bash
+docker compose --profile cpu build \n  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \n  --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn \n  --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \n  --build-arg TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # GPU 改为 .../cu132
+docker compose --profile cpu up -d
+```
+
+模型（约 1.9GB）已直接打进镜像，容器启动即可推理，不依赖联网下载；成品镜像 CPU 约 6GB、GPU 约 9GB（torch 未压缩所致，属预期）。服务端**每次启动都会把访问令牌
 打印在终端**，把它复制到 应用 → 设置 → OCR 服务 → 服务令牌（地址填 `http://127.0.0.1:9055`）：
 
 ```bash

@@ -6,11 +6,19 @@
 # 模型（models/，~1.9GB）直接 COPY 进镜像 → 自包含快照，容器起来即可推理，不依赖联网。
 # torch 的 CUDA 依赖由 pip 的 nvidia-* 轮子自带（宿主只需装好驱动 + nvidia-container-toolkit），
 # 因此 GPU 变体也基于 python:3.12-slim，不需要 nvidia/cuda 基础镜像。
-FROM python:3.12-slim
+# 基础镜像可换（Docker Hub 在部分地区不可达）：
+#   --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
 
 ARG VARIANT=cpu
-# 国内构建可用镜像源：--build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+# 国内构建可用镜像源（与客户端「使用镜像源」同源）：
+#   --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
+#   --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+#   --build-arg TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # GPU 变体用 .../cu132
+ARG APT_MIRROR=""
 ARG PIP_INDEX=""
+ARG TORCH_INDEX=""
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -20,10 +28,17 @@ ENV PYTHONUNBUFFERED=1 \
     EZPDF_TOKEN_FILE=/data/token.txt \
     EZPDF_MAX_BATCH_PAGES=32
 
-# opencv-contrib-python 需要 libgl/libglib（slim 镜像不自带）
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 curl \
-    && rm -rf /var/lib/apt/lists/*
+# opencv-contrib-python 需要 libgl/libglib（slim 镜像不自带）；
+# 可选换 apt 源（deb.debian.org 在部分地区会 502）
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+        for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+            if [ -f "$f" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g; s|security.debian.org|$APT_MIRROR|g" "$f"; fi; \
+        done; \
+    fi; \
+    apt-get update -o Acquire::Retries=3; \
+    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 curl; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -31,11 +46,14 @@ COPY requirements.txt requirements-torch-cpu.txt requirements-torch-cuda.txt ./
 RUN set -eux; \
     extra=""; [ -n "$PIP_INDEX" ] && extra="--extra-index-url $PIP_INDEX"; \
     pip install --no-cache-dir -r requirements.txt $extra; \
+    if [ "$VARIANT" = "gpu" ]; then torch_index="https://download.pytorch.org/whl/cu132"; \
+    else torch_index="https://download.pytorch.org/whl/cpu"; fi; \
+    # Linux 的 PyPI torch 轮子默认捆绑 CUDA（~5GB），CPU 变体必须走 /cpu 索引
+    [ -n "$TORCH_INDEX" ] && torch_index="$TORCH_INDEX"; \
     if [ "$VARIANT" = "gpu" ]; then \
-        pip install --no-cache-dir -r requirements-torch-cuda.txt --index-url https://download.pytorch.org/whl/cu132 $extra; \
+        pip install --no-cache-dir -r requirements-torch-cuda.txt --index-url "$torch_index" $extra; \
     else \
-        # Linux 的 PyPI torch 轮子默认捆绑 CUDA（~5GB），CPU 变体必须走 /cpu 索引
-        pip install --no-cache-dir -r requirements-torch-cpu.txt --index-url https://download.pytorch.org/whl/cpu $extra; \
+        pip install --no-cache-dir -r requirements-torch-cpu.txt --index-url "$torch_index" $extra; \
     fi
 
 COPY app ./app

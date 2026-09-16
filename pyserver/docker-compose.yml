@@ -11,7 +11,11 @@ services:
       context: .
       args:
         VARIANT: cpu
-        # PIP_INDEX: https://pypi.tuna.tsinghua.edu.cn/simple
+        # 四处置空 = 官方源；慢/被墙时在 .env 或环境变量里覆盖（见 README「用 Docker 部署」）
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
+        APT_MIRROR: ${APT_MIRROR:-}
+        PIP_INDEX: ${PIP_INDEX:-}
+        TORCH_INDEX: ${TORCH_INDEX:-}
     image: ezpdf-pyserver:cpu
     profiles: ["cpu"]
     # 默认只绑本机；要给内网/公网用就改成 "9055:9055"（并注意这是明文 HTTP，
@@ -27,6 +31,11 @@ services:
       context: .
       args:
         VARIANT: gpu
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
+        APT_MIRROR: ${APT_MIRROR:-}
+        PIP_INDEX: ${PIP_INDEX:-}
+        # GPU 变体请用 .../pytorch-wheels/cu132
+        TORCH_INDEX: ${TORCH_INDEX:-}
     image: ezpdf-pyserver:gpu
     profiles: ["gpu"]
     ports:
