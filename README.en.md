@@ -122,7 +122,7 @@ docker compose --profile cpu up -d
 ```
 
 The models (~1.9 GB) are baked straight into the image, so a container can infer as soon as it boots
-without downloading anything. Expect roughly 6 GB for the CPU image and 9 GB for the GPU one (uncompressed torch). The server **prints its access token on every start** — copy it into
+without downloading anything. Expect roughly 6 GB for the CPU image and 12.5 GB for the GPU one (uncompressed torch and CUDA runtime). The server **prints its access token on every start** — copy it into
 Settings → OCR service → Service token (address: `http://127.0.0.1:9055`):
 
 ```bash

@@ -120,7 +120,7 @@ docker compose --profile cpu build \n  --build-arg BASE_IMAGE=docker.m.daocloud.
 docker compose --profile cpu up -d
 ```
 
-模型（约 1.9GB）已直接打进镜像，容器启动即可推理，不依赖联网下载；成品镜像 CPU 约 6GB、GPU 约 9GB（torch 未压缩所致，属预期）。服务端**每次启动都会把访问令牌
+模型（约 1.9GB）已直接打进镜像，容器启动即可推理，不依赖联网下载；成品镜像 CPU 约 6GB、GPU 约 12.5GB（torch 与 CUDA 运行库未压缩所致，属预期）。服务端**每次启动都会把访问令牌
 打印在终端**，把它复制到 应用 → 设置 → OCR 服务 → 服务令牌（地址填 `http://127.0.0.1:9055`）：
 
 ```bash
