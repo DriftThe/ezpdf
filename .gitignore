@@ -44,3 +44,6 @@ public/pdfjs/
 
 # 打包资源（pack-runtime.mjs 产物：随包 Python / pyserver 副本 / 提示词副本）
 /src-tauri/resources/
+
+# docker 镜像 tar（本地打包，交给离线/隔离服务器用，不入库）
+/ezpdf-pyserver-*.tar

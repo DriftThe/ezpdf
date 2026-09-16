@@ -30,6 +30,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 # opencv-contrib-python 需要 libgl/libglib（slim 镜像不自带）——与本地 .venv 保持一致，
 # 不做 headless 替换（镜像按"忠实打包已验证环境"来，不为体积删依赖）
+# build-essential：CUDA 路径下管线会在运行时用 triton 即时编译内核（实测 GPU 推理报
+#   "Failed to find C compiler"），triton 的 JIT 需要 gcc/g++ 与 libc6 头文件；
+#   裸机 Linux 上通常已装，容器里必须显式带上
 # 可选换 apt 源（deb.debian.org 在部分地区会 502）
 # apt 缓存挂 BuildKit cache mount（列表/包都在缓存里，不进镜像层）：
 # 改了这层重跑也只从缓存解包，不会再下一遍 deb
@@ -42,7 +45,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         done; \
     fi; \
     apt-get update -o Acquire::Retries=3; \
-    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 curl
+    apt-get install -y --no-install-recommends libgl1 libglib2.0-0 curl build-essential
 
 WORKDIR /app
 
