@@ -8,7 +8,8 @@
  *   （bypass 期 translation=null → 框内显示原文 content）；formula 不送翻，
  *   但用 KaTeX 覆盖渲染（原文像素直出会被白框盖掉，公式视觉无损）；
  * - 未勾选类型：不做任何覆盖——原 PDF 像素直出，OCR content 仅存于绑定 JSON。
- *   image / table 不提供勾选（用户 2026-09-15：图片、表格不送翻）；
+ *   image 不提供勾选（图片没有可翻译的文本）；table 自 2026-09-16 起提供勾选但不默认勾
+ *   （表格走网格 JSON 送翻 + 网页表格渲染，见 lib/table.ts 与 reader/TableCover.vue）；
  *   其余类型都可被勾选，默认勾选 DEFAULT_TRANSLATED_TYPES。
  */
 
@@ -33,6 +34,7 @@ export const BLOCK_TYPE_OPTIONS: readonly string[] = [
   "header",
   "chart",
   "seal",
+  "table",
 ];
 
 /** 默认送翻集合（与 Rust translate.rs 的 TRANSLATABLE_TYPES 同步） */

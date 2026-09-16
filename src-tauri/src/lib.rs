@@ -12,6 +12,7 @@ use ts_rs::TS;
 pub mod parse;
 pub mod pyenv;
 pub mod pyserver;
+pub mod table;
 pub mod translate;
 pub mod update;
 
@@ -60,8 +61,14 @@ pub struct Block {
     pub content: String,
     /// [x1, y1, x2, y2] 左上→右下角点，单位 PDF 点
     pub loc: [f64; 4],
-    /// 译文；figure/formula 块为 None（formula 原样渲染），未译为 None
+    /// 译文；figure/formula 块为 None（formula 原样渲染），未译为 None。
+    /// 表块（type == "table"）存的是译文矩阵的 JSON 文本（二维 string|null 数组，
+    /// 见 table.rs），与常规块"译文即字符串"的区别只在渲染侧解释。
     pub translation: Option<String>,
+    /// 表格网格（仅 type == "table"）：Rust 首次处理该块时解析 content 并落盘，
+    /// 前端只渲染、不再解析标记。解析失败（或老 JSON 未处理过）为 None → 不覆盖
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<table::TableGrid>,
 }
 
 /// 页：index 从 1 起（与绑定 JSON 一致）；finished 标记该页是否完成 OCR，
@@ -236,7 +243,17 @@ async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
     let (json_path, status, pages) = match &entry.bind {
         Some(rel) => {
             let json_abs = resolve_bind_path(_root, rel)?;
-            let doc = read_bind_doc(&json_abs)?;
+            let mut doc = read_bind_doc(&json_abs)?;
+            // 表块网格补齐（用户 2026-09-16）：老 JSON 没有 grid → 解析一次并落盘，
+            // 前端才能渲染表格、并只对"可解析且未翻"的表格发起补翻。拿同一把文件锁，
+            // 避免与翻译批次的读改写相互覆盖
+            let lock = parse::file_lock(_root, &_id);
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            if parse::backfill_table_grids(&mut doc) {
+                if let Err(e) = parse::write_bind_atomic(&json_abs, &doc) {
+                    eprintln!("Failed to persist table grids for {_id}: {e}");
+                }
+            }
             (
                 Some(json_abs.to_string_lossy().to_string()),
                 doc.status,

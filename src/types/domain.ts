@@ -22,6 +22,9 @@ export type { ParseOutcome } from "../../src-tauri/bindings/ParseOutcome";
 export type { ParsePageInput } from "../../src-tauri/bindings/ParsePageInput";
 export type { InstallProgress } from "../../src-tauri/bindings/InstallProgress";
 export type { ParseServiceHealth } from "../../src-tauri/bindings/ParseServiceHealth";
+export type { TableGrid } from "../../src-tauri/bindings/TableGrid";
+export type { TableRow } from "../../src-tauri/bindings/TableRow";
+export type { TableCell } from "../../src-tauri/bindings/TableCell";
 
 /** 仓库索引的 UI 分组视图：按 belong 平铺分组（v1 无子文件夹），由 library store 的 repoGroups 从平铺索引派生 */
 export interface RepoGroup {

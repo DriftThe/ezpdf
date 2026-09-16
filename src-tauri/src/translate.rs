@@ -197,28 +197,65 @@ fn is_translatable(cfg: &LlmConfig, kind: &str, content: &str) -> bool {
     allowed && !content.trim().is_empty()
 }
 
-/// 待翻请求：index 字符串（协议原样）+ 块在页内位置
+/// 待翻请求：index 字符串（协议原样）+ 块在页内位置 + 送翻内容。
+/// q 是 JSON 值：常规块是字符串、表块是 `{"table": [[...]]}` 对象（用户 2026-09-16：
+/// 表格打包成 JSON 结构送翻，见 table.rs）。
 #[derive(Clone)]
 struct RequestItem {
     index: String,
-    q: String,
+    q: serde_json::Value,
     block_pos: usize,
+    /// 表块：本次请求用的网格（结果形状校验 + 落盘 grid 都用它）；非表块 None
+    table: Option<crate::table::TableGrid>,
+}
+
+/// 表块网格：优先用绑定 JSON 里已落盘的 grid，缺失（老 JSON/首次处理）就现场解析 content。
+/// 解析失败 → None（该块不送翻、不覆盖）
+fn grid_for(block: &crate::Block) -> Option<crate::table::TableGrid> {
+    if block.kind != "table" {
+        return None;
+    }
+    block.grid.clone().or_else(|| crate::table::parse_markup(&block.content))
+}
+
+/// 该页是否有"可解析且尚未翻译"的表格（table 在送翻类型里才算）——已翻页的补翻依据
+fn has_pending_tables(cfg: &LlmConfig, page: &PageInfo) -> bool {
+    page.blocks.iter().any(|b| {
+        b.kind == "table"
+            && b.translation.is_none()
+            && is_translatable(cfg, &b.kind, &b.content)
+            && grid_for(b).is_some()
+    })
 }
 
 /// 收集该页送翻块：送翻类型、content 非空、translation == null
 /// （已由邻页 external 绑定的块自动跳过——用户拍板的"不再翻译该文本框"）
-fn collect_requests(cfg: &LlmConfig, page: &PageInfo) -> Vec<RequestItem> {
-    page.blocks
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| is_translatable(cfg, &b.kind, &b.content) && b.translation.is_none())
-        .enumerate()
-        .map(|(i, (pos, b))| RequestItem {
-            index: i.to_string(),
-            q: b.content.clone(),
+fn collect_requests(cfg: &LlmConfig, page: &PageInfo, only_tables: bool) -> Vec<RequestItem> {
+    let mut items: Vec<RequestItem> = Vec::new();
+    for (pos, b) in page.blocks.iter().enumerate() {
+        if !is_translatable(cfg, &b.kind, &b.content) || b.translation.is_some() {
+            continue;
+        }
+        // 已翻页的补翻批次只处理表格；其余类型即使 translation 为空也绝不重发
+        // （同语种块被判 null 的就在这里，重发会变成无限回翻）
+        if only_tables && b.kind != "table" {
+            continue;
+        }
+        // 表块：标记解析不出网格就整块跳过（不送 token、不覆盖，页面照常标 translated）
+        let (q, table) = if b.kind == "table" {
+            let Some(grid) = grid_for(b) else { continue };
+            (crate::table::payload(&grid), Some(grid))
+        } else {
+            (serde_json::Value::String(b.content.clone()), None)
+        };
+        items.push(RequestItem {
+            index: items.len().to_string(),
+            q,
             block_pos: pos,
-        })
-        .collect()
+            table,
+        });
+    }
+    items
 }
 
 /// 上下文候选：index 字符串 + C 文本 + 块位置
@@ -267,7 +304,11 @@ fn context_candidates(cfg: &LlmConfig, doc: &BindDoc, neighbor: u32, direction: 
         .enumerate()
         .map(|(i, (pos, b))| ContextItem {
             index: i.to_string(),
-            c: b.content.clone(),
+            // 表块给模型看网格 JSON（送翻负载同形），而不是它读不懂的标记流
+            c: match grid_for(b) {
+                Some(grid) if b.kind == "table" => crate::table::payload(&grid).to_string(),
+                _ => b.content.clone(),
+            },
             block_pos: pos,
         })
         .collect()
@@ -336,7 +377,9 @@ fn parse_reply(raw: &str) -> Option<Reply> {
     Some(r)
 }
 
-/// result 与 requests 严格一一对应（长度 + 每个 index）；A=null 合法（同语种）
+/// result 与 requests 严格一一对应（长度 + 每个 index）；A=null 合法（同语种）。
+/// 表块额外做形状校验（行数与每行单元格数必须与请求一致，见 table.rs）；
+/// 任一表块不合格 → 整页失败（用户 2026-09-16 拍板：整页重来，失败由连败预算兜底回退）
 fn validate_result(
     requests: &[RequestItem],
     reply: &Reply,
@@ -350,21 +393,42 @@ fn validate_result(
     }
     let mut out = Vec::with_capacity(requests.len());
     for req in requests {
-        match reply.result.iter().find(|(i, _)| *i == req.index) {
-            Some((_, a)) => out.push(a.clone()),
+        let raw = match reply.result.iter().find(|(i, _)| *i == req.index) {
+            Some((_, a)) => a.clone(),
             None => return Err(format!("result missing index {}", req.index)),
+        };
+        match (&req.table, raw) {
+            // 表块：A=null 表示整表与目标语言相同 → 保持 null（渲染走原文矩阵）
+            (Some(_), None) => out.push(None),
+            (Some(grid), Some(text)) => {
+                let value: Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("table result index {} is not JSON: {e}", req.index))?;
+                let normalized = crate::table::validate_value(&value, &crate::table::row_lengths(grid))
+                    .map_err(|e| format!("table result index {} invalid: {e}", req.index))?;
+                out.push(Some(normalized));
+            }
+            (None, raw) => out.push(raw),
         }
     }
     Ok(out)
 }
 
-/// 译文写回（A=None 不改：保持 null → 渲染原文 content）
+/// 译文写回（A=None 不改：保持 null → 渲染原文 content）。
+/// 表块顺手把网格落盘（老 JSON 首次处理后 self-describing，前端只渲染不再解析标记）。
+/// 表块的 A=None 例外：整表与目标语言相同 → 落**原文矩阵**当译文（终态）。
+/// 留 null 的话，已翻页会被反复选进补翻批次（同语种块无法区分"没翻过"和"不必翻"）。
 fn apply_result(page: &mut PageInfo, requests: &[RequestItem], values: &[Option<String>]) {
     for (req, val) in requests.iter().zip(values) {
-        if let Some(v) = val {
-            if let Some(block) = page.blocks.get_mut(req.block_pos) {
-                block.translation = Some(v.clone());
+        let Some(block) = page.blocks.get_mut(req.block_pos) else { continue };
+        if let Some(grid) = req.table.as_ref() {
+            if block.grid.is_none() {
+                block.grid = Some(grid.clone());
             }
+        }
+        match (req.table.as_ref(), val) {
+            (Some(grid), None) => block.translation = Some(crate::table::source_matrix(grid)),
+            (_, None) => {}
+            (_, Some(v)) => block.translation = Some(v.clone()),
         }
     }
 }
@@ -713,12 +777,19 @@ pub struct PageDone {
 /// 文档快照 → 单页任务；页不存在/未 OCR 完成/已翻译 → None（跳过）
 pub fn build_task(cfg: &LlmConfig, doc: &BindDoc, page_index: u32) -> Option<PageTask> {
     let page = doc.pages.iter().find(|p| p.index == page_index)?;
-    if !page.finished || page.translated {
+    if !page.finished {
+        return None;
+    }
+    // 已翻页（用户 2026-09-16）：表格支持之前的页面里，表块从未被送翻过（translation=null）。
+    // 这类页面允许**只补翻表格**——其余类型一律不动，"已翻页不回翻"依旧成立。
+    // 只挑可解析出网格的表格，解析不了的留着不动（前端也不会选它）。
+    let only_tables = page.translated;
+    if only_tables && !has_pending_tables(cfg, page) {
         return None;
     }
     Some(PageTask {
         page_index,
-        requests: collect_requests(cfg, page),
+        requests: collect_requests(cfg, page, only_tables),
         before: neighbor_index(page_index, "before")
             .map(|n| (n, context_candidates(cfg, doc, n, "before"))),
         after: neighbor_index(page_index, "after")
@@ -732,7 +803,9 @@ pub fn build_task(cfg: &LlmConfig, doc: &BindDoc, page_index: u32) -> Option<Pag
 /// 语义要点：**不是**留 null。null 表示"待翻译"，重新打开翻译后会被回翻；这里要的是
 /// "这批 OCR 已处理完、内容即原文"的终态，所以译文列必须落值。
 /// 送翻块集合与联网路径完全一致（is_translatable + translation 为空），非送翻类型
-/// （image/table 等）保持 null——它们本来就没有覆盖框。
+/// （image 等）保持 null——它们本来就没有覆盖框。
+/// 表块（用户 2026-09-16）：落**原文矩阵 JSON**（不是标记流）并顺手写网格，这样关着翻译
+/// 也能在译文栏看到表格；标记解析失败的表格照旧不翻不覆盖。
 pub fn apply_bypass(doc: &mut BindDoc, page_index: u32, cfg: &LlmConfig) -> bool {
     let Some(page) = doc.pages.iter_mut().find(|p| p.index == page_index) else {
         return false;
@@ -741,7 +814,16 @@ pub fn apply_bypass(doc: &mut BindDoc, page_index: u32, cfg: &LlmConfig) -> bool
         return false;
     }
     for block in page.blocks.iter_mut() {
-        if block.translation.is_none() && is_translatable(cfg, &block.kind, &block.content) {
+        if block.translation.is_some() || !is_translatable(cfg, &block.kind, &block.content) {
+            continue;
+        }
+        if block.kind == "table" {
+            let Some(grid) = grid_for(block) else { continue };
+            if block.grid.is_none() {
+                block.grid = Some(grid.clone());
+            }
+            block.translation = Some(crate::table::source_matrix(&grid));
+        } else {
             block.translation = Some(block.content.clone());
         }
     }
@@ -949,6 +1031,7 @@ mod tests {
             content: content.into(),
             loc: [0.0; 4],
             translation: translation.map(String::from),
+            grid: None,
         }
     }
 
@@ -1125,6 +1208,126 @@ mod tests {
         assert!(message_thinks(&json!({})));
     }
 
+    /// 表块送翻（用户 2026-09-16）：Q 是 {"table": [[...]]} 网格负载；标记解析不出形状的
+    /// 表格整块跳过（不送 token、不覆盖，页面照常被标记完成）
+    #[test]
+    fn collect_requests_packs_tables_and_skips_unparsable() {
+        // 类型白名单：table + text（未列入的类型即使 content 非空也不送翻）
+        let cfg = LlmConfig { translate_types: vec!["table".into(), "text".into()], ..cfg(true) };
+        let p = page(
+            1,
+            vec![
+                blk("table", "<fcel>参 数<fcel>冬 季<nl><fcel>温度<fcel>18<nl>", None),
+                blk("table", "没有表格标记", None),
+                blk("text", "a", None),
+            ],
+            false,
+        );
+        let reqs = collect_requests(&cfg, &p, false);
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].q, json!({"table": [["参 数", "冬 季"], ["温度", "18"]]}));
+        assert_eq!(reqs[0].table.as_ref().map(|g| g.cols), Some(2));
+        assert_eq!(reqs[1].q, json!("a"));
+        assert!(reqs[1].table.is_none());
+    }
+
+    /// 表块结果形状校验（用户 2026-09-16）：形状不符 → 整页失败（连败预算兜底回退）；
+    /// A=null → 整表与目标语言相同，保持 null
+    #[test]
+    fn validate_result_checks_table_shape() {
+        let grid = crate::table::parse_markup("<fcel>a<fcel>b<nl>").unwrap();
+        let reqs = vec![RequestItem {
+            index: "0".into(),
+            q: json!({"table": [["a", "b"]]}),
+            block_pos: 0,
+            table: Some(grid),
+        }];
+        let ok = Reply { result: vec![("0".into(), Some("[[\"x\",\"y\"]]".into()))], ..Default::default() };
+        assert_eq!(validate_result(&reqs, &ok).unwrap(), vec![Some("[[\"x\",\"y\"]]".to_string())]);
+        let same = Reply { result: vec![("0".into(), None)], ..Default::default() };
+        assert_eq!(validate_result(&reqs, &same).unwrap(), vec![None]);
+        let bad = Reply { result: vec![("0".into(), Some("[[\"x\"]]".into()))], ..Default::default() };
+        assert!(validate_result(&reqs, &bad).unwrap_err().contains("table result index 0 invalid"));
+        let junk = Reply { result: vec![("0".into(), Some("x|y".into()))], ..Default::default() };
+        assert!(validate_result(&reqs, &junk).unwrap_err().contains("is not JSON"));
+    }
+
+    /// 表块落盘：译文写入二维矩阵 JSON，同时把网格写进绑定 JSON（前端只渲染不再解析标记）
+    #[test]
+    fn apply_result_persists_table_grid() {
+        let mut d = doc(vec![page(1, vec![blk("table", "<fcel>a<nl>", None)], false)]);
+        let reqs = vec![RequestItem {
+            index: "0".into(),
+            q: json!({"table": [["a"]]}),
+            block_pos: 0,
+            table: crate::table::parse_markup("<fcel>a<nl>"),
+        }];
+        apply_result(&mut d.pages[0], &reqs, &[Some("[[\"A\"]]".into())]);
+        let b = &d.pages[0].blocks[0];
+        assert_eq!(b.translation.as_deref(), Some("[[\"A\"]]"));
+        assert_eq!(b.grid.as_ref().map(|g| g.cols), Some(1));
+    }
+
+    /// 翻译禁用路径的表块：落原文矩阵 + 网格（不是标记流），解析失败的表格保持 null
+    /// 已翻页的表格补翻（用户 2026-09-16）：只送未翻且有网格的表格，
+    /// 同语种的空译文块绝不重发（否则无限回翻）
+    #[test]
+    fn build_task_backfills_tables_on_translated_pages() {
+        let table_cfg = LlmConfig { translate_types: vec!["table".into(), "text".into()], ..cfg(true) };
+        let with_table = page(
+            1,
+            vec![
+                blk("table", "<fcel>a<fcel>b<nl>", None),
+                blk("text", "same-language null", None),
+            ],
+            true,
+        );
+        let t = build_task(&table_cfg, &doc(vec![with_table]), 1).expect("table backfill is a task");
+        assert_eq!(t.requests.len(), 1, "only tables are collected on a translated page");
+        assert!(t.requests[0].table.is_some());
+        // 表格标记解析不出网格 → 没有待补翻目标 → 整页不做
+        let unparsable = page(1, vec![blk("table", "没有表格标记", None)], true);
+        assert!(build_task(&table_cfg, &doc(vec![unparsable]), 1).is_none());
+        // 表格已翻 → 不做
+        let done = page(1, vec![blk("table", "<fcel>a<nl>", Some("[[\"A\"]]"))], true);
+        assert!(build_task(&table_cfg, &doc(vec![done]), 1).is_none());
+        // table 不在送翻类型里 → 不做
+        let no_table = LlmConfig { translate_types: vec!["text".into()], ..cfg(true) };
+        let pending = page(1, vec![blk("table", "<fcel>a<nl>", None)], true);
+        assert!(build_task(&no_table, &doc(vec![pending]), 1).is_none());
+    }
+
+    /// 表块 A=null（整表与目标语言相同）→ 落原文矩阵当译文（终态，不会再被选进补翻批次）
+    #[test]
+    fn apply_result_writes_source_matrix_for_null_tables() {
+        let mut d = doc(vec![page(1, vec![blk("table", "<fcel>甲<fcel>乙<nl>", None)], false)]);
+        let grid = crate::table::parse_markup("<fcel>甲<fcel>乙<nl>").unwrap();
+        let reqs = vec![RequestItem {
+            index: "0".into(),
+            q: json!({"table": [["甲", "乙"]]}),
+            block_pos: 0,
+            table: Some(grid),
+        }];
+        apply_result(&mut d.pages[0], &reqs, &[None]);
+        let b = &d.pages[0].blocks[0];
+        assert_eq!(b.translation.as_deref(), Some("{\"table\":[[\"甲\",\"乙\"]]}"));
+        assert_eq!(b.grid.as_ref().map(|g| g.cols), Some(2), "网格顺手落盘");
+    }
+
+    #[test]
+    fn apply_bypass_writes_table_matrix_and_grid() {
+        let cfg = LlmConfig { translate_types: vec!["table".into()], ..cfg(true) };
+        let mut d = doc(vec![page(1, vec![blk("table", "<fcel>甲<fcel>乙<nl><fcel>丙<fcel>丁<nl>", None)], false)]);
+        assert!(apply_bypass(&mut d, 1, &cfg));
+        let b = &d.pages[0].blocks[0];
+        assert_eq!(b.translation.as_deref(), Some("{\"table\":[[\"甲\",\"乙\"],[\"丙\",\"丁\"]]}"));
+        assert_eq!(b.grid.as_ref().map(|g| g.cols), Some(2));
+        let mut d2 = doc(vec![page(1, vec![blk("table", "没有表格标记", None)], false)]);
+        assert!(apply_bypass(&mut d2, 1, &cfg));
+        assert_eq!(d2.pages[0].blocks[0].translation, None);
+        assert!(d2.pages[0].translated);
+    }
+
     #[test]
     fn collect_requests_filters_and_maps_positions() {
         let p = page(
@@ -1138,7 +1341,7 @@ mod tests {
             ],
             false,
         );
-        let reqs = collect_requests(&cfg(true), &p);
+        let reqs = collect_requests(&cfg(true), &p, false);
         assert_eq!(reqs.len(), 2);
         assert_eq!(reqs[0].index, "0");
         assert_eq!(reqs[0].q, "a");
@@ -1181,12 +1384,12 @@ mod tests {
             translate_types: vec!["text".into(), "content".into()],
             ..cfg(true)
         };
-        let reqs = collect_requests(&custom, &p);
+        let reqs = collect_requests(&custom, &p, false);
         assert_eq!(reqs.len(), 2, "only the listed kinds are sent");
         assert_eq!(reqs[0].q, "a");
         assert_eq!(reqs[1].q, "c");
         let empty = LlmConfig { translate_types: Vec::new(), ..cfg(true) };
-        assert_eq!(collect_requests(&empty, &p).len(), 3, "empty list falls back to defaults");
+        assert_eq!(collect_requests(&empty, &p, false).len(), 3, "empty list falls back to defaults");
     }
 
     #[test]
@@ -1255,8 +1458,8 @@ mod tests {
     #[test]
     fn validate_result_requires_full_match() {
         let reqs = vec![
-            RequestItem { index: "0".into(), q: "a".into(), block_pos: 0 },
-            RequestItem { index: "1".into(), q: "b".into(), block_pos: 1 },
+            RequestItem { index: "0".into(), q: serde_json::json!("a"), block_pos: 0, table: None },
+            RequestItem { index: "1".into(), q: serde_json::json!("b"), block_pos: 1, table: None },
         ];
         let ok = Reply {
             result: vec![("0".into(), Some("A".into())), ("1".into(), None)],
@@ -1334,7 +1537,7 @@ mod tests {
         ]);
         let done = PageDone {
             page_index: 2,
-            requests: vec![RequestItem { index: "0".into(), q: "cur".into(), block_pos: 0 }],
+            requests: vec![RequestItem { index: "0".into(), q: serde_json::json!("cur"), block_pos: 0, table: None }],
             values: vec![Some("当前".into())],
             external: Some((1, 0, "半句译文".into())),
         };

@@ -20,7 +20,7 @@ use crate::{read_index, resolve_bind_path, BindDoc, Block, PageInfo, PDFStatus};
 /// 书级文件锁（键 = root/id）：OCR 批次与翻译批次并发落盘时序列化读改写
 static FILE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
-fn file_lock(root: &str, id: &str) -> Arc<Mutex<()>> {
+pub(crate) fn file_lock(root: &str, id: &str) -> Arc<Mutex<()>> {
     let map = FILE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let key = format!("{root}/{id}");
     let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
@@ -92,6 +92,7 @@ fn map_blocks(blocks: &[OcrBlockResponse], scale: f64) -> Vec<Block> {
             },
             loc: b.bbox_px.map(|v| px_to_pt(v, scale)),
             translation: None,
+            grid: None,
         })
         .collect()
 }
@@ -123,9 +124,29 @@ fn finalize_status(doc: &mut BindDoc) {
     }
 }
 
+/// 补齐表块网格（用户 2026-09-16）：表格支持之前解析的 JSON 没有 `grid`，
+/// 前端既无法渲染、也无法判断"哪些表格还值得翻"。load_pdf 时顺带解析落盘一次
+/// （纯派生数据，不涉及 LLM），之后前端就能只挑**可解析且未翻**的表格补翻。
+/// 返回是否有变更（无变更不写盘）。
+pub(crate) fn backfill_table_grids(doc: &mut BindDoc) -> bool {
+    let mut changed = false;
+    for page in doc.pages.iter_mut() {
+        for block in page.blocks.iter_mut() {
+            if block.kind != "table" || block.grid.is_some() {
+                continue;
+            }
+            if let Some(grid) = crate::table::parse_markup(&block.content) {
+                block.grid = Some(grid);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 /// 原子写绑定 JSON：tmp + rename（Windows fs::rename = MOVEFILE_REPLACE_EXISTING，
 /// 覆盖已存在目标）
-fn write_bind_atomic(json_path: &Path, doc: &BindDoc) -> Result<(), String> {
+pub(crate) fn write_bind_atomic(json_path: &Path, doc: &BindDoc) -> Result<(), String> {
     let text = serde_json::to_string_pretty(doc)
         .map_err(|e| format!("Failed when serializing bound JSON: {e}"))?;
     crate::write_text_atomic(json_path, &text)
@@ -452,6 +473,32 @@ mod tests {
     use super::*;
 
     /// 清除解析状态（用户 2026-09-15）：整份 JSON 回到 1..=N 空骨架，PDF 不动
+    /// 表块网格补齐（用户 2026-09-16）：只对可解析表格落盘，
+    /// 解析不了的保持 grid=None（前端据此不把它当补翻目标）
+    #[test]
+    fn backfill_fills_only_parsable_tables() {
+        let blk = |content: &str, grid| Block {
+            kind: "table".into(),
+            content: content.into(),
+            loc: [0.0; 4],
+            translation: None,
+            grid,
+        };
+        let mut d = BindDoc {
+            status: PDFStatus::Finished,
+            pages: vec![PageInfo {
+                index: 1,
+                finished: true,
+                translated: true,
+                blocks: vec![blk("<fcel>a<fcel>b<nl>", None), blk("没有表格标记", None)],
+            }],
+        };
+        assert!(backfill_table_grids(&mut d), "first pass writes the parsable one");
+        assert_eq!(d.pages[0].blocks[0].grid.as_ref().map(|g| g.cols), Some(2));
+        assert!(d.pages[0].blocks[1].grid.is_none());
+        assert!(!backfill_table_grids(&mut d), "second pass is a no-op");
+    }
+
     #[test]
     fn reset_pdf_state_rebuilds_skeleton() {
         let root = std::env::temp_dir().join(format!("ezpdf-reset-{}", std::process::id()));
@@ -496,6 +543,7 @@ mod tests {
                 content: "hello".into(),
                 loc: [0.0; 4],
                 translation: Some("你好".into()),
+                grid: None,
             }],
         }
     }
@@ -556,6 +604,7 @@ mod tests {
             content: md.into(),
             loc: [0.0; 4],
             translation: None,
+            grid: None,
         };
         let patched = patch_pages(
             &mut doc,

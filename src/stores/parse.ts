@@ -18,6 +18,7 @@ import { loadPdfDoc } from "../composables/usePdfDoc";
 import { renderPageToDataUrl, RENDER_SCALE } from "../lib/pageCapture";
 import { t } from "../lib/i18n";
 import { isTauri } from "../lib/env";
+import { DEFAULT_TRANSLATED_TYPES } from "../lib/blocks";
 import { useLibraryStore } from "./library";
 import { useReaderStore } from "./reader";
 import { useSettingsStore, type LlmInvokePayload } from "./settings";
@@ -27,6 +28,26 @@ import { useSettingsStore, type LlmInvokePayload } from "./settings";
 /** 页级谓词（调度取样共用） */
 const needsOcr = (p: PageInfo): boolean => !p.finished;
 const needsTranslation = (p: PageInfo): boolean => p.finished && !p.translated;
+
+/** 送翻类型：空列表 = 内置默认（与 Rust is_translatable 的回落一致） */
+function effectiveTypes(): readonly string[] {
+  const types = useSettingsStore().general.translateTypes;
+  return types.length > 0 ? types : DEFAULT_TRANSLATED_TYPES;
+}
+
+/**
+ * 表格补翻（用户 2026-09-16）：表格支持之前翻过的页面里，表块从未被送翻过
+ * （translation=null），而"已翻页不回翻"让它们永远轮不到。
+ * 只认**Rust 已补齐网格**（load_pdf 时解析落盘 = 可解析）且译文为空的表格；
+ * 解析不出网格的表格不成为目标，其余块类型一律不碰。
+ */
+function needsTableBackfill(p: PageInfo): boolean {
+  if (!p.finished || !effectiveTypes().includes("table")) return false;
+  return p.blocks.some((b) => b.type === "table" && !b.translation && !!b.grid);
+}
+
+/** 翻译取样总谓词：未翻页 + 已翻页里待补翻的表格 */
+const needsWork = (p: PageInfo): boolean => needsTranslation(p) || needsTableBackfill(p);
 
 export const useParseStore = defineStore("parse", () => {
   /** 全局暂停/恢复（阶段4由 Rust 调度器驱动） */
@@ -389,7 +410,7 @@ export const useParseStore = defineStore("parse", () => {
         canTranslateNow &&
         !translateChains.has(entry.id) &&
         (translateStrikes.get(entry.id) ?? 0) < MAX_ATTEMPTS &&
-        state.pages.some(needsTranslation)
+        state.pages.some(needsWork)
       ) {
         return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "translate" };
       }
@@ -422,7 +443,7 @@ export const useParseStore = defineStore("parse", () => {
   function notifyLlmMissingOnce(): void {
     if (llmMissingNotified || llmPayload()) return;
     const current = useLibraryStore().currentPdf;
-    if (current?.pages.some(needsTranslation)) {
+    if (current?.pages.some(needsWork)) {
       llmMissingNotified = true;
       pushLlmLog("[ui] LLM not configured (baseUrl/apiKey/model empty) → translation skipped; fill it in Settings");
       toast(t("toast.llmMissing"), "warn");
@@ -467,7 +488,7 @@ export const useParseStore = defineStore("parse", () => {
     const lib = useLibraryStore();
     const llm = llmPayload();
     if (!llm) throw new Error("LLM not configured (baseUrl/apiKey/model empty)");
-    const pages = ringCollect(book, (page) => (needsTranslation(page) ? page.index : null));
+    const pages = ringCollect(book, (page) => (needsWork(page) ? page.index : null));
     if (pages.length === 0) return; // 竞态：已全部翻译
     pushLlmLog(`[ui] translation retry batch p${pages.join(",")} (${book.name})`);
     const outcome = await invoke<ParseOutcome>("translate_pdf", {
@@ -553,7 +574,7 @@ export const useParseStore = defineStore("parse", () => {
       // 后台书无缓存，用 noProgress（整批无进展）兜底。自我续跑用 wake(false)：
       // 不重置连败预算，避免 LLM 坏掉时每批白试
       const cached = useLibraryStore().pdfs[bookId];
-      if (noProgress || cached?.pages.some(needsTranslation)) wake(false);
+      if (noProgress || cached?.pages.some(needsWork)) wake(false);
     });
   }
 

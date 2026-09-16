@@ -17,11 +17,12 @@ ezpdf first splits every page into content blocks with coordinates via OCR, tran
 - **Structure preserved**: overlay rendering driven by layout analysis — nothing is reflowed or redrawn, so the original layout stays intact.
 - **Incremental processing**: pages are queued and processed as an OCR → translate pipeline, so finished pages appear immediately instead of waiting for the whole book.
 - **Formula rendering**: `formula` blocks are rendered with KaTeX, with the font size fitted to the overlay box.
+- **Redrawn tables**: with the `table` type checked, tables (merged cells included) are redrawn as web tables in the translation pane, with KaTeX for formulas inside cells; tables whose structure cannot be parsed are left untouched.
 - **Smart context**: the translation flow embeds a hidden loop that lets the model request surrounding PDF context, keeping terminology and pronouns consistent across page breaks.
 - **Local OCR service**: an embedded Python service (layout analysis + text recognition) with a one-click in-app installer, supporting CPU and GPU (CUDA).
 - **Provider presets**: ships a vendored pi-ai model catalog (31 providers / 969 models) that fills in endpoint, protocol and parameter shape from the chosen provider; any OpenAI-compatible endpoint also works.
 - **Book repository**: any plain folder is a repository holding PDFs plus an `.ezrepo` index; folders, moving, deleting and multi-file import are supported, and a book's parse state can be cleared in one click to parse it again.
-- **Controllable scope**: pick which block types are translated (text, titles, footnotes, footers, …) under Settings → General. Unchecked types are neither translated nor covered — the original PDF pixels stay. Changes apply only to pages that are not translated yet.
+- **Controllable scope**: pick which block types are translated (text, titles, footnotes, footers, tables, …) under Settings → General. Unchecked types are neither translated nor covered — the original PDF pixels stay. Changes apply only to blocks that are not translated yet (exception: once `table` is checked, tables that were never translated inside already-translated pages get translated on their own).
 - **Self-drawn interface**: no system title bar — chrome and window controls are drawn by the app; light, dark and follow-system themes.
 
 ## How it works

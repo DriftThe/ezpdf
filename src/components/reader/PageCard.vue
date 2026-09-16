@@ -7,7 +7,9 @@ import { useSettingsStore } from "../../stores/settings";
 import type { Block } from "../../types/domain";
 import { isOverlayType } from "../../lib/blocks";
 import { renderRichText } from "../../lib/richText";
+import { parseTableMatrix, tableToText } from "../../lib/table";
 import PdfPageCanvas from "./PdfPageCanvas.vue";
+import TableCover from "./TableCover.vue";
 
 /**
  * 单页卡：pdfjs canvas（PdfPageCanvas 自虚拟化）+ 块覆盖层。
@@ -88,10 +90,21 @@ const coverRects = computed<CoverRect[]>(() =>
   rects.value
     .filter(
       (r) =>
+        r.block.type !== "table" && // 表格走 TableCover（网格渲染），不是单文本框
         isOverlayType(r.block.type, overlayTypes.value) &&
         (r.block.translation ?? r.block.content).trim(),
     )
     .map((r) => ({ ...r, html: renderRichText(r.block.translation ?? r.block.content) })),
+);
+
+/**
+ * 译文栏的表格覆盖框（用户 2026-09-16）：勾选 table 且 Rust 已解析出网格才画。
+ * 未勾选 / 尚未处理（无 grid / 标记解析失败）→ 不画，原 PDF 像素直出。
+ */
+const tableRects = computed<Rect[]>(() =>
+  rects.value.filter(
+    (r) => r.block.type === "table" && r.block.grid && isOverlayType(r.block.type, overlayTypes.value),
+  ),
 );
 
 // ---- 原文悬浮预览（用户 2026-09-14）：已翻译块悬浮显示译文卡片（不用 title，浮层渲染） ----
@@ -119,7 +132,13 @@ function previewPos(e: MouseEvent): { x: number; y: number; above: boolean } {
 function onBlockEnter(r: Rect, e: MouseEvent): void {
   const translated = r.block.translation?.trim();
   if (!translated) return; // 未翻译（含不送翻类型）：不弹卡
-  hoverInfo.value = { html: renderRichText(translated), ...previewPos(e) };
+  // 表格：translation 是二维矩阵 JSON，转成可读的多行文本再渲染（不要弹原始 JSON）
+  const grid = r.block.grid;
+  const html =
+    r.block.type === "table" && grid
+      ? renderRichText(tableToText(grid, parseTableMatrix(r.block.translation, grid)))
+      : renderRichText(translated);
+  hoverInfo.value = { html, ...previewPos(e) };
 }
 
 let moveRaf = 0;
@@ -302,6 +321,14 @@ const vFit: Directive<HTMLElement> = {
         >
           <span class="cover-text" v-html="r.html"></span>
         </div>
+        <!-- 表格：网页表格重画（塞不下时组件自己透明化，原 PDF 像素直出） -->
+        <TableCover
+          v-for="(r, ri) in tableRects"
+          :key="`t${ri}`"
+          :grid="r.block.grid!"
+          :translation="r.block.translation"
+          :style="rectStyle(r)"
+        />
       </template>
     </div>
     <div class="page-num">{{ pageNumber }}</div>
