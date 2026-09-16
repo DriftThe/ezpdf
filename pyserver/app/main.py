@@ -38,7 +38,7 @@ def create_app(token: str | None = None) -> FastAPI:
     校验覆盖所有路由（含 /health）：客户端若配了令牌，健康探测也要带 `x-ezpdf-token`。
     """
     expected = TOKEN if token is None else token
-    app = FastAPI(title="ezpdf-pyserver", lifespan=None)
+    app = FastAPI(title="ezpdf-pyserver")
     app.include_router(health.router)
     app.include_router(ocr.router)
 

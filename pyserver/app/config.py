@@ -15,6 +15,8 @@ import os
 import secrets
 from pathlib import Path
 
+from . import model_contract as _contract
+
 # pyserver 根目录（app/ 的上一级）
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,5 +61,6 @@ def _max_batch_pages() -> int:
 
 MAX_BATCH_PAGES = _max_batch_pages()
 
-LAYOUT_MODEL_DIR_NAME = "PP-DocLayoutV3"
-VL_MODEL_DIR_NAME = "PaddleOCR-VL-1.6"
+# 目录名与完整性口径在 model_contract.py（探测/下载共用同一份），这里转出便于既有调用点
+LAYOUT_MODEL_DIR_NAME = _contract.LAYOUT_MODEL_DIR_NAME
+VL_MODEL_DIR_NAME = _contract.VL_MODEL_DIR_NAME

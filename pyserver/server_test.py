@@ -53,7 +53,7 @@ def warn_incomplete_env(models_dir: str) -> None:
         import torch  # noqa: F401
     except Exception as exc:  # pragma: no cover - 开发提示
         print(f"[server_test] warning: torch is not importable ({exc}); run 一键安装服务 first")
-    for name in ("PP-DocLayoutV3", "PaddleOCR-VL-1.6"):
+    for name in (LAYOUT_MODEL_DIR_NAME, VL_MODEL_DIR_NAME):
         if not os.path.isdir(os.path.join(models_dir, name)):
             print(f"[server_test] warning: model dir missing: {os.path.join(models_dir, name)}")
 
@@ -70,7 +70,13 @@ def main() -> int:
 
     import uvicorn
 
-    from app.config import MAX_BATCH_PAGES, MODELS_DIR, TOKEN
+    from app.config import (
+        LAYOUT_MODEL_DIR_NAME,
+        MAX_BATCH_PAGES,
+        MODELS_DIR,
+        TOKEN,
+        VL_MODEL_DIR_NAME,
+    )
 
     base = f"http://{args.host}:{args.port}"
     print(f"[server_test] parse service   : {base}  (health: {base}/health)")

@@ -8,7 +8,7 @@
 
 输出契约（供 Rust 的 ocr_env_report 合成前端状态灯数据）：
     {
-      "python": "3.12.10", "python_path": "...", "in_venv": true,
+      "python": "3.12.10", "python_path": "...",
       "deps": {"fastapi": "0.139.2", ...},     # 版本号，缺失为 null
       "missing": ["torch"],
       "torch_build": "cuda" | "cpu" | null,    # torch 版本 +cu 后缀判定，不 import torch
@@ -29,6 +29,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app import model_contract
+
 # (发行名, 导入名)；版本取发行名。torch 在列——bootstrap 只看版本元数据，不 import
 DEPS: list[tuple[str, str]] = [
     ("fastapi", "fastapi"),
@@ -41,10 +43,12 @@ DEPS: list[tuple[str, str]] = [
 ]
 
 # 模型目录约定：EZPDF_MODELS_DIR 覆盖（生产 = ~/.ezpdf/models），默认 <pyserver>/models；
-# 完整 = config.json + preprocessor_config.json + 任一权重文件
+# 目录名与完整性口径来自 app/model_contract.py（与下载入口 fetch.py 同一份，纯标准库）
 MODEL_ROOT = Path(os.environ.get("EZPDF_MODELS_DIR") or (Path(__file__).resolve().parent / "models"))
-MODEL_DIRS: dict[str, str] = {"layout": "PP-DocLayoutV3", "vl": "PaddleOCR-VL-1.6"}
-WEIGHT_EXTS = (".safetensors", ".bin", ".pth", ".pt", ".msgpack")
+MODEL_DIRS: dict[str, str] = {
+    "layout": model_contract.LAYOUT_MODEL_DIR_NAME,
+    "vl": model_contract.VL_MODEL_DIR_NAME,
+}
 
 _CREATE_NO_WINDOW = 0x08000000  # 隐藏子进程控制台（与 Rust CREATE_NO_WINDOW 同值）
 
@@ -67,7 +71,7 @@ def _dep_report() -> tuple[dict[str, str | None], list[str]]:
 
 def _has_bundled_cuda() -> bool:
     """PyPI 的 Linux torch 轮子**捆绑 CUDA** 却不带 `+cu` 本地版本号（实测 2.13.0
-    自述 torch.version.cuda=13.0），只能靠随它装进来的 nvidia-* / triton 判断。"""
+    自述 torch.version.cuda=13.2），只能靠随它装进来的 nvidia-* / triton 判断。"""
     try:
         for dist in importlib.metadata.distributions():
             name = (dist.metadata["Name"] or "").lower()
@@ -118,25 +122,16 @@ def _gpu_report() -> dict | None:
         return None
 
 
-def _model_ok(name: str) -> bool:
-    """目录存在 + config.json + preprocessor_config.json + 至少一个权重文件。"""
-    root = MODEL_ROOT / name
-    if not (root / "config.json").is_file() or not (root / "preprocessor_config.json").is_file():
-        return False
-    return any(p.suffix.lower() in WEIGHT_EXTS for p in root.iterdir() if p.is_file())
-
-
 def probe() -> dict:
     deps, missing = _dep_report()
     return {
         "python": ".".join(map(str, sys.version_info[:3])),
         "python_path": sys.executable,
-        "in_venv": sys.prefix != sys.base_prefix,
         "deps": deps,
         "missing": missing,
         "torch_build": _torch_build(deps),
         "gpu": _gpu_report(),
-        "models": {key: _model_ok(name) for key, name in MODEL_DIRS.items()},
+        "models": {key: model_contract.model_dir_ok(MODEL_ROOT / name) for key, name in MODEL_DIRS.items()},
         "error": None,
     }
 
@@ -149,7 +144,6 @@ def main() -> int:
         report = {
             "python": None,
             "python_path": None,
-            "in_venv": False,
             "deps": {},
             "missing": [],
             "torch_build": None,

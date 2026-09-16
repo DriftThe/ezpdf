@@ -116,8 +116,6 @@ class LayoutBox:
 class RegionResult:
     """一个裁剪区域的最终结果。"""
 
-    page_index: int
-    box_index: int
     label: str
     score: float
     rect: tuple[int, int, int, int]
@@ -128,7 +126,6 @@ class RegionResult:
 class PageResult:
     """一页的处理结果。"""
 
-    page_index: int
     width: int
     height: int
     elapsed_seconds: float
@@ -424,11 +421,6 @@ class BoxFilter:
         self.unclip_ratio = float(unclip_ratio)
         self.expand_pixels = float(expand_pixels)
 
-    @staticmethod
-    def _iou(a: np.ndarray, b: np.ndarray) -> float:
-        """IoU of two xyxy boxes（与模块级 _iou_xyxy 同一实现，别再各写一份）"""
-        return _iou_xyxy(a, b)
-
     def _unclip(self, box: np.ndarray) -> np.ndarray:
         """按 ratio + 绝对像素把框向外扩，返回 (x1,y1,x2,y2)。"""
         x1, y1, x2, y2 = box
@@ -458,7 +450,7 @@ class BoxFilter:
         for b in candidates:
             if b.score < self.min_score or b.area < self.min_area:
                 continue
-            if any(self._iou(b.xyxy, k.xyxy) > self.iou_threshold for k in keep):
+            if any(_iou_xyxy(b.xyxy, k.xyxy) > self.iou_threshold for k in keep):
                 continue
             keep.append(b)
 
@@ -526,23 +518,13 @@ class RegionCropper:
 class VLPredictor:
     """包裹 PaddleOCR-VL-1.6，给一批裁剪图做 VL 识别。"""
 
-    # PaddleOCR-VL 官方推荐的 task prompt（来自 PaddleOCR-VL-1.6 README）
+    # PaddleOCR-VL 官方推荐的 task prompt（来自 PaddleOCR-VL-1.6 README）。
+    # 只列与默认不同的 label，其余走 "_default"（_prompt_for 的兜底）
     DEFAULT_PROMPTS: dict[str, str] = {
-        "text": "OCR:",
-        "paragraph_title": "OCR:",
-        "doc_title": "OCR:",
         "table": "Table Recognition:",
         "formula": "Formula Recognition:",
-        "image": "OCR:",
         "chart": "Chart Recognition:",
-        "abstract": "OCR:",
-        "reference": "OCR:",
-        "reference_content": "OCR:",
-        "footer": "OCR:",
-        "header": "OCR:",
-        "footnote": "OCR:",
-        "seal": "OCR:",
-        "number": "OCR:",
+        "image": "OCR:",
         "_default": "OCR:",
     }
 
@@ -788,20 +770,11 @@ class OCRPipeline:
             crops.append((Image.fromarray(arr), box))
         return crops
 
-    def process_page(
-            self,
-            image: Image.Image,
-            page_index: int = 0,
-    ) -> PageResult:
+    def process_page(self, image: Image.Image) -> PageResult:
         """Process a single image end-to-end. 结果全内存返回，不落盘。"""
-        result = self.process_pages([image], page_index_base=page_index)
-        return result[0]
+        return self.process_pages([image])[0]
 
-    def process_pages(
-            self,
-            images: Sequence[Image.Image],
-            page_index_base: int = 0,
-    ) -> list[PageResult]:
+    def process_pages(self, images: Sequence[Image.Image]) -> list[PageResult]:
         """Process a batch of images end-to-end（跨页张量堆叠 + 跨页 label 分桶）。
 
         相对逐页调 ``process_page`` 的收益：
@@ -841,25 +814,20 @@ class OCRPipeline:
         elapsed = time.perf_counter() - st
         results: list[PageResult] = []
         cursor = 0
-        for offset, (image, page_crops) in enumerate(zip(images, pages_crops)):
+        for image, page_crops in zip(images, pages_crops):
             count = len(page_crops)
             regions = [
                 RegionResult(
-                    page_index=page_index_base + offset,
-                    box_index=c_idx,
                     label=box.label_name,
                     score=box.score,
                     rect=box.int_rect,
                     markdown=md,
                 )
-                for c_idx, ((img, box), md) in enumerate(
-                    zip(page_crops, markdowns[cursor:cursor + count])
-                )
+                for (_img, box), md in zip(page_crops, markdowns[cursor:cursor + count])
             ]
             cursor += count
             results.append(
                 PageResult(
-                    page_index=page_index_base + offset,
                     width=image.width,
                     height=image.height,
                     elapsed_seconds=elapsed,
