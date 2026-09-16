@@ -87,6 +87,18 @@ export const useLibraryStore = defineStore("library", () => {
   });
 
   /**
+   * 凭稳定 id 拉取 PDF 实体并写回缓存（load_pdf 的唯一调用点：打开书 / 补骨架后重读）。
+   * 以请求的 id 归一化，保证实体 id 与存储键一致；后端凭 id 查索引解析物理路径，前端不拼路径。
+   * 失败 throw，由调用方决定 toast 还是静默（后台书直读不走这里，见 parse.bookState）。
+   */
+  async function loadPdf(id: string): Promise<PDF> {
+    const loaded = await invoke<PDF>("load_pdf", { root: repoRoot.value, id });
+    const normalized: PDF = { ...loaded, id };
+    pdfs.value[id] = normalized;
+    return normalized;
+  }
+
+  /**
    * 打开一份 PDF：凭稳定 id（.ezrepo 条目 id）。
    * 未加载时 invoke load_pdf 向后端查询；缓存策略：即用即丢——只保留当前 PDF。
    */
@@ -98,16 +110,8 @@ export const useLibraryStore = defineStore("library", () => {
         toast(t("library.noRepoForPdf"), "warn");
         return;
       }
-      // ---- 阶段1 IPC：凭稳定 id 向后端查询 PDF 实体（Rust 端 load_pdf）----
-      // 参数：root: 仓库根绝对路径；id: 稳定唯一标识符（.ezrepo 条目 id）
-      // 返回：PDF 实体（id 应与请求一致；后端凭 id 查索引解析物理路径，前端不拼路径）
-      // 约定：id 不在索引/读取失败 → throw（此处 toast）；bind 为 null 的未解析 PDF 建议返回空白实体（可看原文，译文栏显示未解析）
       try {
-        const loaded = await invoke<PDF>("load_pdf", {
-          root: repoRoot.value,
-          id: pdf.id,
-        });
-        pdfs.value[key] = { ...loaded, id: key }; // 以请求的 id 归一化，保证实体 id 与存储键一致
+        await loadPdf(key); // id 不在索引/读取失败 → toast 后不切书
       } catch (error) {
         toast(String(error), "error");
         return;
@@ -300,6 +304,7 @@ export const useLibraryStore = defineStore("library", () => {
     sidebarOpen,
     pdfs,
     currentPdf,
+    loadPdf,
     selectPdf,
     toggleSidebar,
     chooseRepoRoot,
