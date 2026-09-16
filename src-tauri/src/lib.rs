@@ -727,10 +727,10 @@ async fn verify_llm(llm: translate::LlmConfig) -> Result<translate::LlmVerifyRep
     translate::verify_llm(&llm).await
 }
 
-/// 拉取 OpenAI 兼容 /models 列表（模型输入框自动补全，用户 2026-09-14）
+/// 拉取模型列表（模型输入框自动补全，用户 2026-09-14；api = 协议，决定路径与认证头）
 #[tauri::command]
-async fn fetch_llm_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
-    translate::fetch_models(&base_url, &api_key).await
+async fn fetch_llm_models(base_url: String, api_key: String, api: String) -> Result<Vec<String>, String> {
+    translate::fetch_models(&base_url, &api_key, &api).await
 }
 
 /// 检查更新（GitHub Releases 最新版本 vs 应用版本；启动静默/手动 toast 由前端决定）

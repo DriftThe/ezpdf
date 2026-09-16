@@ -5,13 +5,18 @@
  */
 export type LlmVerifyReport = { 
 /**
- * 生效策略；"none" = 连通但尝试后仍无法关闭思考（前端 toast 警告）
+ * 生效策略："none" = 不写任何关思考参数（要么探测发现不需要、要么都关不掉，
+ * 靠 [`Self::thinking_on`] 区分）
  */
 strategy: string, 
 /**
- * 预设标记为非思考模型（此时 strategy 的 "none" 不是问题，前端不告警）
+ * 预设标记为非思考模型（此时 thinking_on 恒为 false）
  */
 presetNoThinking: boolean, 
+/**
+ * 探测请求里仍有思考内容：关不掉（前端据此 toast 警告）
+ */
+thinkingOn: boolean, 
 /**
  * 展示文案（含耗时与策略说明）
  */
