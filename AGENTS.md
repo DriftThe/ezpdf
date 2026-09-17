@@ -18,6 +18,8 @@ pnpm only — no lint or test scripts.
   (bundled Python + pyserver + prompts → `src-tauri/resources/`, cached; `EZPDF_PYTHON_PKG` overrides the download).
 - `cargo check` / `cargo build` in `src-tauri/`; `cargo test` also regenerates the ts-rs bindings.
 - `node scripts/sync-pi-models.mjs` — refresh the vendored pi-ai catalog (`--latest`, `--check`). No network at build/run time.
+- `pyserver/.venv/Scripts/python pyserver/tests/test_layout_dedup.py` — the OCR merge/line-scan regression tests
+  (numpy/PIL/cv2 only, no torch, no models).
 
 ## Layout
 
@@ -26,7 +28,9 @@ pnpm only — no lint or test scripts.
 - `src-tauri/src/` — `lib.rs` (commands/DTOs), `parse.rs` (repo, bound JSON, OCR batches, file locks), `translate.rs`
   (LLM client + agent loop), `table.rs` (table markup → grid), `pyenv.rs` (path resolution, env install), `pyserver.rs`
   (service lifecycle).
-- `pyserver/` — the FastAPI OCR service (`app/`), wire protocol in `PROTOCOL.md`.
+- `pyserver/` — the FastAPI OCR service (`app/`), wire protocol in `PROTOCOL.md`. Layout/merge tuning is
+  `app/config.py`; `app/services/` is `pipeline.py` (models), `boxes.py` (geometry + merge), `textlines.py` (figure
+  text lines), `engine.py` (lazy singleton).
 - `.github/workflows/` — `release.yml` (app releases), `pyserver-images.yml` (manual docker snapshots).
 
 ## Data model
@@ -226,9 +230,42 @@ pnpm only — no lint or test scripts.
 - Layout detection is multi-pass and add-only (`LayoutDetector.detect`): the 0.5 main pass, then a sharpened 0.45 pass
   merging text-family candidates, then sharpened top/bottom half-page tiles at 0.38 (headers/footers allowed) — that is
   what recovers small or widely spaced text that pdfjs rendering loses. New candidates must clear IoU ≤0.3 and
-  containment ≤0.6 against kept boxes (`BoxFilter.min_score` is 0.35), and `BoxFilter.filter` additionally drops boxes
-  ≥60 % contained in a kept larger one (NMS can't see nesting). Model forwards are chunked to ≤4 images (batch 8 hits a
-  slow kernel).
+  containment ≤0.6 against kept boxes (`BoxFilter.min_score` is 0.35). Model forwards are chunked to ≤4 images
+  (batch 8 hits a slow kernel). Boxes carry the pass they came from (`origin`).
+- **Every pass reports in the caller's page pixels, and that is the whole contract**: the two full-image passes hand the
+  detector the possibly-downscaled image but ask for `target_sizes` of the *page* back, and the tile pass crops the page
+  itself before downscaling the crop, taking the crop rect, `target_sizes` and the box shift from one `boxes.split_tiles`
+  rect. Mixing the two spaces is what put every tile box up and to the left of its text — an A4 page is 1684 px tall at
+  the render scale 2.0, so it is shrunk to `LAYOUT_MAX_LONG_SIDE` (0.95×), and a pass that shifted *downscaled*
+  coordinates into the page's cost up to 42 pt of drift, growing with the distance from the origin. Two other
+  coordinate rules ride on the same idea: `_forward_one` clamps to the *target* size, not the downscaled input (or the
+  last ~30 pt of every page is shaved off, losing a footer), and `_figure_regions` lifts a figure's inner boxes by the
+  crop's own origin.
+- `app/services/boxes.py` is the merge (no torch, so it is testable on its own): one priority-greedy pass, ordered
+  structured (table/formula) → figure (image/chart) → text family, then by earlier pass, larger box, higher score. A
+  candidate is dropped when it re-detects a kept box (IoU > 0.5, or covered by it — 0.35 of its area, 0.25 for text
+  inside a table/formula), and it is **unioned into its survivor** so no pixel leaves the crop. Figures never absorb
+  the text inside them. Boxes are first **pulled tight around their ink** (`BOX_TRIM_TO_INK`): the detector's boxes
+  carry a margin (median 5-9 px at scale 2.0, up to 190 px on a spurious one) which is what makes two unrelated
+  blocks overlap and their covers repaint each other. What is left around the ink is `BOX_TRIM_MARGIN_PX` — the
+  detector's own 3 pt, not zero, or the covers come out cramped and the fit has to shrink the text to fit them.
+  After OCR the same module drops boxes whose reading is
+  punctuation, a stray glyph or the VL's `[Unlabeled]` placeholder, and merges near-duplicates — overlap *and*
+  near-equal text (containment, substring, fuzzy words: OCR truncates word tails), most complete reading wins.
+  Geometry alone cannot tell "the same line detected twice" from two boxes that merely touch; the text can.
+- Text-dense figures are split into their inner text lines (`OCRPipeline._figure_regions`), so a flow chart's labels
+  get translated instead of being one opaque `image` block. Both signals must agree: the figure's own VL OCR must read
+  like a body of text (≥150 chars, ≥3 lines, ≥60 % alphanumeric) *and* `app/services/textlines.py` must find labelled
+  text in the crop (a morphological line scan — PP-DocLayoutV3 answers "this is a figure" and finds one or two boxes in
+  any crop presentation, so the layout model is not usable inside a figure). The `image` block stays, covers land on
+  the lines, so a wrongly accepted figure costs covers and never content. Every decision logs one `[figure]` line.
+- **Every number for the above lives in `app/config.py`** (`EZPDF_OCR_*` env overrides, defaults are the calibrated
+  ones); `engine.py` passes `ocr_tuning()` into `OCRPipeline`, whose constructor has no defaults of its own. The
+  measured baselines behind the thresholds (duplicate coverage, line ink vs frame ink, box margins) are in the config
+  comments, and turning the merge up is a matter of lowering `DEDUP_CONTAINMENT` / `DEDUP_CONTAINMENT_STRUCTURED`.
+  `pyserver/tests/test_layout_dedup.py` locks the behaviour with real duplicate pairs from a page that came out
+  wrong — run `python pyserver/tests/test_layout_dedup.py` (42 cases, numpy/PIL/cv2 only, ~20 ms); it also pins the
+  tile geometry above, the one bug a page-level smoke test showed as "the box is on the wrong lines".
 - Two entries: `app/main.py` (managed: ephemeral port, `EZPDF_READY` line, stdin-EOF watchdog, token injected by Rust) and
   `app/server_docker.py` (deployed/container: binds `EZPDF_HOST:EZPDF_PORT`, default `0.0.0.0:9055`, **no** watchdog since
   a container's stdin is `/dev/null`, resolves its own token and prints it on every start).

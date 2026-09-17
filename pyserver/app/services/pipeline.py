@@ -1,15 +1,16 @@
 """OCR pipeline (ported from Wise-Paddle core_pipeline.py; concurrency and disk output removed).
 
-Per page: PP-DocLayoutV3 layout → BoxFilter (NMS + thresholds) → numpy crop → PaddleOCR-VL-1.6
-batched per label → in-memory RegionResult (never written to disk). Rust is the sole scheduler and
-results return over HTTP; the accuracy-critical BoxFilter NMS + unclip are kept as-is.
+Per page: PP-DocLayoutV3 layout (three add-only passes) → BoxFilter (threshold + merge) → numpy crop →
+PaddleOCR-VL-1.6 batched per label → post-OCR text dedup → in-memory RegionResult (never written to
+disk). Rust is the sole scheduler and results return over HTTP. Text-dense figures get a fourth pass
+that lifts their inner text out as ordinary blocks (see _figure_regions). Every number lives in
+app/config.py; the geometry and text-dedup primitives live in boxes.py.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 import numpy as np
@@ -21,6 +22,26 @@ from transformers import (
     AutoModelForImageTextToText,
     AutoProcessor,
 )
+
+from .boxes import (
+    FIGURE_LABELS,
+    ORIGIN_FALLBACK,
+    ORIGIN_FIGURE,
+    ORIGIN_MAIN,
+    ORIGIN_TILE,
+    TEXT_LABELS,
+    BoxFilter,
+    LayoutBox,
+    PageRegions,
+    PageResult,
+    RegionResult,
+    containment,
+    iou_xyxy,
+    looks_like_body_text,
+    resolve_page_regions,
+    split_tiles,
+)
+from .textlines import detect_text_lines, group_lines, ink_mask
 
 logger = logging.getLogger("ezpdf.pipeline")
 
@@ -60,66 +81,23 @@ def _patch_rope_default() -> None:
 _patch_rope_default()
 
 
-@dataclass
-class LayoutBox:
-    xyxy: np.ndarray  # float32, shape (4,) — [x1, y1, x2, y2] in source-image coordinates
-    label_id: int
-    label_name: str
-    score: float
-
-    @property
-    def int_rect(self) -> tuple[int, int, int, int]:
-        return tuple(int(round(float(v))) for v in self.xyxy)
-
-    @property
-    def area(self) -> float:
-        x1, y1, x2, y2 = self.xyxy
-        return max(0.0, x2 - x1) * max(0.0, y2 - y1)
-
-
-@dataclass
-class RegionResult:
-    label: str
-    score: float
-    rect: tuple[int, int, int, int]
-    markdown: str
-
-
-@dataclass
-class PageResult:
-    width: int
-    height: int
-    elapsed_seconds: float
-    regions: list[RegionResult] = field(default_factory=list)
-
-
-def _iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
-    inter = iw * ih
-    union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
-    return inter / union if union > 0 else 0.0
-
-
-def _containment(a: np.ndarray, b: np.ndarray) -> float:
-    """Fraction of a covered by b (inter / area(a)); drops duplicate "line inside a block" candidates."""
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
-    ih = max(0.0, min(ay2, by2) - max(ay1, by1))
-    area = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    return (iw * ih) / area if area > 0 else 0.0
-
-
 class LayoutDetector:
     def __init__(
             self,
             model_path: str,
             device: torch.device,
-            score_threshold: float = 0.5,
+            score_threshold: float,
+            max_long_side: int,
+            fallback_threshold: float,
+            fallback_sharpen: tuple[int, int, int],
+            fallback_iou: float,
+            fallback_containment: float,
+            tile_threshold: float,
+            tile_overlap: float,
+            tile_iou: float,
+            tile_containment: float,
+            tile_min_page_height: int,
+            forward_batch: int,
             dtype: torch.dtype = torch.float32,
     ) -> None:
         logger.info("Loading layout model: %s", model_path)
@@ -135,25 +113,27 @@ class LayoutDetector:
             int(k): v for k, v in self.model.config.id2label.items()
         }
         # The processor has a built-in 800x800 resize and adapts as long as the long side is sane
-        self._max_long_side = 1600  # cap so 4K+ images cannot blow up VRAM
-        # Second-pass recall params (see detect); tune sensitivity here
+        self._max_long_side = int(max_long_side)  # cap so 4K+ images cannot blow up VRAM
+        # Second-pass recall whitelist (see detect): text family only, since a lower threshold on a
+        # sharpened image also surfaces stickers/seals that are not text
         self._fallback_labels = frozenset({
             "text", "paragraph_title", "doc_title", "abstract", "aside_text",
             "footnote", "figure_title", "content", "reference", "reference_content",
         })
-        self._fallback_threshold = 0.45
-        self._fallback_sharpen = (2, 300, 1)  # PIL UnsharpMask: radius, percent, threshold
-        self._fallback_iou = 0.3
-        self._fallback_containment = 0.6
+        self._fallback_threshold = fallback_threshold
+        self._fallback_sharpen = fallback_sharpen  # PIL UnsharpMask: radius, percent, threshold
+        self._fallback_iou = fallback_iou
+        self._fallback_containment = fallback_containment
         # Third pass, half-page tiles (see detect); add-only, and its whitelist also takes header/footer
         # because a cover's standard line is classified as header
         self._tile_labels = self._fallback_labels | {"header", "footer"}
-        self._tile_threshold = 0.38
-        self._tile_overlap = 0.08
-        self._tile_iou = 0.3
-        self._tile_containment = 0.6
+        self._tile_threshold = tile_threshold
+        self._tile_overlap = tile_overlap
+        self._tile_iou = tile_iou
+        self._tile_containment = tile_containment
+        self._tile_min_page_height = int(tile_min_page_height)
         # batch=8 hits a slow kernel (measured 6.0s vs 0.22s at batch=4), so all forwards are chunked
-        self._max_forward_batch = 4
+        self._max_forward_batch = max(1, int(forward_batch))
 
     def _maybe_downscale(self, image: Image.Image) -> Image.Image:
         w, h = image.size
@@ -172,16 +152,17 @@ class LayoutDetector:
             images: Sequence[Image.Image],
             target_sizes: torch.Tensor,
             threshold: float,
+            origin: int,
     ) -> list[list[LayoutBox]]:
         """Chunked forward (≤ ``_max_forward_batch``); the slow batch=8 kernel is why, see _max_forward_batch."""
         images = list(images)
         if len(images) <= self._max_forward_batch:
-            return self._forward_one(images, target_sizes, threshold)
+            return self._forward_one(images, target_sizes, threshold, origin)
         out: list[list[LayoutBox]] = []
         for i in range(0, len(images), self._max_forward_batch):
             chunk = images[i:i + self._max_forward_batch]
             out.extend(
-                self._forward_one(chunk, target_sizes[i:i + len(chunk)], threshold)
+                self._forward_one(chunk, target_sizes[i:i + len(chunk)], threshold, origin)
             )
         return out
 
@@ -191,6 +172,7 @@ class LayoutDetector:
             images: Sequence[Image.Image],
             target_sizes: torch.Tensor,
             threshold: float,
+            origin: int,
     ) -> list[list[LayoutBox]]:
         inputs = self.processor(images=list(images), return_tensors="pt").to(self.device)
         outputs = self.model(**inputs)
@@ -199,24 +181,30 @@ class LayoutDetector:
             outputs, target_sizes=target_sizes, threshold=threshold
         )
 
+        # post_process returns boxes in target_sizes coordinates, which is NOT the size of the image
+        # handed to the model when it was downscaled for VRAM — clamping to the input would shave the
+        # last ~30pt of every page (crops lose text; a footer can vanish entirely).
+        sizes = target_sizes.detach().cpu().tolist()
+
         out: list[list[LayoutBox]] = []
-        for r, src in zip(raw, images):
+        for r, (height, width) in zip(raw, sizes):
             boxes = r["boxes"].detach().cpu().numpy()
             labels = r["labels"].detach().cpu().numpy()
             scores = r["scores"].detach().cpu().numpy()
             page_boxes: list[LayoutBox] = []
             for box, lid, sc in zip(boxes, labels, scores):
                 x1, y1, x2, y2 = box
-                x1 = max(0.0, min(float(x1), src.width))
-                x2 = max(0.0, min(float(x2), src.width))
-                y1 = max(0.0, min(float(y1), src.height))
-                y2 = max(0.0, min(float(y2), src.height))
+                x1 = max(0.0, min(float(x1), float(width)))
+                x2 = max(0.0, min(float(x2), float(width)))
+                y1 = max(0.0, min(float(y1), float(height)))
+                y2 = max(0.0, min(float(y2), float(height)))
                 page_boxes.append(
                     LayoutBox(
                         xyxy=np.array([x1, y1, x2, y2], dtype=np.float32),
                         label_id=int(lid),
                         label_name=self.id2label.get(int(lid), str(int(lid))),
                         score=float(sc),
+                        origin=origin,
                     )
                 )
             out.append(page_boxes)
@@ -234,22 +222,15 @@ class LayoutDetector:
         if candidate.label_name not in labels:
             return
         for k in page_boxes:
-            if _iou_xyxy(candidate.xyxy, k.xyxy) > iou_limit:
+            if iou_xyxy(candidate.xyxy, k.xyxy) > iou_limit:
                 return
-            if _containment(candidate.xyxy, k.xyxy) > containment_limit:
+            # A figure never absorbs the text inside it: that text is what the figure pass (and the
+            # reader's cover) wants, and rejecting it here would make it unreachable for every pass.
+            if k.label_name in FIGURE_LABELS and candidate.label_name not in FIGURE_LABELS:
+                continue
+            if containment(candidate.xyxy, k.xyxy) > containment_limit:
                 return
         page_boxes.append(candidate)
-
-    def _split_tiles(self, image: Image.Image) -> tuple[list[Image.Image], list[int]]:
-        """Top/bottom half-page tiles (with overlap); returns (tiles, each tile's y offset in the page)."""
-        w, h = image.size
-        if h < 200:  # too short to tile
-            return [], []
-        cut = h // 2
-        ov = int(h * self._tile_overlap)
-        first = image.crop((0, 0, w, min(h, cut + ov)))
-        second = image.crop((0, max(0, cut - ov), w, h))
-        return [first, second], [0, max(0, cut - ov)]
 
     @torch.no_grad()
     def detect(self, images: Sequence[Image.Image]) -> list[list[LayoutBox]]:
@@ -259,21 +240,28 @@ class LayoutDetector:
         passes (results are never replaced, since sharpening lowers some edge scores): source at 0.5,
         sharpened full image at 0.45 (text-family), sharpened half-page tiles at 0.38.
         Candidates only pass with low overlap vs kept boxes (IoU/containment); whitelists in __init__.
+        Boxes keep the pass they came from (``origin``) so the merge can prefer the main pass.
+
+        Every pass reports in the caller's page pixels: the main and fallback passes feed the detector
+        the possibly-downscaled image but ask for the page's size back, and the tile pass crops the
+        page itself before downscaling the crop (boxes.split_tiles).
         """
         if not images:
             return []
-        scaled = [self._maybe_downscale(im.convert("RGB")) for im in images]
+        pages = [im.convert("RGB") for im in images]
+        scaled = [self._maybe_downscale(im) for im in pages]
 
         target_sizes = torch.tensor(
-            [[im.height, im.width] for im in images], device=self.device
+            [[im.height, im.width] for im in pages], device=self.device
         )
-        out = self._forward(scaled, target_sizes, self.score_threshold)
+        out = self._forward(scaled, target_sizes, self.score_threshold, ORIGIN_MAIN)
 
         fallback = [
             im.filter(ImageFilter.UnsharpMask(*self._fallback_sharpen)) for im in scaled
         ]
         for page_boxes, candidates in zip(
-            out, self._forward(fallback, target_sizes, self._fallback_threshold)
+            out,
+            self._forward(fallback, target_sizes, self._fallback_threshold, ORIGIN_FALLBACK),
         ):
             for b in candidates:
                 self._append_candidate(
@@ -281,24 +269,28 @@ class LayoutDetector:
                     self._fallback_iou, self._fallback_containment,
                 )
 
+        # Tiles come off the page-sized images, never off ``scaled``: their crop rect, the target size
+        # handed to the detector and the shift applied to the boxes back must be one space, and the
+        # page's own pixels are that space (see boxes.split_tiles).
         tiles: list[Image.Image] = []
-        offsets_per_page: list[list[int]] = []
-        for im in scaled:
-            parts, offsets = self._split_tiles(im)
-            tiles.extend(parts)
-            offsets_per_page.append(offsets)
+        tile_sizes: list[list[int]] = []
+        tile_rects_per_page: list[list[tuple[int, int, int, int]]] = []
+        for im in pages:
+            rects = split_tiles(im.width, im.height, self._tile_overlap, self._tile_min_page_height)
+            tile_rects_per_page.append(rects)
+            for x1, y1, x2, y2 in rects:
+                tiles.append(self._maybe_downscale(im.crop((x1, y1, x2, y2))))
+                tile_sizes.append([y2 - y1, x2 - x1])
         if tiles:
-            tile_sizes = torch.tensor(
-                [[t.height, t.width] for t in tiles], device=self.device
+            raw_tiles = self._forward(
+                [t.filter(ImageFilter.UnsharpMask(*self._fallback_sharpen)) for t in tiles],
+                torch.tensor(tile_sizes, device=self.device),
+                self._tile_threshold, ORIGIN_TILE,
             )
-            sharp_tiles = [
-                t.filter(ImageFilter.UnsharpMask(*self._fallback_sharpen)) for t in tiles
-            ]
-            raw_tiles = self._forward(sharp_tiles, tile_sizes, self._tile_threshold)
             cursor = 0
-            for page_boxes, offsets in zip(out, offsets_per_page):
-                for off in offsets:
-                    shift = np.array([0, off, 0, off], dtype=np.float32)
+            for page_boxes, rects in zip(out, tile_rects_per_page):
+                for x1, y1, _, _ in rects:
+                    shift = np.array([x1, y1, x1, y1], dtype=np.float32)
                     for b in raw_tiles[cursor]:
                         self._append_candidate(
                             page_boxes,
@@ -307,92 +299,12 @@ class LayoutDetector:
                                 label_id=b.label_id,
                                 label_name=b.label_name,
                                 score=b.score,
+                                origin=ORIGIN_TILE,
                             ),
                             self._tile_labels, self._tile_iou, self._tile_containment,
                         )
                     cursor += 1
         return out
-
-
-class BoxFilter:
-    """Pure numpy NMS + filtering; no extra dependencies.
-
-    min_score sits below the detector's pass thresholds on purpose, leaving a path for the 0.38-0.5
-    recall candidates; contain_threshold catches nested boxes NMS can't see; unclip/expand add VL
-    context after NMS (too much swallows neighbouring regions).
-    """
-
-    def __init__(
-            self,
-            iou_threshold: float = 0.5,
-            min_area: float = 16 * 16,
-            min_score: float = 0.35,
-            contain_threshold: float = 0.6,
-            unclip_ratio: float = 0.0,
-            expand_pixels: float = 0.0,
-    ) -> None:
-        self.iou_threshold = float(iou_threshold)
-        self.min_area = float(min_area)
-        self.min_score = float(min_score)
-        self.contain_threshold = float(contain_threshold)
-        self.unclip_ratio = float(unclip_ratio)
-        self.expand_pixels = float(expand_pixels)
-
-    def _unclip(self, box: np.ndarray) -> np.ndarray:
-        x1, y1, x2, y2 = box
-        w = x2 - x1
-        h = y2 - y1
-        dx = w * self.unclip_ratio + self.expand_pixels
-        dy = h * self.unclip_ratio + self.expand_pixels
-        return np.array([x1 - dx, y1 - dy, x2 + dx, y2 + dy], dtype=np.float32)
-
-    def filter(
-            self,
-            boxes: list[LayoutBox],
-            page_size: Optional[tuple[int, int]] = None,
-    ) -> list[LayoutBox]:
-        """Filter + NMS + optional unclip (``page_size`` (W,H) clamps unclip); returns kept boxes in score order."""
-        keep: list[LayoutBox] = []
-        candidates = sorted(boxes, key=lambda b: b.score, reverse=True)
-        for b in candidates:
-            if b.score < self.min_score or b.area < self.min_area:
-                continue
-            if any(_iou_xyxy(b.xyxy, k.xyxy) > self.iou_threshold for k in keep):
-                continue
-            keep.append(b)
-
-        # Nested dedup, judged by descending area: NMS only sees IoU, which is low for a large box
-        # wrapping a small one. Survivors then filter the score-ordered output.
-        survivors: list[LayoutBox] = []
-        for b in sorted(keep, key=lambda b: b.area, reverse=True):
-            if any(
-                    b.area <= k.area and _containment(b.xyxy, k.xyxy) > self.contain_threshold
-                    for k in survivors
-            ):
-                continue
-            survivors.append(b)
-        survivors_ids = {id(b) for b in survivors}
-        keep = [b for b in keep if id(b) in survivors_ids]
-
-        # unclip after NMS so it cannot affect NMS decisions
-        if self.unclip_ratio > 0 or self.expand_pixels > 0:
-            expanded_keep: list[LayoutBox] = []
-            for b in keep:
-                expanded = self._unclip(b.xyxy).copy()
-                if page_size is not None:
-                    w, h = page_size
-                    expanded[0] = max(0.0, expanded[0])
-                    expanded[1] = max(0.0, expanded[1])
-                    expanded[2] = min(float(w), expanded[2])
-                    expanded[3] = min(float(h), expanded[3])
-                expanded_keep.append(LayoutBox(
-                    xyxy=expanded,
-                    label_id=b.label_id,
-                    label_name=b.label_name,
-                    score=b.score,
-                ))
-            keep = expanded_keep
-        return keep
 
 
 class RegionCropper:
@@ -568,46 +480,98 @@ class VLPredictor:
 
 
 class OCRPipeline:
-    """Run layout detection → filter → crop → VL recognition → in-memory results; knobs are constructor args."""
+    """Run layout detection → filter → crop → VL recognition → text dedup → in-memory results.
+
+    Every number is a constructor argument sourced from app/config.py (engine.py passes ocr_tuning());
+    there are no defaults here on purpose, so the tuning has exactly one home.
+    """
 
     def __init__(
             self,
             layout_model_path: str,
             vl_model_path: str,
             device: torch.device,
-            score_threshold: float = 0.5,
-            box_iou_threshold: float = 0.5,
-            box_min_area: float = 16 * 16,
-            box_min_score: float = 0.35,
-            box_contain_threshold: float = 0.6,
-            # Fixed small expansion only: proportional expansion grows with the box, so a large text box
-            # reaches into small headings inside it and the two white covers overlap
+            *,
+            score_threshold: float,
+            max_long_side: int,
+            fallback_threshold: float,
+            fallback_sharpen: tuple[int, int, int],
+            fallback_iou: float,
+            fallback_containment: float,
+            tile_threshold: float,
+            tile_overlap: float,
+            tile_iou: float,
+            tile_containment: float,
+            tile_min_page_height: int,
+            layout_forward_batch: int,
+            box_iou_threshold: float,
+            box_containment_threshold: float,
+            box_structured_containment_threshold: float,
+            box_trim_to_ink: bool,
+            box_trim_margin: float,
+            box_trim_min_area_ratio: float,
+            box_min_area: float,
+            box_min_score: float,
+            box_expand_pixels: float,
+            max_regions: int,
+            dedup_text_min_overlap: float,
+            dedup_text_ratio: float,
+            dedup_text_token_containment: float,
+            dedup_text_fuzzy_prefix: int,
+            dedup_min_content_chars: int,
+            dedup_placeholders: tuple[str, ...],
+            dedup_text_max_loss: float,
+            figure_text_min_chars: int,
+            figure_text_min_lines: int,
+            figure_text_min_alnum_ratio: float,
+            figure_line_merge_px: int,
+            figure_line_min_height: int,
+            figure_line_max_height: int,
+            figure_line_min_width: int,
+            figure_line_min_ink: float,
+            figure_line_max_ink: float,
+            figure_line_gap_ratio: float,
+            figure_line_min_x_overlap: float,
+            figure_inner_min_boxes: int,
+            figure_inner_min_coverage: float,
+            figure_min_side_px: int,
+            max_new_tokens: int,
+            vl_min_pixels: int,
+            vl_max_pixels: int,
+            vl_max_forward_batch: int,
+            vl_repetition_penalty: float,
             box_unclip_ratio: float = 0.0,
-            box_expand_pixels: float = 2.0,
-            # 256 truncates long paragraphs (longest text block measured at 1157 chars); short blocks
-            # hit EOS early, so 512 only costs extra decode on long ones
-            max_new_tokens: int = 512,
-            vl_min_pixels: int = 112896,
-            vl_max_pixels: int = 1280 * 28 * 28,
-            vl_max_forward_batch: int = 4,
-            vl_repetition_penalty: float = 1.15,
             vl_do_sample: bool = False,
-            max_regions: int = 100,
             dtype: torch.dtype = torch.bfloat16,
             attn_impl: str = "sdpa",
     ) -> None:
         self.device = device
         self.layout = LayoutDetector(
-            layout_model_path, device, score_threshold=score_threshold,
+            layout_model_path, device,
+            score_threshold=score_threshold,
+            max_long_side=max_long_side,
+            fallback_threshold=fallback_threshold,
+            fallback_sharpen=fallback_sharpen,
+            fallback_iou=fallback_iou,
+            fallback_containment=fallback_containment,
+            tile_threshold=tile_threshold,
+            tile_overlap=tile_overlap,
+            tile_iou=tile_iou,
+            tile_containment=tile_containment,
+            tile_min_page_height=tile_min_page_height,
+            forward_batch=layout_forward_batch,
         )
         # NOTE: not self.filter — would shadow the builtin filter()
         self.box_filter = BoxFilter(
             iou_threshold=box_iou_threshold,
+            containment_threshold=box_containment_threshold,
+            structured_containment_threshold=box_structured_containment_threshold,
             min_area=box_min_area,
             min_score=box_min_score,
-            contain_threshold=box_contain_threshold,
-            unclip_ratio=box_unclip_ratio,
             expand_pixels=box_expand_pixels,
+            trim_margin=box_trim_margin if box_trim_to_ink else -1.0,
+            trim_min_area_ratio=box_trim_min_area_ratio,
+            unclip_ratio=box_unclip_ratio,
         )
         self.cropper = RegionCropper()
         self.vl = VLPredictor(
@@ -622,24 +586,175 @@ class OCRPipeline:
             dtype=dtype,
         )
         self.max_regions = int(max_regions)
+        self.figure_min_side = int(figure_min_side_px)
+        self.figure_text_min_chars = int(figure_text_min_chars)
+        self.figure_text_min_lines = int(figure_text_min_lines)
+        self.figure_text_min_alnum_ratio = float(figure_text_min_alnum_ratio)
+        self.figure_line_merge_px = int(figure_line_merge_px)
+        self.figure_line_min_height = int(figure_line_min_height)
+        self.figure_line_max_height = int(figure_line_max_height)
+        self.figure_line_min_width = int(figure_line_min_width)
+        self.figure_line_min_ink = float(figure_line_min_ink)
+        self.figure_line_max_ink = float(figure_line_max_ink)
+        self.figure_line_gap_ratio = float(figure_line_gap_ratio)
+        self.figure_line_min_x_overlap = float(figure_line_min_x_overlap)
+        self.figure_inner_min_boxes = int(figure_inner_min_boxes)
+        self.figure_inner_min_coverage = float(figure_inner_min_coverage)
+        self.dedup_text_min_overlap = float(dedup_text_min_overlap)
+        self.dedup_text_ratio = float(dedup_text_ratio)
+        self.dedup_text_token_containment = float(dedup_text_token_containment)
+        self.dedup_text_fuzzy_prefix = int(dedup_text_fuzzy_prefix)
+        self.dedup_min_content_chars = int(dedup_min_content_chars)
+        self.dedup_placeholders = tuple(dedup_placeholders)
+        self.dedup_text_max_loss = float(dedup_text_max_loss)
 
     def _crop_page(
             self,
             image: Image.Image,
             layouts: list[LayoutBox],
+            ink: Optional[np.ndarray] = None,
     ) -> list[tuple[Image.Image, LayoutBox]]:
-        kept = self.box_filter.filter(
-            layouts, page_size=(image.width, image.height)
-        )[: self.max_regions]
+        kept = self.box_filter.filter(layouts, page_size=(image.width, image.height), ink=ink)
+        if len(kept) > self.max_regions:
+            # Silent before, and the score order means the 0.38-0.45 recall candidates are the ones
+            # dropped — the tuning knob is the way out, this line is how you find out you need it.
+            logger.warning(
+                "  [regions] page has %d boxes, keeping the top %d by score",
+                len(kept), self.max_regions,
+            )
+            kept = kept[: self.max_regions]
         crops: list[tuple[Image.Image, LayoutBox]] = []
         # one RGB conversion per page
         rgb = np.asarray(image.convert("RGB"))
         for box in kept:
-            arr = self.cropper.crop(rgb, box)
-            if arr.size == 0 or arr.shape[0] < 2 or arr.shape[1] < 2:
-                continue
-            crops.append((Image.fromarray(arr), box))
+            crop = self._crop(rgb, box)
+            if crop is not None:
+                crops.append((crop, box))
         return crops
+
+    def _crop(self, rgb: np.ndarray, box: LayoutBox) -> Optional[Image.Image]:
+        arr = self.cropper.crop(rgb, box)
+        if arr.size == 0 or arr.shape[0] < 2 or arr.shape[1] < 2:
+            return None
+        return Image.fromarray(arr)
+
+    def _figure_markdown_is_text(self, markdown: str) -> bool:
+        """First signal of the figure gate: does the figure's own OCR read like a body of text?
+
+        A photo yields nothing or a stray word, so it fails here and never reaches the inner layout
+        pass, which keeps the fourth pass free for pages that have no dense figure at all.
+        """
+        return looks_like_body_text(
+            markdown,
+            min_chars=self.figure_text_min_chars,
+            min_lines=self.figure_text_min_lines,
+            min_alnum_ratio=self.figure_text_min_alnum_ratio,
+        )
+
+    def _figure_regions(
+            self,
+            image: Image.Image,
+            page_crops: list[tuple[Image.Image, LayoutBox]],
+            page_markdowns: list[str],
+            ink: Optional[np.ndarray] = None,
+    ) -> list[tuple[Image.Image, LayoutBox]]:
+        """Fourth pass, second half of the gate: split a text-dense figure into its inner text lines.
+
+        Both signals must agree — the figure's OCR reads as text (above) and the line scan actually
+        finds labelled text inside it — otherwise the figure stays one image block, exactly as before.
+        Inner boxes are only ever added: the figure block stays, so a wrongly accepted figure costs
+        covers, never content.
+
+        The lines come from a morphological scan rather than the layout model: PP-DocLayoutV3 answers
+        "this is a figure" and nothing else, no matter how the crop is presented (see textlines.py).
+
+        ``chart`` is left alone: its prompt returns a reading of the chart (a description or its data)
+        rather than the labels on it, so there is nothing trustworthy to re-detect inside.
+        """
+        extra: list[tuple[Image.Image, LayoutBox]] = []
+        page_rgb: Optional[np.ndarray] = None
+        for (crop, box), markdown in zip(page_crops, page_markdowns):
+            if box.label_name != "image":
+                continue
+            x1, y1, x2, y2 = box.int_rect
+            if min(x2 - x1, y2 - y1) < self.figure_min_side:
+                continue
+            if not self._figure_markdown_is_text(markdown):
+                continue
+            lines = group_lines(
+                detect_text_lines(
+                    crop,
+                    merge_px=self.figure_line_merge_px,
+                    min_height=self.figure_line_min_height,
+                    max_height=self.figure_line_max_height,
+                    min_width=self.figure_line_min_width,
+                    min_ink=self.figure_line_min_ink,
+                    max_ink=self.figure_line_max_ink,
+                ),
+                gap_ratio=self.figure_line_gap_ratio,
+                min_x_overlap=self.figure_line_min_x_overlap,
+            )
+            inner = [
+                LayoutBox(
+                    xyxy=np.array(
+                        [x1 + lx1, y1 + ly1, x1 + lx2, y1 + ly2], dtype=np.float32
+                    ),
+                    label_id=-1,
+                    label_name="text",
+                    # No model score behind a scan line; mid-range so it survives the box filter and
+                    # never outranks a real detection of the same area.
+                    score=0.5,
+                    origin=ORIGIN_FIGURE,
+                )
+                for lx1, ly1, lx2, ly2 in lines
+            ]
+            kept = self.box_filter.filter(
+                inner, page_size=(image.width, image.height), ink=ink,
+            )
+            coverage = sum(b.area for b in kept) / box.area if box.area > 0 else 0.0
+            accepted = len(kept) >= self.figure_inner_min_boxes or coverage >= self.figure_inner_min_coverage
+            logger.info(
+                "  [figure] box=(%d,%d,%d,%d) chars=%d lines=%d blocks=%d cov=%.2f -> %s",
+                x1, y1, x2, y2, len("".join(markdown.split())),
+                len([line for line in markdown.splitlines() if line.strip()]),
+                len(kept), coverage, "text" if accepted else "image",
+            )
+            if not accepted:
+                continue
+            if page_rgb is None:
+                page_rgb = np.asarray(image.convert("RGB"))
+            for inner_box in kept:
+                inner_crop = self._crop(page_rgb, inner_box)
+                if inner_crop is not None:
+                    extra.append((inner_crop, inner_box))
+        return extra
+
+    @staticmethod
+    def _text_char_count(items: Sequence[tuple[LayoutBox, str]]) -> int:
+        """Characters of text-family markdown — the budget the dedup is allowed to spend."""
+        return sum(
+            len("".join(md.split())) for box, md in items if box.label_name in TEXT_LABELS
+        )
+
+    def _resolve_page_text(
+            self,
+            items: list[tuple[LayoutBox, str]],
+    ) -> PageRegions:
+        """Post-OCR cleanup (boxes.py): drop punctuation-only boxes, merge near-duplicate text.
+
+        Geometry alone cannot separate "the same line detected twice with an offset" from two boxes
+        that merely touch, and the two recall passes are what produce the former — so the decision is
+        made here, where the text can arbitrate.
+        """
+        return resolve_page_regions(
+            items,
+            min_overlap=self.dedup_text_min_overlap,
+            ratio=self.dedup_text_ratio,
+            token_containment=self.dedup_text_token_containment,
+            fuzzy_prefix=self.dedup_text_fuzzy_prefix,
+            min_content_chars=self.dedup_min_content_chars,
+            placeholders=self.dedup_placeholders,
+        )
 
     def process_page(self, image: Image.Image) -> PageResult:
         return self.process_pages([image])[0]
@@ -659,39 +774,83 @@ class OCRPipeline:
 
         layouts_per_page = self.layout.detect(images)
 
+        # One ink mask per page: the merge trims boxes to it and the figure line scan reads from it
+        ink_per_page = [ink_mask(image) for image in images]
+
         pages_crops = [
-            self._crop_page(image, layouts)
-            for image, layouts in zip(images, layouts_per_page)
+            self._crop_page(image, layouts, ink)
+            for image, layouts, ink in zip(images, layouts_per_page, ink_per_page)
         ]
 
-        all_items = [
-            (img, box.label_name)
-            for page_crops in pages_crops
-            for img, box in page_crops
+        markdowns = self.vl.recognize_grouped(
+            [(img, box.label_name) for page_crops in pages_crops for img, box in page_crops]
+        )
+
+        # Second VL round, only for the inner text of figures that passed the density gate (usually
+        # zero or one page per batch, so it costs one small extra forward)
+        cursor = 0
+        pages_markdowns: list[list[str]] = []
+        for page_crops in pages_crops:
+            pages_markdowns.append(markdowns[cursor:cursor + len(page_crops)])
+            cursor += len(page_crops)
+        figure_items = [
+            self._figure_regions(image, page_crops, page_markdowns, ink)
+            for image, page_crops, page_markdowns, ink in zip(
+                images, pages_crops, pages_markdowns, ink_per_page
+            )
         ]
-        markdowns = self.vl.recognize_grouped(all_items)
+        figure_markdowns = self.vl.recognize_grouped(
+            [(img, box.label_name) for page_items in figure_items for img, box in page_items]
+        )
+        cursor = 0
+        for page_items, page_crops, page_markdowns in zip(figure_items, pages_crops, pages_markdowns):
+            took = len(page_items)
+            page_markdowns.extend(figure_markdowns[cursor:cursor + took])
+            page_crops.extend(page_items)
+            cursor += took
 
         elapsed = time.perf_counter() - st
         results: list[PageResult] = []
-        cursor = 0
-        for image, page_crops in zip(images, pages_crops):
-            count = len(page_crops)
-            regions = [
-                RegionResult(
-                    label=box.label_name,
-                    score=box.score,
-                    rect=box.int_rect,
-                    markdown=md,
+        for image, page_crops, page_markdowns in zip(images, pages_crops, pages_markdowns):
+            items = [(box, md) for (_, box), md in zip(page_crops, page_markdowns)]
+            resolved = self._resolve_page_text(items)
+            if resolved.merged or resolved.junk:
+                before = self._text_char_count(items)
+                after = self._text_char_count(resolved.regions)
+                loss = (before - after) / before if before else 0.0
+                logger.info(
+                    "  [dedup] %d -> %d regions (merged %d, junk %d), text chars %d -> %d (%.1f%%)",
+                    len(items), len(resolved.regions), len(resolved.merged), len(resolved.junk),
+                    before, after, -100.0 * loss,
                 )
-                for (_img, box), md in zip(page_crops, markdowns[cursor:cursor + count])
-            ]
-            cursor += count
+                if loss > self.dedup_text_max_loss:
+                    # The merged text is the reading the survivor already carries; a large share means
+                    # the page repeats itself or a box was swallowed that should have stood alone.
+                    for box, md in resolved.merged[:5]:
+                        x1, y1, _, _ = box.int_rect
+                        logger.warning(
+                            "  [dedup] merged away %s at (%d,%d): %r",
+                            box.label_name, x1, y1, md[:60],
+                        )
+                    logger.warning(
+                        "  [dedup] dropped %.1f%% of the page's text (limit %.1f%%) — check the merge "
+                        "thresholds in app/config.py",
+                        100.0 * loss, 100.0 * self.dedup_text_max_loss,
+                    )
             results.append(
                 PageResult(
                     width=image.width,
                     height=image.height,
                     elapsed_seconds=elapsed,
-                    regions=regions,
+                    regions=[
+                        RegionResult(
+                            label=box.label_name,
+                            score=box.score,
+                            rect=box.int_rect,
+                            markdown=md,
+                        )
+                        for box, md in resolved.regions
+                    ],
                 )
             )
         return results

@@ -36,6 +36,8 @@ PLAN-LLM.md
 /pyserver/app/__pycache__
 /pyserver/app/services/__pycache__
 /pyserver/app/routers/__pycache__
+/pyserver/tests/__pycache__
+/.zcode/
 auth.cfg
 # 运行时设置文件（dev = 仓库根；save_settings 生成）
 /config.json

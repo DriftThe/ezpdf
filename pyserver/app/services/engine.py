@@ -7,7 +7,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Sequence
 
-from ..config import LAYOUT_MODEL_DIR_NAME, MODELS_DIR, VL_MODEL_DIR_NAME
+from ..config import LAYOUT_MODEL_DIR_NAME, MODELS_DIR, VL_MODEL_DIR_NAME, ocr_tuning
 from .pipeline import OCRPipeline, PageResult
 
 
@@ -27,6 +27,7 @@ class Engine:
                     layout_model_path=str(MODELS_DIR / LAYOUT_MODEL_DIR_NAME),
                     vl_model_path=str(MODELS_DIR / VL_MODEL_DIR_NAME),
                     device=device,
+                    **ocr_tuning(),
                 )
                 return self._pipe
             return self._pipe
