@@ -135,6 +135,9 @@ BOX_TRIM_MARGIN_PX = _env_float("EZPDF_OCR_BOX_TRIM_MARGIN", 6.0)
 BOX_TRIM_MIN_AREA_RATIO = _env_float("EZPDF_OCR_BOX_TRIM_MIN_AREA_RATIO", 0.02)
 BOX_MIN_SCORE = _env_float("EZPDF_OCR_BOX_MIN_SCORE", 0.35)
 BOX_MIN_AREA = _env_float("EZPDF_OCR_BOX_MIN_AREA", 16 * 16)
+# Grows every box by this share of its own size (plus BOX_EXPAND_PIXELS) before the merge. Off: a
+# proportional unclip reaches into the small blocks next to a heading, and their covers then overlap.
+BOX_UNCLIP_RATIO = _env_float("EZPDF_OCR_BOX_UNCLIP_RATIO", 0.0)
 BOX_EXPAND_PIXELS = _env_float("EZPDF_OCR_BOX_EXPAND_PIXELS", 2.0)
 MAX_REGIONS = _env_int("EZPDF_OCR_MAX_REGIONS", 100)
 
@@ -209,6 +212,7 @@ def ocr_tuning() -> dict:
         "box_trim_min_area_ratio": BOX_TRIM_MIN_AREA_RATIO,
         "box_min_score": BOX_MIN_SCORE,
         "box_min_area": BOX_MIN_AREA,
+        "box_unclip_ratio": BOX_UNCLIP_RATIO,
         "box_expand_pixels": BOX_EXPAND_PIXELS,
         "max_regions": MAX_REGIONS,
         "dedup_text_min_overlap": DEDUP_TEXT_MIN_OVERLAP,

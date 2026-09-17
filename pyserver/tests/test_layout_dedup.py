@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import (  # noqa: E402
     BOX_EXPAND_PIXELS,
+    BOX_UNCLIP_RATIO,
     BOX_MIN_AREA,
     BOX_MIN_SCORE,
     BOX_TRIM_MARGIN_PX,
@@ -81,6 +82,7 @@ def make_filter(**overrides) -> BoxFilter:
         expand_pixels=BOX_EXPAND_PIXELS,
         trim_margin=BOX_TRIM_MARGIN_PX,
         trim_min_area_ratio=BOX_TRIM_MIN_AREA_RATIO,
+        unclip_ratio=BOX_UNCLIP_RATIO,
     )
     args.update(overrides)
     return BoxFilter(**args)
@@ -127,6 +129,21 @@ def assert_lossless(test: unittest.TestCase, source: list[LayoutBox], kept: list
 
 class GeometryMergeTest(unittest.TestCase):
     """The pre-OCR merge: coverage of the smaller box is what decides, and nothing is lost."""
+
+    def test_a_union_is_re_decided_against_the_boxes_already_kept(self) -> None:
+        # Two lines the main pass found, and a wide tile box over the first: it is absorbed, and the
+        # union reaches the second line. Verdicts are computed once per candidate, so without the
+        # settle pass the second line stays as its own region under the grown first one, and the two
+        # covers paint over each other — the artefact this whole merge exists to prevent.
+        first = box([0, 0, 100, 100], score=0.9)
+        second = box([200, 0, 300, 100], score=0.8)
+        wide = box([0, 0, 250, 100], score=0.5, origin=ORIGIN_TILE)
+        kept = make_filter(expand_pixels=0.0, trim_margin=-1.0).filter(
+            [first, second, wide], page_size=(400, 200)
+        )
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].int_rect, (0, 0, 300, 100))
+        assert_lossless(self, [first, second, wide], kept)
 
     def test_figure_caption_and_its_retold_last_line(self) -> None:
         # p2: "Figure 1: ... not hardware topology." plus a second box over just "topology." (0.54).
@@ -598,6 +615,15 @@ class TileGeometryTest(unittest.TestCase):
         self.assertEqual(
             split_tiles(400, TILE_MIN_PAGE_HEIGHT - 1, TILE_OVERLAP, TILE_MIN_PAGE_HEIGHT), []
         )
+
+    def test_the_tiles_never_gap_or_collapse(self) -> None:
+        # The overlap is a knob: negative would leave a strip of the page that no tile covers (text in
+        # it is never looked at), 0.5 or more clamps the second tile onto the first (scanned twice).
+        for overlap in (-0.2, 0.0, TILE_OVERLAP, 0.49, 0.75, 1.0):
+            top, bottom = split_tiles(1191, 1684, overlap, TILE_MIN_PAGE_HEIGHT)
+            self.assertLess(top[1], bottom[1], f"overlap={overlap} collapsed the tiles")
+            self.assertGreaterEqual(top[3], bottom[1], f"overlap={overlap} left a gap")
+            self.assertEqual(bottom[3], 1684)
 
 
 if __name__ == "__main__":

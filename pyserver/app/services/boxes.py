@@ -126,14 +126,15 @@ def split_tiles(
 
     Returns the rects rather than only their offsets on purpose: the caller crops with them, hands the
     detector the rect's size as the target size and shifts the boxes back by the rect's origin, so all
-    three live in one space by construction. A tile cut from a downscaled copy while its boxes were
-    shifted in the page's coordinates (an A4 page is 1684 px tall at the render scale 2.0, so it gets
-    shrunk to fit ``max_long_side``) comes back displaced by the downscale factor — up to 42 pt up and
-    to the left, growing with the distance from the origin. Pages shorter than ``min_height`` yield
-    nothing: there is no half-page to scan.
+    three live in one space by construction. An offset that comes from anywhere else — the page
+    downscaled to fit ``max_long_side``, say — displaces every box by that factor toward the origin.
+    Pages shorter than ``min_height`` yield nothing: there is no half-page to scan.
     """
     if height < min_height:
         return []
+    # A negative overlap would leave a gap between the tiles, and the text in that gap is never looked
+    # at; 0.5 or more clamps the second tile onto the first and the page is scanned twice.
+    overlap = min(max(float(overlap), 0.0), 0.49)
     cut = height // 2
     margin = int(height * overlap)
     return [
@@ -167,7 +168,7 @@ class BoxFilter:
             expand_pixels: float,
             trim_margin: float,
             trim_min_area_ratio: float,
-            unclip_ratio: float = 0.0,
+            unclip_ratio: float,
     ) -> None:
         self.iou_threshold = float(iou_threshold)
         self.containment_threshold = float(containment_threshold)
@@ -266,17 +267,37 @@ class BoxFilter:
             survivor = next((i for i, k in enumerate(kept) if self._absorbs(b, k)), None)
             if survivor is None:
                 kept.append(b)
-            else:
-                kept[survivor] = replace(kept[survivor], xyxy=union_xyxy(kept[survivor].xyxy, b.xyxy))
+                continue
+            kept[survivor] = replace(kept[survivor], xyxy=union_xyxy(kept[survivor].xyxy, b.xyxy))
+            self._settle(kept)
         return sorted(kept, key=lambda b: b.score, reverse=True)
 
+    def _settle(self, kept: list[LayoutBox]) -> None:
+        """Re-decide the pairs a union just changed, until nothing moves.
 
-def has_words(markdown: str, min_chars: int = 1) -> bool:
+        A verdict is computed once per candidate, but the union that follows grows the survivor: one
+        that has just swallowed a wide box can now cover a neighbour that was kept earlier, and the two
+        would otherwise stay separate with their covers painting over each other. Absorption only ever
+        unions rects, so a box dropped here still sits inside the one that survives it.
+        """
+        changed = True
+        while changed:  # each change removes a box, so this cannot spin
+            changed = False
+            for i in range(len(kept)):
+                for j in range(len(kept) - 1, i, -1):
+                    if not self._absorbs(kept[j], kept[i]):
+                        continue
+                    kept[i] = replace(kept[i], xyxy=union_xyxy(kept[i].xyxy, kept[j].xyxy))
+                    del kept[j]
+                    changed = True
+
+
+def has_words(markdown: str, min_chars: int) -> bool:
     """False for a box whose OCR found nothing but punctuation or a stray glyph.
 
     A paragraph-sized detection that reads as one character is a mis-detection, not content — but a
-    figure label really can be two characters ("R3"), so the floor is a knob, and the default only
-    asks for a single letter or digit (the empty and ``"___"`` cases).
+    figure label really can be two characters ("R3"), so the floor is a knob
+    (``DEDUP_MIN_CONTENT_CHARS``).
     """
     return sum(1 for ch in markdown if ch.isalnum()) >= max(1, min_chars)
 

@@ -231,21 +231,23 @@ pnpm only — no lint or test scripts.
   merging text-family candidates, then sharpened top/bottom half-page tiles at 0.38 (headers/footers allowed) — that is
   what recovers small or widely spaced text that pdfjs rendering loses. New candidates must clear IoU ≤0.3 and
   containment ≤0.6 against kept boxes (`BoxFilter.min_score` is 0.35). Model forwards are chunked to ≤4 images
-  (batch 8 hits a slow kernel). Boxes carry the pass they came from (`origin`).
+  (batch 8 hits a slow kernel). Boxes carry the pass they came from (`origin`), and each page logs one
+  `[layout] page N: main= fallback=+ tile=+` line — both recall passes are add-only, so without it a page they added
+  nothing to is indistinguishable from a page they never ran on.
 - **Every pass reports in the caller's page pixels, and that is the whole contract**: the two full-image passes hand the
   detector the possibly-downscaled image but ask for `target_sizes` of the *page* back, and the tile pass crops the page
-  itself before downscaling the crop, taking the crop rect, `target_sizes` and the box shift from one `boxes.split_tiles`
-  rect. Mixing the two spaces is what put every tile box up and to the left of its text — an A4 page is 1684 px tall at
-  the render scale 2.0, so it is shrunk to `LAYOUT_MAX_LONG_SIDE` (0.95×), and a pass that shifted *downscaled*
-  coordinates into the page's cost up to 42 pt of drift, growing with the distance from the origin. Two other
-  coordinate rules ride on the same idea: `_forward_one` clamps to the *target* size, not the downscaled input (or the
-  last ~30 pt of every page is shaved off, losing a footer), and `_figure_regions` lifts a figure's inner boxes by the
-  crop's own origin.
+  itself before downscaling the crop, taking the crop rect, `target_sizes` and the box shift from one
+  `boxes.split_tiles` rect. Mixing the two spaces displaces boxes toward the origin by the downscale factor, which is
+  easy to hit: an A4 render (scale 2.0, 1684 px tall) is over `LAYOUT_MAX_LONG_SIDE`, so that factor is 0.95 and the
+  drift reaches tens of pt. Two other coordinate rules ride on the same idea: `_forward_one` clamps to the *target*
+  size, not the downscaled input (or the last ~30 pt of every page is shaved off, losing a footer), and
+  `_figure_regions` lifts a figure's inner boxes by the crop's own origin.
 - `app/services/boxes.py` is the merge (no torch, so it is testable on its own): one priority-greedy pass, ordered
   structured (table/formula) → figure (image/chart) → text family, then by earlier pass, larger box, higher score. A
   candidate is dropped when it re-detects a kept box (IoU > 0.5, or covered by it — 0.35 of its area, 0.25 for text
-  inside a table/formula), and it is **unioned into its survivor** so no pixel leaves the crop. Figures never absorb
-  the text inside them. Boxes are first **pulled tight around their ink** (`BOX_TRIM_TO_INK`): the detector's boxes
+  inside a table/formula), and it is **unioned into its survivor** so no pixel leaves the crop. A union is then
+  re-decided against the boxes already kept (`BoxFilter._settle`), since a survivor grown over a neighbour would
+  otherwise stay beside it with both covers painting the same pixels. Figures never absorb the text inside them. Boxes are first **pulled tight around their ink** (`BOX_TRIM_TO_INK`): the detector's boxes
   carry a margin (median 5-9 px at scale 2.0, up to 190 px on a spurious one) which is what makes two unrelated
   blocks overlap and their covers repaint each other. What is left around the ink is `BOX_TRIM_MARGIN_PX` — the
   detector's own 3 pt, not zero, or the covers come out cramped and the fit has to shrink the text to fit them.

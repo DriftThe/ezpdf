@@ -217,20 +217,22 @@ class LayoutDetector:
             labels: frozenset[str],
             iou_limit: float,
             containment_limit: float,
-    ) -> None:
-        """Add-only merge: whitelisted label and low overlap with existing/added boxes (both IoU and containment)."""
+    ) -> bool:
+        """Add-only merge: whitelisted label and low overlap with existing/added boxes (both IoU and
+        containment). True when the candidate was kept — the caller counts what each pass contributed."""
         if candidate.label_name not in labels:
-            return
+            return False
         for k in page_boxes:
             if iou_xyxy(candidate.xyxy, k.xyxy) > iou_limit:
-                return
+                return False
             # A figure never absorbs the text inside it: that text is what the figure pass (and the
             # reader's cover) wants, and rejecting it here would make it unreachable for every pass.
             if k.label_name in FIGURE_LABELS and candidate.label_name not in FIGURE_LABELS:
                 continue
             if containment(candidate.xyxy, k.xyxy) > containment_limit:
-                return
+                return False
         page_boxes.append(candidate)
+        return True
 
     @torch.no_grad()
     def detect(self, images: Sequence[Image.Image]) -> list[list[LayoutBox]]:
@@ -259,12 +261,13 @@ class LayoutDetector:
         fallback = [
             im.filter(ImageFilter.UnsharpMask(*self._fallback_sharpen)) for im in scaled
         ]
-        for page_boxes, candidates in zip(
-            out,
-            self._forward(fallback, target_sizes, self._fallback_threshold, ORIGIN_FALLBACK),
+        main_counts = [len(page_boxes) for page_boxes in out]
+        fallback_added = [0] * len(out)
+        for index, (page_boxes, candidates) in enumerate(
+            zip(out, self._forward(fallback, target_sizes, self._fallback_threshold, ORIGIN_FALLBACK))
         ):
             for b in candidates:
-                self._append_candidate(
+                fallback_added[index] += self._append_candidate(
                     page_boxes, b, self._fallback_labels,
                     self._fallback_iou, self._fallback_containment,
                 )
@@ -281,6 +284,7 @@ class LayoutDetector:
             for x1, y1, x2, y2 in rects:
                 tiles.append(self._maybe_downscale(im.crop((x1, y1, x2, y2))))
                 tile_sizes.append([y2 - y1, x2 - x1])
+        tile_added = [0] * len(out)
         if tiles:
             raw_tiles = self._forward(
                 [t.filter(ImageFilter.UnsharpMask(*self._fallback_sharpen)) for t in tiles],
@@ -288,11 +292,11 @@ class LayoutDetector:
                 self._tile_threshold, ORIGIN_TILE,
             )
             cursor = 0
-            for page_boxes, rects in zip(out, tile_rects_per_page):
+            for index, (page_boxes, rects) in enumerate(zip(out, tile_rects_per_page)):
                 for x1, y1, _, _ in rects:
                     shift = np.array([x1, y1, x1, y1], dtype=np.float32)
                     for b in raw_tiles[cursor]:
-                        self._append_candidate(
+                        tile_added[index] += self._append_candidate(
                             page_boxes,
                             LayoutBox(
                                 xyxy=b.xyxy + shift,
@@ -304,6 +308,14 @@ class LayoutDetector:
                             self._tile_labels, self._tile_iou, self._tile_containment,
                         )
                     cursor += 1
+        # How much each pass contributed is the only way to tell whether a recall pass still earns its
+        # forwards on a given kind of page: both are add-only, so a page where they add nothing looks
+        # exactly like a page they never ran on.
+        for index, (fallback_count, tile_count) in enumerate(zip(fallback_added, tile_added)):
+            logger.info(
+                "  [layout] page %d: main=%d fallback=+%d tile=+%d",
+                index + 1, main_counts[index], fallback_count, tile_count,
+            )
         return out
 
 
@@ -540,7 +552,7 @@ class OCRPipeline:
             vl_max_pixels: int,
             vl_max_forward_batch: int,
             vl_repetition_penalty: float,
-            box_unclip_ratio: float = 0.0,
+            box_unclip_ratio: float,
             vl_do_sample: bool = False,
             dtype: torch.dtype = torch.bfloat16,
             attn_impl: str = "sdpa",
