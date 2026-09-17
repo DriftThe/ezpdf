@@ -1,16 +1,16 @@
-// pi-ai 目录同步（用户 2026-09-15）：把 @mariozechner/pi-ai 的模型目录固化成仓库内的
-// 前端数据模块 src/lib/piModels.generated.ts，作为「供应商 / 模型预设」的唯一数据源。
+// Vendor the @mariozechner/pi-ai model catalog into src/lib/piModels.generated.ts,
+// the single data source for provider/model presets.
 //
-// 为什么不直接依赖 pi-ai：它把 openai / anthropic / google / mistral / aws-sdk / undici
-// 等 SDK 全挂进 dependencies（前端 bundle 里用不上，也不适合塞进 Tauri webview），
-// 而我们要的只是它的目录 + 兼容性判定（纯数据、零 import 的 models.generated.js）。
-// 运行时（Rust translate.rs）仍是我们自己的 OpenAI 兼容客户端。
+// Not a runtime dependency: pi-ai pulls every SDK (openai/anthropic/google/mistral/
+// aws-sdk/undici) into the bundle, but we only need its catalog and compat detection
+// (pure data, zero-import models.generated.js). Runtime translation stays in our own
+// OpenAI-compatible client (Rust translate.rs).
 //
-// 用法：node scripts/sync-pi-models.mjs [--version=0.73.1] [--latest] [--check]
-//   --check 只校验仓库内文件与当前 pi-ai 版本是否一致（CI 用，不写文件）
+// Usage: node scripts/sync-pi-models.mjs [--version=0.73.1] [--latest] [--check]
+//   --check verifies the repo file against the current pi-ai version (CI, no write)
 //
-// 同时把 pi-ai dist/providers/openai-completions.js 里**非导出**的 detectCompat/
-// thinking 参数映射移植过来（见 DETECT_COMPAT_NOTE），版本升级后需重新核对。
+// Also ports the non-exported detectCompat/thinking mapping from pi-ai
+// dist/providers/openai-completions.js (see DETECT_COMPAT_NOTE); re-diff on upgrade.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,10 +21,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = path.join(root, "node_modules", ".cache", "pi-ai");
 const outFile = path.join(root, "src", "lib", "piModels.generated.ts");
 
-/** 与仓库内生成文件对齐的版本；--latest 时从 npm 解析 */
+/** Version aligned with the generated repo file; --latest resolves it from npm */
 const PINNED_VERSION = "0.73.1";
 
-/** Rust 客户端实现的三种协议（translate.rs 的 Protocol）：统计与注释用 */
+/** The three protocols the Rust client implements (translate.rs Protocol); stats/comments only */
 const SUPPORTED_APIS = ["openai-completions", "anthropic-messages", "openai-responses"];
 
 const args = process.argv.slice(2);
@@ -70,10 +70,10 @@ async function fetchPackage(version) {
   return dir;
 }
 
-// ---- pi-ai 兼容性判定移植 ----------------------------------------------------------------
-// DETECT_COMPAT_NOTE：以下 detectCompat 逐行对应 pi-ai dist/providers/openai-completions.js
-// 的 detectCompat()（该函数未导出，只能抄）。升级 pi-ai 版本后请重新比对。
-// 结论只用于「OpenAI 兼容协议」的请求体适配：max_tokens 字段名 + 关思考参数形态。
+// ---- ported pi-ai compat detection ---------------------------------------------------------
+// DETECT_COMPAT_NOTE: detectCompat below mirrors pi-ai dist/providers/openai-completions.js
+// (that function is not exported, so it is copied). Re-diff on every pi-ai upgrade.
+// Used only for OpenAI-compatible request shaping: max_tokens field name + thinking-off shape.
 function detectCompat(model) {
   const provider = model.provider;
   const baseUrl = model.baseUrl;
@@ -94,15 +94,12 @@ function detectCompat(model) {
   };
 }
 
-/** pi-ai 的关思考参数形态（openai-completions buildParams 的那串 if/else 的等价物）。
- *  "off" 级别下 pi-ai 实际写入的字段 → 我们的 Rust 侧按同一张表施加。
- *
- *  协议不同、写法不同（用户 2026-09-16 接入 Messages / Responses）：
- *  - anthropic-messages：只有 `thinking: {type:"disabled"}` 一种写法（pi-ai 的
- *    anthropic provider 在 thinkingEnabled=false 时写这个，与目录里的 off 值无关）；
- *  - openai-responses：`reasoning.effort`，值取目录的 off（GPT-5 目录标 off: null =
- *    关不掉，此时不写任何参数——与 pi-ai 的 buildParams 判定一致）；
- *  - 其余（含 openai-completions）：沿用 detectCompat 的形态表。 */
+/** pi-ai thinking-off parameter shapes (the equivalent of openai-completions buildParams).
+ *  Rust applies the same table for the "off" level.
+ *  - anthropic-messages: only `thinking: {type:"disabled"}`, regardless of the catalog off value;
+ *  - openai-responses: `reasoning.effort` from the catalog off (off: null = cannot disable,
+ *    so no parameter is sent);
+ *  - everything else (incl. openai-completions): the detectCompat shape table. */
 function thinkingOffShape(api, reasoning, format, offValue) {
   if (api === "anthropic-messages") {
     return { kind: reasoning ? "thinking_type" : "none" };
@@ -118,14 +115,14 @@ function thinkingOffShape(api, reasoning, format, offValue) {
     case "openrouter":
       return { kind: "reasoning_effort", value: offValue ?? "none" };
     default:
-      // openai：仅当模型给了 off 值才写 effort，否则 pi-ai 什么都不加
+      // openai: write effort only when the model provides an off value, else pi-ai adds nothing
       return typeof offValue === "string"
         ? { kind: "reasoning_effort", value: offValue }
         : { kind: "none" };
   }
 }
 
-/** env-api-keys.js 的 provider → API Key 环境变量表（正则抽取，格式稳定） */
+/** env-api-keys.js provider -> API key env var table (regex-extracted, stable format) */
 function extractEnvKeys(src) {
   const map = {};
   const body = /const envMap = \{([\s\S]*?)\};/.exec(src)?.[1] ?? "";
@@ -135,7 +132,7 @@ function extractEnvKeys(src) {
   return map;
 }
 
-// ---- 生成 -------------------------------------------------------------------------------
+// ---- generation ------------------------------------------------------------------------
 
 function toCatalog(MODELS, envKeys, version) {
   const providers = [];

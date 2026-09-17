@@ -10,8 +10,8 @@ const settings = useSettingsStore();
 const { t } = useI18n();
 
 /**
- * 设置子项注册表（新增子项三步，见 stores/settings.ts 的 SettingsSection 处注释）：
- * Record 键必须覆盖 SettingsSection union —— 扩了 union 忘了注册这里会直接编译报错。
+ * Section registry (adding a section takes 3 steps; see the SettingsSection comment in stores/settings.ts):
+ * the Record keys must cover the SettingsSection union — extending the union without registering here is a compile error.
  */
 type SectionDef = { label: string; comp: Component };
 const SECTIONS: Record<SettingsSection, SectionDef> = {
@@ -19,7 +19,7 @@ const SECTIONS: Record<SettingsSection, SectionDef> = {
   ocr: { label: "settings.section.ocr", comp: OcrSection },
   common: { label: "settings.section.common", comp: CommonSection },
 };
-/** Object.entries 的键是 string，收窄回 SettingsSection 供导航绑定 */
+/** Object.entries keys are string; narrow back to SettingsSection for the nav binding */
 const navList = Object.entries(SECTIONS) as Array<[SettingsSection, SectionDef]>;
 
 const activeComp = computed(() => SECTIONS[settings.section].comp);
@@ -27,14 +27,15 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
 
 <template>
   <!--
-    设置整页：绝对定位覆盖 sidebar + reader 视窗（app-shell 相对定位），
-    顶部工具栏 z-index 更高保持可见可点；组件常驻 v-show，原视窗不销毁。
-    子项切换 = 只渲染当前 section 组件（表单状态在 store，切换不丢）。
+    Full-page settings: absolutely positioned over the sidebar + reader (app-shell is the positioning base);
+    the toolbar has a higher z-index and stays visible/clickable. The component persists via v-show, so the
+    window underneath never unmounts. Switching sections renders only the current section component
+    (form state lives in the store, so switching loses nothing).
   -->
   <section v-show="settings.pageOpen" class="settings-page">
-    <!-- 左列：返回 + 子项导航（复用 sidebar 条目呈现） -->
+    <!-- Left column: back + section nav (reuses the sidebar item look) -->
     <aside class="sp-nav">
-      <!-- 退出即保存：返回按钮直接触发保存（持久化阶段1接入） -->
+      <!-- Back saves: the back button triggers save directly -->
       <button class="btn ghost back-btn" :title="t('settings.backTitle')" @click="settings.save">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
           <path d="M10 3L5 8l5 5" />
@@ -55,7 +56,7 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
       </nav>
     </aside>
 
-    <!-- 右侧内容区（避开顶部工具栏高度），动态渲染当前子项 -->
+    <!-- Right content area (clears the top toolbar height), renders the current section dynamically -->
     <div class="sp-content">
       <div class="sp-scroll">
         <component :is="activeComp" />
@@ -68,12 +69,12 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
 .settings-page {
   position: absolute;
   inset: 0;
-  z-index: 10; /* 顶部工具栏（z-index:20）保持在其上可见可点 */
+  z-index: 10; /* toolbar (z-index:20) stays above it, visible and clickable */
   display: flex;
   background: var(--bg-app);
 }
 
-/* ---- 左列导航（对齐 sidebar：同宽同底色同条目规格） ---- */
+/* ---- Left nav (matches the sidebar: same width, background and item spec) ---- */
 .sp-nav {
   width: var(--sidebar-w);
   flex: none;
@@ -100,7 +101,7 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
   gap: 2px;
   padding: 10px 8px;
 }
-/* 条目规格与放大后的仓库树一致（34px 行高 / 17px 字号） */
+/* Item spec matches the enlarged repo tree (34px row / 17px font) */
 .sp-item {
   border: none;
   background: transparent;
@@ -125,14 +126,14 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
   font-weight: 600;
 }
 
-/* ---- 右侧内容 ---- */
+/* ---- Right content ---- */
 .sp-content {
   flex: 1;
   min-width: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding-top: var(--toolbar-h); /* 避开常驻顶部工具栏 */
+  padding-top: var(--toolbar-h); /* clear the persistent top toolbar */
 }
 .sp-scroll {
   flex: 1;

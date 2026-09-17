@@ -1,31 +1,31 @@
-"""OCR 流水线（移植自 Wise-Paddle core_pipeline.py，删除并发与落盘设施）。
+"""OCR pipeline (ported from Wise-Paddle core_pipeline.py; concurrency and disk output removed).
 
 Pipeline tree (per page):
 
-    PIL.Image (任意尺寸)
+    PIL.Image (any size)
         │
         ▼
-    LayoutDetector  ── 内部 processor 自动 resize 到 800x800
-        │ boxes (float xyxy)  / labels / scores
+    LayoutDetector  ── internal processor resizes to 800x800
+        │ boxes (float xyxy) / labels / scores
         ▼
-    ┌─ 转 int rectangle (np.round → int) ─┐
+    ┌─ to int rectangle (np.round → int) ─┐
     │  NMS (IoU)                          │  BoxFilter
-    │  面积阈值                            │
-    │  分数阈值                            │
-    └────────────────────────────────────┘
-        │ 保留的 LayoutBox
+    │  area threshold                     │
+    │  score threshold                    │
+    └─────────────────────────────────────┘
+        │ kept LayoutBox
         ▼
-    RegionCropper  ── numpy 切片裁剪 (RGB/HWC uint8)
+    RegionCropper  ── numpy slice (RGB/HWC uint8)
         │
         ▼
-    按 label 分桶 → 同桶 batch 提交给 VLPredictor (PaddleOCR-VL-1.6)
+    bucket by label → same bucket batched to VLPredictor (PaddleOCR-VL-1.6)
         │
         ▼
-    每张裁剪图得到一段 markdown → 内存 RegionResult（不落盘）
+    each crop yields a markdown string → in-memory RegionResult (never written to disk)
 
-相对原版的退化：删除 PipelinePool / BatchScheduler / Job / voucher /
-text_result 落盘——ezpdf 中 Rust 是唯一调度者，结果经 HTTP 直接返回。
-精度关键设施（BoxFilter 的 NMS + unclip 扩框）原样保留。
+Removed from upstream: PipelinePool / BatchScheduler / Job / voucher / text_result
+persistence — Rust is the sole scheduler and results return over HTTP. Accuracy-critical
+parts (BoxFilter's NMS + unclip) are kept as-is.
 """
 
 from __future__ import annotations
@@ -49,14 +49,13 @@ logger = logging.getLogger("ezpdf.pipeline")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 兼容性补丁：transformers 5.x 不再带 "default" rope init 入口，老模型需要补
+# Compatibility patch: transformers 5.x dropped the "default" RoPE init entry
 # ─────────────────────────────────────────────────────────────────────────────
 def _patch_rope_default() -> None:
-    """Patch transformers 5.x to restore the missing 'default' RoPE init entry.
+    """Restore the 'default' RoPE init entry removed in transformers 5.x.
 
-    Older model configs reference ``rope_type="default"`` which was removed in
-    transformers 5.x. We re-register an equivalent implementation so those
-    configs keep loading without manual edits.
+    Older model configs reference ``rope_type="default"``; re-registering an
+    equivalent implementation keeps them loading without manual edits.
     """
     import transformers.modeling_rope_utils as rope_utils
 
@@ -86,18 +85,18 @@ def _patch_rope_default() -> None:
     logger.info("Patched transformers ROPE_INIT_FUNCTIONS['default']")
 
 
-# Module-level patch; idempotent and safe to call multiple times.
+# Module-level; must stay for older model configs to load (idempotent, safe to call repeatedly).
 _patch_rope_default()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 数据类
+# Data classes
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
 class LayoutBox:
-    """单个版面区域。"""
+    """One layout region."""
 
-    xyxy: np.ndarray  # float32, 形状 (4,) —— [x1, y1, x2, y2]（原图坐标系）
+    xyxy: np.ndarray  # float32, shape (4,) — [x1, y1, x2, y2] in source-image coordinates
     label_id: int
     label_name: str
     score: float
@@ -114,7 +113,7 @@ class LayoutBox:
 
 @dataclass
 class RegionResult:
-    """一个裁剪区域的最终结果。"""
+    """Final result for one cropped region."""
 
     label: str
     score: float
@@ -124,7 +123,7 @@ class RegionResult:
 
 @dataclass
 class PageResult:
-    """一页的处理结果。"""
+    """Result for one page."""
 
     width: int
     height: int
@@ -133,7 +132,7 @@ class PageResult:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1) Layout detection —— PP-DocLayoutV3
+# 1) Layout detection — PP-DocLayoutV3
 # ─────────────────────────────────────────────────────────────────────────────
 def _iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
     """IoU of two xyxy boxes (float arrays of length 4)."""
@@ -148,7 +147,7 @@ def _iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _containment(a: np.ndarray, b: np.ndarray) -> float:
-    """a 被 b 覆盖的面积比（inter / area(a)）；用于剔除"整块内的一行"类重复候选。"""
+    """Fraction of a covered by b (inter / area(a)); drops duplicate "line inside a block" candidates."""
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
@@ -158,7 +157,7 @@ def _containment(a: np.ndarray, b: np.ndarray) -> float:
 
 
 class LayoutDetector:
-    """把任意尺寸的图过 PP-DocLayoutV3，返回 (box, label, score) 三元组。"""
+    """Run PP-DocLayoutV3 on an image of any size; returns (box, label, score)."""
 
     def __init__(
             self,
@@ -179,9 +178,9 @@ class LayoutDetector:
         self.id2label: dict[int, str] = {
             int(k): v for k, v in self.model.config.id2label.items()
         }
-        # processor 内置 800x800 resize；只要原图长边合理，processor 自动适配
-        self._max_long_side = 1600  # 防止 4K+ 大图把显存打爆
-        # 二轮补召回参数（见 detect 注释）——调这里即可调灵敏度
+        # The processor has a built-in 800x800 resize and adapts as long as the long side is sane
+        self._max_long_side = 1600  # cap so 4K+ images cannot blow up VRAM
+        # Second-pass recall params (see detect); tune sensitivity here
         self._fallback_labels = frozenset({
             "text", "paragraph_title", "doc_title", "abstract", "aside_text",
             "footnote", "figure_title", "content", "reference", "reference_content",
@@ -190,22 +189,18 @@ class LayoutDetector:
         self._fallback_sharpen = (2, 300, 1)  # PIL UnsharpMask: radius, percent, threshold
         self._fallback_iou = 0.3
         self._fallback_containment = 0.6
-        # 三轮半页分块补召回：整页 squash 到 800x800 后小字号被纵向压扁（封面信息栏/
-        # 公告标题/密集正文实测整块丢失），上下半页各自 squash 相当于纵向放大 ~1.5x。
-        # 同样 add-only；白名单多收 header/footer（封面"中华人民共和国行业标准"被判 header）。
+        # Third pass, half-page tiles (see detect); add-only, and its whitelist also takes
+        # header/footer (a cover's standard line is classified as header).
         self._tile_labels = self._fallback_labels | {"header", "footer"}
         self._tile_threshold = 0.38
         self._tile_overlap = 0.08
         self._tile_iou = 0.3
         self._tile_containment = 0.6
-        # batch=8 会命中慢速 kernel（实测 6.0s vs batch=4 的 0.22s），所有前向切块
+        # batch=8 hits a slow kernel (measured 6.0s vs 0.22s at batch=4), so all forwards are chunked
         self._max_forward_batch = 4
 
     def _maybe_downscale(self, image: Image.Image) -> Image.Image:
-        """If the image's long side exceeds ``_max_long_side``, downscale it.
-
-        Returns the original image unchanged when it is already small enough.
-        """
+        """Downscale when the long side exceeds ``_max_long_side``; return the image unchanged otherwise."""
         w, h = image.size
         m = max(w, h)
         if m <= self._max_long_side:
@@ -223,10 +218,9 @@ class LayoutDetector:
             target_sizes: torch.Tensor,
             threshold: float,
     ) -> list[list[LayoutBox]]:
-        """分块前向（≤ ``_max_forward_batch``）+ post-process。
+        """Chunked forward (≤ ``_max_forward_batch``) + post-process.
 
-        分块原因：本机 GPU 上 layout 前向 batch=8 会命中慢速 kernel（实测
-        6.0s vs batch=4 的 0.22s），而补召回的三轮合计会超过 4 张，必须切块。
+        Chunking avoids the slow batch=8 kernel; the three recall passes together exceed 4 images.
         """
         images = list(images)
         if len(images) <= self._max_forward_batch:
@@ -246,11 +240,10 @@ class LayoutDetector:
             target_sizes: torch.Tensor,
             threshold: float,
     ) -> list[list[LayoutBox]]:
-        """一次前向 + post-process，返回每图 LayoutBox 列表（坐标为对应输入图坐标系）。"""
+        """One forward + post-process; per-image LayoutBox lists in each input's coordinates."""
         inputs = self.processor(images=list(images), return_tensors="pt").to(self.device)
         outputs = self.model(**inputs)
-        # post_process_object_detection 在 threshold 处做一次初筛；后面 BoxFilter
-        # 再做更细的 IoU / 面积过滤
+        # post_process does a first coarse cut at threshold; BoxFilter filters IoU/area finer afterwards
         raw = self.processor.post_process_object_detection(
             outputs, target_sizes=target_sizes, threshold=threshold
         )
@@ -263,7 +256,7 @@ class LayoutDetector:
             page_boxes: list[LayoutBox] = []
             for box, lid, sc in zip(boxes, labels, scores):
                 x1, y1, x2, y2 = box
-                # 截到原图边界内
+                # clamp to the source bounds
                 x1 = max(0.0, min(float(x1), src.width))
                 x2 = max(0.0, min(float(x2), src.width))
                 y1 = max(0.0, min(float(y1), src.height))
@@ -287,7 +280,7 @@ class LayoutDetector:
             iou_limit: float,
             containment_limit: float,
     ) -> None:
-        """add-only 合并：白名单 label + 与既有框/已补框低重叠（IoU 和高覆盖率都不允许）。"""
+        """Add-only merge: whitelisted label and low overlap with existing/added boxes (both IoU and containment)."""
         if candidate.label_name not in labels:
             return
         for k in page_boxes:
@@ -298,9 +291,9 @@ class LayoutDetector:
         page_boxes.append(candidate)
 
     def _split_tiles(self, image: Image.Image) -> tuple[list[Image.Image], list[int]]:
-        """上下半页（带重叠）：返回 (tiles, 各 tile 在整页中的 y 偏移)。"""
+        """Top/bottom half-page tiles (with overlap); returns (tiles, each tile's y offset in the page)."""
         w, h = image.size
-        if h < 200:  # 太矮的图分块无意义
+        if h < 200:  # too short to tile
             return [], []
         cut = h // 2
         ov = int(h * self._tile_overlap)
@@ -312,24 +305,19 @@ class LayoutDetector:
     def detect(self, images: Sequence[Image.Image]) -> list[list[LayoutBox]]:
         """Run layout detection on a batch of images (multi-pass, add-only).
 
-        补召回背景（app pdfjs 渲染实测 2026-09-12）：检测器对 pdfjs 渲染的
-        小字号/居中/带字距文本分数系统性偏低（同页 pdfium 渲染高 0.1~0.15），
-        封面信息栏、公告标题、密集正文会出现整块丢失。三层只增不减：
+        pdfjs-rendered small / centered / letter-spaced text scores systematically lower
+        (~0.1-0.15 below pdfium on the same page), so whole blocks (cover info bars, notice
+        titles, dense body) go missing. Three add-only passes:
 
-        1. 首轮：原图 0.5 阈值，结果不删不改（锐化会把个别边缘框分数压低，
-           替换式合并会造成新漏检）；
-        2. 二轮：锐化整图 0.45 阈值，补文本族候选；
-        3. 三轮：锐化上下半页 0.38 阈值——整页 squash 到 800x800 会把长页面
-           纵向压扁，分半页相当于放大 ~1.5x，救回压扁后过小的行。
+        1. main pass: source image at 0.5 threshold; results are never removed or altered
+           (sharpening lowers some edge scores, so replace-style merging causes new misses);
+        2. second pass: sharpened full image at 0.45, adding text-family candidates;
+        3. third pass: sharpened top/bottom half-page tiles at 0.38 — squashing a long page
+           into 800x800 compresses it vertically, and half pages zoom ~1.5x, recovering lines
+           that shrank too far.
 
-        只补与既有框低重叠（IoU / 覆盖率双阈值）的候选，避免"整块内的一行"
-        类重复叠框；三层的 label 白名单见 __init__。
-
-        Args:
-            images: One or more PIL images (any size, any mode).
-
-        Returns:
-            A list (one entry per input image) of ``LayoutBox`` lists.
+        Only candidates with low overlap against kept boxes (IoU / containment thresholds)
+        are added, avoiding duplicate "line inside block" boxes. Pass whitelists live in __init__.
         """
         if not images:
             return []
@@ -386,23 +374,22 @@ class LayoutDetector:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) Box filter —— NMS + 面积 / 分数门槛
+# 2) Box filter — NMS + area / score thresholds
 # ─────────────────────────────────────────────────────────────────────────────
 class BoxFilter:
-    """纯 numpy NMS + 过滤；不依赖额外库。
+    """Pure numpy NMS + filtering; no extra dependencies.
 
-    可调精度参数（影响 layout 召回/裁剪质量）：
-
-    - ``iou_threshold``: NMS 重叠上限（越大越激进去重）
-    - ``min_area``:      最小框面积（像素²）
-    - ``min_score``:     最低置信度（低于 LayoutDetector 各轮阈值，给二/三轮
-                         补召回的 0.38~0.5 文本候选留通路）
-    - ``contain_threshold``: 嵌套去重阈值（用户拍板 2026-09-14）：已经存在大框
-                         时，被大框覆盖比例超过该值的小框直接丢弃（大框套小框）
-    - ``unclip_ratio``:  NMS 后把框向外扩的比例（0.05 = 每边扩 5%）。给 VL 更多
-                        上下文，提升 OCR 准确率；过大会把别的 region 也包进来。
-                        doclayout 边界偏紧时这个最有用。
-    - ``expand_pixels``: 每边再多扩 N 个像素（绝对值）。和 ratio 叠加生效。
+    Accuracy knobs:
+    - ``iou_threshold``: NMS overlap cap (higher dedupes more aggressively).
+    - ``min_area``: smallest box area (px²).
+    - ``min_score``: score floor; below the detector's pass thresholds on purpose, leaving
+      a path for the 0.38-0.5 recall candidates.
+    - ``contain_threshold``: nested dedup — a small box covered by a larger kept box beyond
+      this ratio is dropped (NMS cannot see low-IoU nesting).
+    - ``unclip_ratio``: grow each box by this proportion after NMS (0.05 = 5% per side) for
+      more VL context; too much swallows neighbouring regions. Most useful when doclayout
+      edges are tight.
+    - ``expand_pixels``: extra absolute pixels per side, additive with the ratio.
     """
 
     def __init__(
@@ -422,7 +409,7 @@ class BoxFilter:
         self.expand_pixels = float(expand_pixels)
 
     def _unclip(self, box: np.ndarray) -> np.ndarray:
-        """按 ratio + 绝对像素把框向外扩，返回 (x1,y1,x2,y2)。"""
+        """Grow a box by ratio + absolute pixels; returns (x1,y1,x2,y2)."""
         x1, y1, x2, y2 = box
         w = x2 - x1
         h = y2 - y1
@@ -435,16 +422,11 @@ class BoxFilter:
             boxes: list[LayoutBox],
             page_size: Optional[tuple[int, int]] = None,
     ) -> list[LayoutBox]:
-        """过滤 + NMS + 可选 unclip。
+        """Filter + NMS + optional unclip; ``page_size`` (W, H) clamps unclip to the image.
 
-        Args:
-            boxes: 待过滤的 ``LayoutBox`` 列表。
-            page_size: ``(W, H)`` 可选；给 unclip 提供边界 clamp（防止扩出图外）。
-
-        Returns:
-            过滤后保留的 ``LayoutBox`` 列表（按分数降序）。
+        Returns kept ``LayoutBox`` items in score order.
         """
-        # 先按分数从高到低
+        # score-descending first
         keep: list[LayoutBox] = []
         candidates = sorted(boxes, key=lambda b: b.score, reverse=True)
         for b in candidates:
@@ -454,9 +436,9 @@ class BoxFilter:
                 continue
             keep.append(b)
 
-        # 嵌套去重（用户拍板 2026-09-14）：大框优先保留，被大框显著覆盖的小框
-        # 直接丢弃——NMS 只看 IoU，大框套小框时 IoU 很低（inter/union 小）拦不住。
-        # 按面积降序判定，输出仍保持分数序（回填 survivors）。
+        # Nested dedup: keep large boxes first and drop small boxes significantly covered by them —
+        # NMS only sees IoU, which is low for a large box wrapping a small one. Judged by descending
+        # area; the output keeps score order (survivors are used as a filter).
         survivors: list[LayoutBox] = []
         for b in sorted(keep, key=lambda b: b.area, reverse=True):
             if any(
@@ -468,7 +450,7 @@ class BoxFilter:
         survivors_ids = {id(b) for b in survivors}
         keep = [b for b in keep if id(b) in survivors_ids]
 
-        # unclip：在 NMS 之后，避免影响 NMS 决策
+        # unclip after NMS so it cannot affect NMS decisions
         if self.unclip_ratio > 0 or self.expand_pixels > 0:
             expanded_keep: list[LayoutBox] = []
             for b in keep:
@@ -490,10 +472,10 @@ class BoxFilter:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3) Region cropper —— numpy 切片
+# 3) Region cropper — numpy slicing
 # ─────────────────────────────────────────────────────────────────────────────
 class RegionCropper:
-    """用 numpy 把 LayoutBox 对应的区域切出来，返回 RGB ``np.ndarray``。"""
+    """Crop LayoutBox regions with numpy into RGB ``np.ndarray``."""
 
     def crop(self, rgb: np.ndarray, box: LayoutBox) -> np.ndarray:
         """Crop ``box`` from an RGB ``(H, W, 3)`` uint8 array.
@@ -501,7 +483,7 @@ class RegionCropper:
         Returns a 1×1 black placeholder if the clamped box collapses to empty.
         """
         x1, y1, x2, y2 = box.int_rect
-        # clamp 到合法范围
+        # clamp to valid range
         h, w = rgb.shape[:2]
         x1 = max(0, min(x1, w))
         x2 = max(0, min(x2, w))
@@ -513,13 +495,13 @@ class RegionCropper:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4) VL predictor —— PaddleOCR-VL-1.6，按 label 分桶后 batch
+# 4) VL predictor — PaddleOCR-VL-1.6, batched per label
 # ─────────────────────────────────────────────────────────────────────────────
 class VLPredictor:
-    """包裹 PaddleOCR-VL-1.6，给一批裁剪图做 VL 识别。"""
+    """Wrap PaddleOCR-VL-1.6 to run VL recognition over a batch of crops."""
 
-    # PaddleOCR-VL 官方推荐的 task prompt（来自 PaddleOCR-VL-1.6 README）。
-    # 只列与默认不同的 label，其余走 "_default"（_prompt_for 的兜底）
+    # Official PaddleOCR-VL task prompts (from the PaddleOCR-VL-1.6 README).
+    # Only labels differing from the default are listed; the rest fall back to "_default" (_prompt_for).
     DEFAULT_PROMPTS: dict[str, str] = {
         "table": "Table Recognition:",
         "formula": "Formula Recognition:",
@@ -535,22 +517,22 @@ class VLPredictor:
             prompts: Optional[dict[str, str]] = None,
             dtype: torch.dtype = torch.bfloat16,
             max_new_tokens: int = 512,
-            max_pixels: int = 1280 * 28 * 28,  # 官方默认 1MP（longest_edge）
-            min_pixels: int = 112896,  # 官方默认 shortest_edge
-            max_forward_batch: int = 10,  # 单次 VL forward 最多 image 数（显存上限）
+            max_pixels: int = 1280 * 28 * 28,  # official default 1MP (longest_edge)
+            min_pixels: int = 112896,  # official default shortest_edge
+            max_forward_batch: int = 10,  # max images per VL forward (VRAM cap)
             attn_impl: str = "sdpa",
-            repetition_penalty: float = 1.15,  # 防止 batch 推理陷入重复循环
-            do_sample: bool = False,  # greedy 解码；想更"活"可以改 True
+            repetition_penalty: float = 1.15,  # prevents repetition loops in batched inference
+            do_sample: bool = False,  # greedy decode; set True for more variety
     ) -> None:
         logger.info("Loading VL model: %s", model_path)
         self.processor = AutoProcessor.from_pretrained(model_path)
-        # 关键：decoder-only 必须 left-padding，否则 batch 推理全乱
+        # Critical: decoder-only requires left padding, otherwise batched inference is scrambled
         try:
             self.processor.tokenizer.padding_side = "left"
         except Exception:
             pass
-        # 关键：必须用 AutoModelForImageTextToText，不是 AutoModelForCausalLM
-        # 之前的 CausalLM 入口导致 model 看不到 image，全靠编造
+        # Critical: must be AutoModelForImageTextToText, not AutoModelForCausalLM — the
+        # CausalLM entry point left the model blind to images and it invented output
         self.model = (
             AutoModelForImageTextToText.from_pretrained(
                 model_path,
@@ -569,7 +551,7 @@ class VLPredictor:
         self.repetition_penalty = float(repetition_penalty)
         self.do_sample = bool(do_sample)
         self.prompts = {**self.DEFAULT_PROMPTS, **(prompts or {})}
-        # EOS：模型的 generation_config.json 里写的是 </s> (id=2)
+        # EOS: the model's generation_config.json uses </s> (id=2)
         tok = self.processor.tokenizer
         self.eos_token_id = tok.convert_tokens_to_ids("</s>") or tok.eos_token_id or 2
         self.pad_token_id = (
@@ -584,7 +566,7 @@ class VLPredictor:
     def _build_messages(
             self, images: Sequence[Image.Image], label: str
     ) -> list[list[dict]]:
-        """给每张图造一个 messages（apply_chat_template batched 模式需要 list of conversations）。"""
+        """Build one messages conversation per image (apply_chat_template batched mode needs a list)."""
         user_text = self._prompt_for(label)
         return [
             [
@@ -600,7 +582,7 @@ class VLPredictor:
         ]
 
     def _forward_once(self, images: Sequence[Image.Image], label: str) -> list[str]:
-        """单次 VL forward，调用方负责保证 ``len(images) <= self.max_forward_batch``。"""
+        """One VL forward; the caller must ensure ``len(images) <= self.max_forward_batch``."""
         if not images:
             return []
         conversations = self._build_messages(images, label)
@@ -610,11 +592,10 @@ class VLPredictor:
             tokenize=True,
             return_dict=True,
             return_tensors="pt",
-            # transformers 5.x: 传给 processor.__call__ 的处理参数必须放进
-            # ``processor_kwargs`` dict，否则会收到弃用告警（Kwargs passed to
-            # `processor.__call__` have to be in `processor_kwargs`）
+            # transformers 5.x: processor.__call__ kwargs must live in the ``processor_kwargs``
+            # dict, else a deprecation warning is emitted
             processor_kwargs={
-                "padding": True,  # batch 推理要 padding
+                "padding": True,  # padding required for batched inference
                 "images_kwargs": {
                     "size": {
                         "shortest_edge": self.min_pixels,
@@ -624,7 +605,7 @@ class VLPredictor:
             },
         ).to(self.device)
         ids = inputs["input_ids"]
-        # image token 实际通过 mm_token_type_ids 标记 (apply_chat_template 不插入 <|image_pad|>)
+        # Image tokens are marked via mm_token_type_ids (apply_chat_template does not insert <|image_pad|>)
         cnt = 0
         if "mm_token_type_ids" in inputs:
             cnt = int((inputs["mm_token_type_ids"] == 1).sum().item())
@@ -648,16 +629,16 @@ class VLPredictor:
     def recognize_batch(
             self, images: Sequence[Image.Image], label: str
     ) -> list[str]:
-        """同 label 的图用同一 prompt 做 batch 推理。len > max_forward_batch 时拆 sub-batch。
+        """Batch inference with one prompt per label; splits into sub-batches above max_forward_batch.
 
-        例：12 张 text crop, max_forward_batch=4 → 3 次 VL forward (4+4+4)
+        e.g. 12 text crops with max_forward_batch=4 → 3 VL forwards (4+4+4)
         """
         if not images:
             return []
         cap = self.max_forward_batch
         if len(images) <= cap:
             return self._forward_once(images, label)
-        # 拆 sub-batch
+        # split into sub-batches
         out: list[str] = []
         for start in range(0, len(images), cap):
             chunk = list(images[start:start + cap])
@@ -668,8 +649,8 @@ class VLPredictor:
     def recognize_grouped(
             self, items: list[tuple[Image.Image, str]]
     ) -> list[str]:
-        """按 label 分桶 → 每个桶一次 batch 推理 → 按原顺序还原。"""
-        # 桶：(label -> [(idx, img)])
+        """Bucket by label → one batch inference per bucket → restore the original order."""
+        # buckets: label -> [(idx, img)]
         buckets: dict[str, list[tuple[int, Image.Image]]] = {}
         for idx, (img, lab) in enumerate(items):
             buckets.setdefault(lab, []).append((idx, img))
@@ -685,12 +666,12 @@ class VLPredictor:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5) Pipeline —— 把上述 4 步串成一条主干
+# 5) Pipeline — chains the four steps above
 # ─────────────────────────────────────────────────────────────────────────────
 class OCRPipeline:
-    """对一张图跑 layout detection → 过滤 → 裁剪 → VL 识别 → 内存结果。
+    """Run layout detection → filter → crop → VL recognition → in-memory results for one image.
 
-    所有可调精度/速度/显存参数都从构造参数传进来（默认值对齐 Wise-Paddle）。
+    All accuracy/speed/VRAM knobs come in as constructor args (defaults align with Wise-Paddle).
     """
 
     def __init__(
@@ -704,15 +685,15 @@ class OCRPipeline:
             box_iou_threshold: float = 0.5,
             box_min_area: float = 16 * 16,
             box_min_score: float = 0.35,
-            # 大框套小框去重：小框被大框覆盖超过该比例 → 丢弃小框（NMS 拦不住低 IoU 嵌套）
+            # Nested dedup: a small box covered by a larger one beyond this ratio is dropped (NMS misses low-IoU nesting)
             box_contain_threshold: float = 0.6,
-            # 只做固定小外扩：比例外扩随框增大，大 text 框会扩进框内的小标题框，
-            # 渲染白底覆盖时两框互叠（layout.jpg 实测重叠对 11 -> 0，13 框不变）
+            # Fixed small expansion only: proportional expansion grows with the box, so a large text box
+            # reaches into small headings inside it and the two white covers overlap
             box_unclip_ratio: float = 0.0,
             box_expand_pixels: float = 2.0,
             # ---- VLPredictor ----
-            # 256 会把长段落截断（layout.jpg 最长 text 块实测 1087 字断句 vs 512 完整 1157 字）；
-            # 短块 EOS 提前结束，代价只在长块的多余 decode
+            # 256 truncates long paragraphs (measured: longest text block cut at 1087 chars vs 1157
+            # complete at 512); short blocks hit EOS early, so the cost is only extra decode on long ones
             max_new_tokens: int = 512,
             vl_min_pixels: int = 112896,
             vl_max_pixels: int = 1280 * 28 * 28,
@@ -728,7 +709,7 @@ class OCRPipeline:
         self.layout = LayoutDetector(
             layout_model_path, device, score_threshold=score_threshold,
         )
-        # NOTE: 不用 self.filter —— 会 shadow Python 内置 filter()
+        # NOTE: not self.filter — would shadow the builtin filter()
         self.box_filter = BoxFilter(
             iou_threshold=box_iou_threshold,
             min_area=box_min_area,
@@ -761,7 +742,7 @@ class OCRPipeline:
             layouts, page_size=(image.width, image.height)
         )[: self.max_regions]
         crops: list[tuple[Image.Image, LayoutBox]] = []
-        # 每页只做一次 RGB 转换
+        # one RGB conversion per page
         rgb = np.asarray(image.convert("RGB"))
         for box in kept:
             arr = self.cropper.crop(rgb, box)
@@ -771,38 +752,36 @@ class OCRPipeline:
         return crops
 
     def process_page(self, image: Image.Image) -> PageResult:
-        """Process a single image end-to-end. 结果全内存返回，不落盘。"""
+        """Process a single image end-to-end; all results are returned in memory."""
         return self.process_pages([image])[0]
 
     def process_pages(self, images: Sequence[Image.Image]) -> list[PageResult]:
-        """Process a batch of images end-to-end（跨页张量堆叠 + 跨页 label 分桶）。
+        """Process a batch end-to-end (cross-page tensor stacking + cross-page label bucketing).
 
-        相对逐页调 ``process_page`` 的收益：
+        Gains over calling ``process_page`` per page:
+        - layout: one stacked forward for the whole batch (the processor resizes to 800x800);
+        - VL: crops bucketed by label across pages (``recognize_grouped``), each forward capped
+          by ``max_forward_batch``;
+        - VRAM grows with batch size; 4 pages is safe on an 8GB card (single-page engine peak
+          ~3.1GB, with the layout/VL backbones resident).
 
-        - layout 检测：整批一次 stacked forward（processor 内部统一 resize 到
-          800x800，批内图一次吃进显存）；
-        - VL 识别：跨页按 label 分桶（``recognize_grouped``），同桶 crop 跨页
-          合并后受 ``max_forward_batch`` 控制单次 forward 规模；
-        - 显存代价随批大小增长（layout 批 + VL 桶 batch），批 4 页在 8GB 卡上
-          实测安全（单页引擎峰值 ~3.1GB，layout/VL 骨干为常驻部分）。
-
-        各页 ``elapsed_seconds`` 均为整批耗时（layout 是联合 forward，不可按页拆分）。
+        Each page's ``elapsed_seconds`` is the whole-batch time (layout is one joint forward).
         """
         if not images:
             return []
         st = time.perf_counter()
         images = [im.convert("RGB") for im in images]
 
-        # 1) layout detection：整批一次 stacked forward（内部自动 resize）
+        # 1) layout detection: one stacked forward for the batch (auto-resize inside)
         layouts_per_page = self.layout.detect(images)
 
-        # 2) 每页独立 filter + crop
+        # 2) per-page filter + crop
         pages_crops = [
             self._crop_page(image, layouts)
             for image, layouts in zip(images, layouts_per_page)
         ]
 
-        # 3) 跨页 label 分桶 → VL batch 推理
+        # 3) cross-page label bucketing → VL batch inference
         all_items = [
             (img, box.label_name)
             for page_crops in pages_crops
@@ -810,7 +789,7 @@ class OCRPipeline:
         ]
         markdowns = self.vl.recognize_grouped(all_items)
 
-        # 4) 按页还原 RegionResult（markdowns 与 all_items 同序，游标切片还原）
+        # 4) restore per-page RegionResult (markdowns follow all_items order; slice by cursor)
         elapsed = time.perf_counter() - st
         results: list[PageResult] = []
         cursor = 0

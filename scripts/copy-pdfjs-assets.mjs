@@ -1,11 +1,11 @@
 /**
- * 拷贝 pdfjs 运行时资源到 public/pdfjs/（dev 与 build 前各跑一次，见 package.json scripts）：
- * - cmaps：CJK 字符编码映射——缺失时中文错位/缺字（本脚本存在的根因）
- * - standard_fonts：标准 14 字体数据
- * - wasm：JPEG2000 等图像解码器（v5+ 起 wasm 化）
- * - iccs：ICC 色彩配置
- * public/ 在 dev 被 Vite 直接服务、build 时拷进 dist → Tauri 打包自动带上。
- * 产物不入库（.gitignore），node_modules 重装后首次 dev/build 自动补齐。
+ * Copy pdfjs runtime assets into public/pdfjs/ (run before dev and build):
+ * - cmaps: CJK encoding maps; missing them breaks Chinese text
+ * - standard_fonts: standard 14 fonts
+ * - wasm: JPEG2000 and other image decoders (wasm since v5)
+ * - iccs: ICC color profiles
+ * public/ is served by Vite in dev and copied into dist on build, so Tauri bundles it.
+ * The output is gitignored and regenerated on the first dev/build after a reinstall.
  */
 import { cpSync, mkdirSync } from "node:fs";
 import path from "node:path";

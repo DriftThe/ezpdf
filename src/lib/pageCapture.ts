@@ -1,13 +1,11 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 
-/** OCR 输入渲染倍率（前后端约定常量；px→pt 换算 pt = px/scale 由 Rust 写回时做） */
+/** OCR input render scale; Rust converts px→pt (pt = px/scale) when writing back. */
 export const RENDER_SCALE = 2.0;
 
-/**
- * 离屏渲染一页 → PNG base64（无 data: 前缀，直接作 /ocr/pages 的 image_b64）。
- * 调度桥的渲染来源不依赖两栏可见性：虚拟化已释放位图的页、后台书的页都能出图
- * （复用 usePdfDoc 按 id 缓存的 doc）；渲染完立即释放 backing store，批量内存恒定。
- */
+/** Offscreen-render a page → base64 PNG (no data: prefix, ready as image_b64).
+ *  Works regardless of pane visibility (virtualized or background pages) via the cached
+ *  doc; the backing store is freed right after, so batch memory stays flat. */
 export async function renderPageToDataUrl(
   doc: PDFDocumentProxy,
   pageNumber: number,
@@ -18,13 +16,13 @@ export async function renderPageToDataUrl(
   canvas.width = Math.max(1, Math.floor(viewport.width));
   canvas.height = Math.max(1, Math.floor(viewport.height));
   try {
-    // v6 render 必传 canvas（与 PdfPageCanvas 同法；context 由 pdfjs 自取）
+    // v6 render requires canvas (as in PdfPageCanvas); pdfjs fetches the context itself
     await page.render({ canvas, viewport }).promise;
     const dataUrl = canvas.toDataURL("image/png");
     const comma = dataUrl.indexOf(",");
     return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
   } finally {
-    canvas.width = 0; // 位图即刻释放
+    canvas.width = 0; // free the bitmap immediately
     canvas.height = 0;
   }
 }

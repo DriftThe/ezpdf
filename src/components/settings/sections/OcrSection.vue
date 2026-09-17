@@ -9,7 +9,7 @@ const parse = useParseStore();
 const settings = useSettingsStore();
 const { t } = useI18n();
 
-/** 安装模式（用户 2026-09-14）：默认跟硬件走（探测到 GPU 自动选 GPU） */
+/** Install mode: follows the hardware by default (a detected GPU preselects GPU) */
 const installMode = ref<"cpu" | "gpu">("cpu");
 watch(
   () => parse.envReport?.gpu,
@@ -19,13 +19,13 @@ watch(
   { immediate: true },
 );
 
-// 打开 OCR 设置页即刷新一次报告（灯与按钮可用性以最新探测为准）
-// 在线模式不探本地环境（那是托管服务的事），只探地址
+// Refresh the report when the OCR settings page opens (lights and button availability follow the latest probe)
+// Online mode doesn't probe the local environment (that's the service's job), only the URL
 onMounted(() => {
   if (!online.value && parse.envReport === null) void parse.checkEnv();
 });
 
-/** 在线模式（用户 2026-09-15）：隐藏本地环境/安装区，改显示地址 + 测试 */
+/** Online mode: hides the local environment/install area, shows URL + test instead */
 const online = computed(() => settings.ocr.mode === "online");
 const probing = ref(false);
 async function onTest(): Promise<void> {
@@ -37,7 +37,7 @@ async function onTest(): Promise<void> {
   }
 }
 
-/** 状态位 → 文案 / 状态灯修饰类（"" = 灰色未就绪态） */
+/** State → label / status-light modifier class ("" = grey not-ready state) */
 type EnvState = "notready" | "cpu" | "gpu";
 type SvcState = "stopped" | "starting" | "busy" | "idle" | "failed";
 
@@ -57,7 +57,7 @@ const svcState = computed<SvcState>(() => {
     case "starting":
       return "starting";
     case "connected":
-      // 服务在线：一批在途 = 处理中（用户 2026-09-17 反馈：本地服务跑着批却一直显示空闲中）
+      // Service online: an in-flight batch = busy (reported: the local service was running a batch but kept showing idle)
       return parse.parsing ? "busy" : "idle";
     case "failed":
       return "failed";
@@ -65,12 +65,12 @@ const svcState = computed<SvcState>(() => {
       return "stopped";
   }
 });
-/** 服务「占着」的形态：启动中/在线（含处理中）→ 按钮显示「停止服务」 */
+/** Shapes in which the service is "held": starting/online (including busy) → button shows "stop service" */
 const serviceBusy = computed(
   () => svcState.value === "starting" || svcState.value === "busy" || svcState.value === "idle",
 );
 
-/** 灯 tooltip 明细（悬停可查具体版本/驱动/缺失项） */
+/** Light tooltip details (hover for version/driver/missing items) */
 const pythonTip = computed(() => parse.envReport?.pythonPath ?? "");
 const cudaTip = computed(() => {
   const g = parse.envReport?.gpu;
@@ -116,7 +116,7 @@ const SVC_CLASS: Record<SvcState, string> = {
 };
 const svcTip = computed(() => (svcState.value === "busy" ? t("ocr.svcBusyTip") : t("ocr.pyserverTip")));
 
-/** 五灯（Python/CUDA/环境/模型/服务）：就绪判定在脚本里做，模板只遍历 */
+/** Five lights (Python/CUDA/env/models/service): readiness is computed here, the template only iterates */
 const lights = computed(() => [
   {
     key: "python",
@@ -150,8 +150,9 @@ const lights = computed(() => [
   <div class="set-pane">
     <h2 class="set-title">{{ t("ocr.title") }}</h2>
 
-    <!-- 服务来源（用户 2026-09-15）：本地托管 = 随包 pyserver；在线服务 = 远端同款 HTTP 服务。
-         在线模式只需一个可达地址，基础环境（没装依赖/模型）也能用；翻译与它无关 -->
+    <!-- Service source: local = bundled pyserver; online = a remote HTTP service of the same kind.
+         Online mode only needs a reachable URL, so a bare base environment (no deps/models) works;
+         translation is unrelated to it -->
     <div class="set-field">
       <span>{{ t("ocr.mode") }}</span>
       <span class="set-select-wrap">
@@ -163,7 +164,7 @@ const lights = computed(() => [
       </span>
     </div>
 
-    <!-- 在线模式：地址框 + 右侧「测试」（只探活，不改连接状态）+ 启动服务完成登记 -->
+    <!-- Online mode: URL field + "test" on the right (probes only, doesn't change the connection state) + start service to register -->
     <template v-if="online">
       <div class="set-field">
         <span>{{ t("ocr.url") }}</span>
@@ -174,22 +175,22 @@ const lights = computed(() => [
           </button>
         </div>
       </div>
-      <!-- 服务令牌（服务端部署形态才有，见 pyserver/app/server_docker.py）：服务端每次启动
-           会把 token 打到终端，粘过来即可；服务端没开鉴权就留空 -->
+      <!-- Service token (only for the deployed server form, see pyserver/app/server_docker.py): the server
+           prints the token to the terminal on every start, paste it here; leave empty if the server has no auth -->
       <div class="set-field">
         <span>{{ t("ocr.token") }}</span>
         <div class="set-field-row url-row">
           <input v-model="settings.ocr.token" class="url-input" :placeholder="t('ocr.tokenPlaceholder')" />
         </div>
       </div>
-      <!-- 服务端公布的单批页数（点「测试」或连接后出现；每次 OCR 请求前会重新握手） -->
+      <!-- Batch page count advertised by the server (appears after test/connect; re-handshaked before every OCR request) -->
       <p v-if="parse.onlineHealth" class="set-hint batch-hint">
         {{ t("ocr.batchHint", { batch: parse.onlineHealth.maxBatchPages }) }}
       </p>
     </template>
 
     <template v-else>
-      <!-- 注意：含 button 的行不能用 label 包裹（label 会把整行点击转发给按钮） -->
+      <!-- Note: rows containing a button must not be wrapped in a label (a label forwards clicks on the whole row to the button) -->
       <div class="set-field">
         <span>{{ t("ocr.envCheck") }}</span>
         <button class="set-button" :disabled="parse.checking" @click="parse.checkEnv()">
@@ -204,7 +205,7 @@ const lights = computed(() => [
           </span>
         </div>
       </div>
-      <!-- 一键安装服务（用户 2026-0x9-14）：下拉选择安装模式（自绘样式）+ 镜像源开关 + 进度 -->
+      <!-- One-click install service: install-mode dropdown (custom-styled) + mirror switch + progress -->
       <div class="set-field">
         <span>{{ t("ocr.installService") }}</span>
         <div class="set-field-row install-row">
@@ -243,7 +244,7 @@ const lights = computed(() => [
         <button v-if="serviceBusy" class="set-button" @click="parse.stopService()">{{ t("ocr.stopService") }}</button>
       </div>
     </div>
-    <!-- 日志只在本地托管模式显示（用户 2026-09-15）：在线服务的日志在服务端自己那边 -->
+    <!-- Logs only in local-hosted mode: an online service keeps its own logs server-side -->
     <div v-if="!online" class="set-field">
       <span>{{ t("settings.log") }}</span>
       <pre class="log-box">{{ parse.envLogs.join("\n") || t("settings.noLogs") }}</pre>
@@ -252,11 +253,11 @@ const lights = computed(() => [
 </template>
 
 <style scoped>
-/* 批大小提示：与地址框同一视觉层，弱化处理（服务端公布值） */
+/* Batch-size hint: same visual layer as the URL field, de-emphasized (server-advertised value) */
 .batch-hint {
   color: var(--accent);
 }
-/* 地址框占满剩余宽度，「测试」按钮留在右侧（用户 2026-09-15） */
+/* URL field fills the remaining width, "test" button stays on the right */
 .url-row {
   gap: 12px;
   align-items: center;
@@ -276,7 +277,7 @@ const lights = computed(() => [
 }
 .progress-track {
   height: 4px;
-  margin: -2px 0 6px 120px; /* 与 .set-field 的 110px 标签列 + 10px gap 对齐 */
+  margin: -2px 0 6px 120px; /* aligns with .set-field's 110px label column + 10px gap */
   border-radius: 2px;
   background: var(--bg-hover);
   overflow: hidden;

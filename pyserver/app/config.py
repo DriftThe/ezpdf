@@ -1,12 +1,11 @@
-"""pyserver 运行配置：全部经环境变量注入（Rust spawn 时传入），无配置文件。
+"""pyserver runtime config: all values come from the environment (Rust injects them on spawn); no config file.
 
-- EZPDF_TOKEN        会话 token；为空则不做校验（仅手动调试 / 本地托管由客户端生成）
-- EZPDF_TOKEN_FILE   token 文件路径（默认 <pyserver>/token.txt）；仅 server_docker.py 用，
-                     服务端部署形态下没有客户端生成 token，改为读/生成这个文件
-- EZPDF_MODELS_DIR   模型根目录（默认 <pyserver>/models）
-- EZPDF_MAX_BATCH_PAGES
-                    单次 /ocr/pages 允许的最大页数（默认 32）。客户端请求前会先读
-                    /health 里的这个值来决定一批发几页（见 PROTOCOL.md §4/§6）
+- EZPDF_TOKEN            session token; empty disables auth (manual debug / client-generated local mode)
+- EZPDF_TOKEN_FILE       token file path (default <pyserver>/token.txt); server_docker.py only — the
+                         deployed form has no client to generate a token, so it reads/creates this file
+- EZPDF_MODELS_DIR       model root (default <pyserver>/models)
+- EZPDF_MAX_BATCH_PAGES  max pages per /ocr/pages (default 32); the client reads it from /health to pick a
+                         batch size (see PROTOCOL.md §4/§6)
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from pathlib import Path
 
 from . import model_contract as _contract
 
-# pyserver 根目录（app/ 的上一级）
+# pyserver root (parent of app/)
 ROOT = Path(__file__).resolve().parents[1]
 
 TOKEN = os.environ.get("EZPDF_TOKEN", "")
@@ -26,10 +25,10 @@ MODELS_DIR = Path(os.environ.get("EZPDF_MODELS_DIR", str(ROOT / "models")))
 
 
 def resolve_token() -> tuple[str, bool]:
-    """服务端形态的 token 解析：环境变量 > token 文件 > 生成并落盘。
+    """Server-form token resolution: env var > token file > generate and persist.
 
-    返回 (token, generated)。生成时写入 TOKEN_FILE（POSIX 下 0600），供部署方重启复用；
-    客户端记下的令牌不会因为重启/重建容器而失效。
+    Returns (token, generated). A generated token is written to TOKEN_FILE
+    (0600 on POSIX) so restarts and container rebuilds reuse it.
     """
     if TOKEN:
         return TOKEN, False
@@ -50,7 +49,7 @@ def resolve_token() -> tuple[str, bool]:
 
 
 def _max_batch_pages() -> int:
-    """批大小上限：畸形/越界值一律回落默认（协议里客户端会再夹一次 1..32）"""
+    """Batch cap: malformed/out-of-range values fall back to the default (the client clamps to 1..32 again)."""
     raw = os.environ.get("EZPDF_MAX_BATCH_PAGES", "").strip()
     try:
         value = int(raw)
@@ -61,6 +60,6 @@ def _max_batch_pages() -> int:
 
 MAX_BATCH_PAGES = _max_batch_pages()
 
-# 目录名与完整性口径在 model_contract.py（探测/下载共用同一份），这里转出便于既有调用点
+# Directory names and completeness rules live in model_contract.py (shared by probe/download); re-exported here.
 LAYOUT_MODEL_DIR_NAME = _contract.LAYOUT_MODEL_DIR_NAME
 VL_MODEL_DIR_NAME = _contract.VL_MODEL_DIR_NAME

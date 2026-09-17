@@ -9,7 +9,7 @@ import EmptyState from "../common/EmptyState.vue";
 const { t } = useI18n();
 const lib = useLibraryStore();
 
-/** 新增文件夹：侧栏内联输入（不弹系统框，避免打断）——后端只加逻辑分组 */
+/** New folder: inline input in the sidebar (no system prompt to avoid interrupting); backend adds a logical group only */
 const folderOpen = ref(false);
 const folderName = ref("");
 const folderInput = ref<HTMLInputElement | null>(null);
@@ -80,7 +80,6 @@ function cancelNewFolder(): void {
           </svg>
         </span>
         <span class="root-path">{{ lib.repoRoot }}</span>
-        <!-- 重新选择仓库（用户 2026-09-14）：系统目录选择器 -->
         <button class="btn ghost sm root-pick" :title="t('repo.reselect')" @click="lib.chooseRepoRoot">{{ t("repo.select") }}</button>
       </div>
     </div>
@@ -93,7 +92,7 @@ function cancelNewFolder(): void {
   width: var(--sidebar-w);
   flex: none;
   height: 100%;
-  overflow: hidden; /* 收起时裁剪内容 */
+  overflow: hidden; /* clip content while collapsed */
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   transition: width 0.18s ease;
@@ -140,7 +139,7 @@ function cancelNewFolder(): void {
 .grow {
   flex: 1;
 }
-/* 新增文件夹内联输入行 */
+/* Inline new-folder input row */
 .side-new-folder {
   display: flex;
   gap: 4px;
@@ -188,7 +187,7 @@ function cancelNewFolder(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  direction: rtl; /* 长路径时显示尾部 */
+  direction: rtl; /* show the tail of long paths */
   text-align: left;
 }
 .root-pick {

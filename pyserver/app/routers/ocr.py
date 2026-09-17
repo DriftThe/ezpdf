@@ -1,14 +1,14 @@
-"""单页 / 批量 OCR：POST /ocr/page {image_b64} 与 POST /ocr/pages。
+"""Single-page / batch OCR: POST /ocr/page {image_b64} and POST /ocr/pages.
 
-- /ocr/page  → {blocks, width, height, elapsed}（curl 冒烟/调试用）；
-- /ocr/pages → {elapsed, pages: [{blocks, width, height}]}（Rust parse_pdf 正路，
-  批量页数由客户端按 /health 的 max_batch_pages 决定：本地托管用客户端自己的批大小，
-  在线服务用服务端公布的值，PyService 持有 token 后经此批量推理）；
-- 图片解码用 PIL（Wise-Paddle 的 cv2 路径服务于文件上传，这里不需要）；尺寸有上限，
-  解码放线程池（见 _decode_image / MAX_BODY_BYTES）；
-- bbox_px 为原图像素坐标（含 unclip 扩框），px→PDF pt 换算（pt = px/scale）由
-  Rust 写绑定 JSON 时做，本服务不关心 scale；
-- 引擎懒加载 + 单锁串行，首个请求耗时以分钟计（VL 模型 ~1.8GB）。
+- /ocr/page  → {blocks, width, height, elapsed} (curl smoke/debug);
+- /ocr/pages → {elapsed, pages: [{blocks, width, height}]} (the main path for Rust's parse_pdf; batch
+  size follows /health's max_batch_pages — the client's own for local hosting, the server's advertised
+  value online, with PyService holding the token);
+- Images decode with PIL (Wise-Paddle's cv2 path serves file uploads, not needed here); size is bounded
+  and decoding runs in the threadpool (see _decode_image / MAX_BODY_BYTES);
+- bbox_px is source-image pixel coordinates (including the unclip expansion); the px→PDF pt conversion
+  (pt = px/scale) happens in Rust when writing the bound JSON — this service never sees scale;
+- The engine is lazy-loaded and serialized by one lock; the first request takes minutes (VL model ~1.8GB).
 """
 
 from __future__ import annotations
@@ -34,19 +34,19 @@ class PageRequest(BaseModel):
 
 
 class PagesBatchRequest(BaseModel):
-    # 上限 = /health 里公布的 max_batch_pages（客户端据此决定每批发几页）
+    # Cap = the max_batch_pages advertised by /health (the client picks each batch size from it)
     pages: list[PageRequest] = Field(min_length=1, max_length=MAX_BATCH_PAGES)
 
 
-# 解压炸弹/超大渲染兜底：单边与总像素双限（正常页渲染 scale2.0 远小于此）
+# Decompression-bomb / oversized-render guard: limits on both side length and total pixels (a normal scale-2.0 page is far below these)
 MAX_SIDE_PX = 12_000
 MAX_PIXELS = 40_000_000
 
 
 def _decode_image(payload: str) -> Image.Image:
-    """base64（可带 data: URI 前缀）→ PIL RGB Image。"""
+    """base64 (optionally with a data: URI prefix) → PIL RGB Image."""
     if payload.startswith("data:"):
-        # partition 而非 split[1]：畸形 data: 串不会 IndexError
+        # partition, not split[1]: a malformed data: string cannot raise IndexError
         _, sep, rest = payload.partition(",")
         payload = rest if sep else ""
     try:
@@ -66,12 +66,12 @@ def _decode_image(payload: str) -> Image.Image:
 
 
 def _decode_images(pages: list[PageRequest]) -> list[Image.Image]:
-    """批量解码（CPU 密集：放线程池，别占事件循环）"""
+    """Batch decode (CPU-bound: run in the threadpool, off the event loop)."""
     return [_decode_image(p.image_b64) for p in pages]
 
 
 def _region_json(r: RegionResult) -> dict:
-    """RegionResult → 响应块 dict（/ocr/page 与 /ocr/pages 共用同一契约）。"""
+    """RegionResult → response block dict (the same contract for /ocr/page and /ocr/pages)."""
     return {
         "label": r.label,
         "score": round(r.score, 4),

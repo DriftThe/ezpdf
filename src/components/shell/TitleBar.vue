@@ -6,10 +6,9 @@ import { isTauri } from "../../lib/env";
 import ThemeToggle from "./ThemeToggle.vue";
 
 /**
- * 自绘标题栏（用户 2026-09-14）：不启用系统装饰（tauri.conf `decorations: false`），
- * 左侧只有 ezpdf 字标，右侧主题切换 + 最小化/最大化(还原)/关闭。
- * 拖动：整条挂 `data-tauri-drag-region`（按钮不挂，权限见 capabilities）；双击切换最大化。
- * 浏览器 dev（无 Tauri）下按钮静默无效。
+ * Self-drawn title bar (system decorations off in tauri.conf).
+ * Drag: the whole bar carries `data-tauri-drag-region` (buttons don't, see capabilities);
+ * double-click toggles maximize. Inert in the browser (no Tauri).
  */
 const { t } = useI18n();
 const win = isTauri ? getCurrentWindow() : null;
@@ -24,7 +23,7 @@ onMounted(async () => {
       void win.isMaximized().then((v) => (maximized.value = v));
     });
   } catch {
-    /* 窗口 API 不可用：保持默认图标 */
+    /* window API unavailable: keep the default icon */
   }
 });
 onBeforeUnmount(() => unlisten?.());
@@ -85,12 +84,12 @@ function close(): void {
   letter-spacing: 0.4px;
   color: var(--text-2);
 }
-/* 空白拖动区：占满中段 */
+/* Blank drag area: fills the middle */
 .bar-drag {
   flex: 1;
   align-self: stretch;
 }
-/* Windows 风格窗控：整条高度、无圆角，关闭键悬停红底 */
+/* Windows-style window controls: full height, square, close turns red on hover */
 .win-btn {
   width: 44px;
   height: 100%;

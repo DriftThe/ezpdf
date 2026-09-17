@@ -12,13 +12,13 @@ function onLang(e: Event): void {
   void settings.setLang((e.target as HTMLSelectElement).value as AppLocale);
 }
 
-/** 块类型勾选：直接改 general.translateTypes（随设置页返回键整份保存） */
+/** Block type checkbox: edits general.translateTypes directly (saved wholesale by the settings back button) */
 function onToggleType(kind: string, e: Event): void {
   const on = (e.target as HTMLInputElement).checked;
   const cur = new Set(settings.general.translateTypes);
   if (on) cur.add(kind);
   else cur.delete(kind);
-  // 保持稳定顺序（按 BLOCK_TYPE_OPTIONS 排列），便于配置对比与日志阅读
+  // Keep a stable order (per BLOCK_TYPE_OPTIONS) for easier config diffing and log reading
   settings.general.translateTypes = BLOCK_TYPE_OPTIONS.filter((k) => cur.has(k));
 }
 
@@ -54,7 +54,7 @@ function isTypeOn(kind: string): boolean {
       <span>{{ t("settings.general.resumeOnStart") }}</span>
     </label>
 
-    <!-- 翻译块类型（用户 2026-09-15）：勾选的类型送翻并在译文栏覆盖显示 -->
+    <!-- Translation block types: checked types are translated and covered in the translation pane -->
     <h3 class="block-type-title">{{ t("settings.general.blockTypes") }}</h3>
     <div class="block-types">
       <label v-for="kind in BLOCK_TYPE_OPTIONS" :key="kind" class="set-check block-type">
@@ -63,7 +63,7 @@ function isTypeOn(kind: string): boolean {
       </label>
     </div>
     <button class="set-button" @click="resetTypes">{{ t("settings.general.blockTypesReset") }}</button>
-    <!-- 更新检查（用户 2026-09-14）：启动静默一次，这里手动重查 -->
+    <!-- Update check: silent once at launch, re-run manually here -->
     <div class="set-field">
       <span>{{ t("update.title") }}</span>
       <div class="set-field-row update-row">
@@ -81,14 +81,14 @@ function isTypeOn(kind: string): boolean {
   gap: 10px;
   align-items: center;
 }
-/* 版本行文本：不复用 .set-hint（它的负上边距会把整行往下顶，和左侧标签对不齐） */
+/* Version line text: doesn't reuse .set-hint (its negative top margin pushes the line down and misaligns it with the left label) */
 .update-text {
   margin: 0;
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-3);
 }
-/* 翻译块类型：小标题 + 多列勾选网格 */
+/* Translation block types: subheading + multi-column checkbox grid */
 .block-type-title {
   margin: 18px 0 6px;
   font-size: 13px;

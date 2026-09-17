@@ -10,20 +10,19 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use ts_rs::TS;
 #[cfg(not(dev))]
-use tauri::Manager; // 仅生产分支的 resource_dir()/home_dir() 需要
+use tauri::Manager; // only the production branch needs resource_dir()/home_dir()
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// 一键安装服务的源（用户 2026-09-14：按钮旁「使用镜像源」checkbox 控制）：
-/// - pypi 镜像 = 清华 TUNA；torch 镜像 = 上交 SJTU pytorch-wheels（含 cu132 全部 wheels）
-/// - 官方源 = pypi.org / download.pytorch.org
+/// Install sources, switched by the "use mirror" checkbox:
+/// mirror = TUNA pypi + SJTU pytorch-wheels (all cu132 wheels); official = pypi.org / download.pytorch.org.
 const PYPI_MIRROR: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
 const PYPI_OFFICIAL: &str = "https://pypi.org/simple";
 const TORCH_MIRROR_BASE: &str = "https://mirror.sjtu.edu.cn/pytorch-wheels";
 const TORCH_OFFICIAL_BASE: &str = "https://download.pytorch.org/whl";
 
-/// 解释器可执行文件名（跨平台用 cfg! 运行期判定，两端都参与编译检查）
+/// Interpreter executable name (runtime cfg! so both branches compile-check).
 fn py_exe_name() -> &'static str {
     if cfg!(windows) {
         "python.exe"
@@ -32,9 +31,9 @@ fn py_exe_name() -> &'static str {
     }
 }
 
-/// 随包解释器相对 `resources/python` 的位置：Windows = python/python.exe，
-/// Linux/macOS = python/bin/python3（python-build-standalone install_only 的布局）。
-/// dev 下随包分支不参与编译，故显式放行 dead_code。
+/// Bundled interpreter path under `resources/python`: Windows = python.exe,
+/// Linux/macOS = bin/python3 (python-build-standalone install_only layout).
+/// dev skips this branch, hence the explicit dead_code allow.
 #[cfg_attr(dev, allow(dead_code))]
 fn bundled_py_rel() -> &'static str {
     if cfg!(windows) {
@@ -44,24 +43,24 @@ fn bundled_py_rel() -> &'static str {
     }
 }
 
-/// pyserver 全部派生路径。`run()` 的 setup 钩子启动即解析一次并存为全局状态，
-/// 命令侧通过 `tauri::State<PyPaths>` 取用，不做二次解析。
+/// All derived pyserver paths, resolved once in setup and stored as global state;
+/// commands read it via `tauri::State<PyPaths>` and never re-resolve.
 #[derive(Debug, Clone)]
 pub struct PyPaths {
-    /// 服务代码根：dev = 仓库 pyserver/，生产 = 安装目录 resources/pyserver
+    /// Service code root: dev = repo pyserver/, prod = install resources/pyserver.
     pub root: PathBuf,
-    /// stdlib 环境探测脚本（纯标准库，随包解释器/venv 均可运行）
+    /// stdlib-only env probe script (runs under either the bundled interpreter or a venv).
     pub bootstrap: PathBuf,
-    /// 服务解释器（真正跑 pyserver 的那一个，装依赖也装给它）：
-    /// Windows 生产 = 随包可重定位 Python（安装目录可写）；
-    /// Linux 生产 = 用户级 venv（安装目录只读，见 venv_dir）；
-    /// dev = 仓库 pyserver/.venv（缺失时用系统 python 创建）
+    /// Service interpreter (what actually runs pyserver; deps install into it):
+    /// Windows prod = bundled relocatable Python (install dir is writable);
+    /// Linux prod = user-level venv (install dir is read-only, see venv_dir);
+    /// dev = repo pyserver/.venv (created with system python if missing).
     pub python: PathBuf,
-    /// 随包基础解释器（只读）：Linux 生产用它创建 venv；Windows 生产与 python 相同；dev = None
+    /// Bundled base interpreter (read-only): Linux prod creates the venv with it; Windows prod equals python; dev = None.
     pub base_python: Option<PathBuf>,
-    /// 需要用户级 venv 时给出 venv 根目录（Linux 生产 = ~/.ezpdf/venv；dev = pyserver/）
+    /// Venv root when a user-level venv is needed (Linux prod = ~/.ezpdf/venv; dev = pyserver/).
     pub venv_dir: Option<PathBuf>,
-    /// 模型目录（与代码分离）：生产 = ~/.ezpdf/models（升级/重装不丢），dev = pyserver/models
+    /// Models dir, kept outside the code: prod = ~/.ezpdf/models (survives upgrades), dev = pyserver/models.
     pub models: PathBuf,
 }
 
@@ -70,7 +69,7 @@ impl PyPaths {
         let (root, bundled) = server_root(app)?;
         let models = models_dir(app, &root);
         let bootstrap = root.join("bootstrap.py");
-        // 运行期覆盖解释器（dev 模拟生产布局 / 非标准部署）：不建 venv，直接用
+        // Runtime interpreter override (dev emulating prod / non-standard deploys): no venv.
         if let Ok(p) = std::env::var("EZPDF_PYTHON_EXE") {
             if !p.trim().is_empty() {
                 let python = PathBuf::from(p);
@@ -87,10 +86,10 @@ impl PyPaths {
         let bundled_py = bundled.then(|| bundled_python(app)).transpose()?;
         let venv_dir = venv_root(app, &root, bundled);
         let python = if let (true, Some(venv)) = (needs_own_venv(bundled), venv_dir.as_ref()) {
-            // 需要用户级 venv（Linux 生产）：服务解释器在 venv 里，首次安装时创建
+            // User-level venv required (Linux prod): the service interpreter lives in it, created on first install.
             venv_join(venv)
         } else {
-            // Windows 生产 = 随包解释器；dev = 仓库 pyserver/.venv
+            // Windows prod = bundled interpreter; dev = repo pyserver/.venv.
             bundled_py
                 .clone()
                 .unwrap_or_else(|| venv_join(&root.join(".venv")))
@@ -106,14 +105,14 @@ impl PyPaths {
     }
 }
 
-/// 安装目录只读的平台（Linux/macOS）才需要用户级 venv：
-/// deb/rpm 把资源放在 root 所有的 /usr/lib 下，AppImage 是只读挂载，
-/// pip 都不能往随包解释器里写（Windows NSIS 是 per-user 安装，目录可写）。
+/// Only platforms with a read-only install dir (Linux/macOS) need a user-level venv:
+/// deb/rpm resources live under root-owned /usr/lib and AppImage mounts read-only, so pip
+/// can't write into the bundled interpreter (Windows NSIS is per-user and writable).
 fn needs_own_venv(bundled: bool) -> bool {
     bundled && !cfg!(windows)
 }
 
-/// venv 内解释器路径（Windows: Scripts/python.exe，Unix: bin/python3）
+/// Interpreter path inside a venv (Windows: Scripts/python.exe; Unix: bin/python3).
 fn venv_join(venv_dir: &Path) -> PathBuf {
     if cfg!(windows) {
         venv_dir.join("Scripts").join(py_exe_name())
@@ -122,8 +121,8 @@ fn venv_join(venv_dir: &Path) -> PathBuf {
     }
 }
 
-/// 用户级 venv 根目录：生产非 Windows = ~/.ezpdf/venv（与模型目录同一处，升级重装不丢）；
-/// Windows 生产 = None（随包安装目录可写，直接用随包解释器）；dev = pyserver/.venv。
+/// User-level venv root: prod non-Windows = ~/.ezpdf/venv (beside models, survives upgrades);
+/// Windows prod = None (writable install dir, uses the bundled interpreter); dev = pyserver/.venv.
 fn venv_root(app: &AppHandle, root: &Path, bundled: bool) -> Option<PathBuf> {
     if !bundled || cfg!(windows) {
         let _ = app;
@@ -143,7 +142,7 @@ fn venv_root(app: &AppHandle, root: &Path, bundled: bool) -> Option<PathBuf> {
     }
 }
 
-/// 随包基础解释器（只读；双位置探测同 pyserver 代码根）
+/// Bundled base interpreter (read-only; probes the same two locations as the pyserver root).
 #[cfg_attr(dev, allow(dead_code))]
 fn bundled_python(app: &AppHandle) -> Result<PathBuf, String> {
     #[cfg(dev)]
@@ -162,9 +161,9 @@ fn bundled_python(app: &AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// 服务代码根：dev = 仓库内 pyserver/（编译期 CARGO_MANIFEST_DIR）；
-/// 生产 = 安装目录资源（Tauri bundle.resources 落位，双位置探测）。
-/// dev/prod 判定用 tauri-build 注入的 `cfg(dev)`；EZPDF_TOOLKIT_ROOT 运行期强制覆盖。
+/// Service code root: dev = repo pyserver/ (compile-time CARGO_MANIFEST_DIR); prod = install
+/// resources (Tauri bundle.resources, two-location probe). dev/prod uses tauri-build's
+/// `cfg(dev)`; EZPDF_TOOLKIT_ROOT overrides at runtime.
 fn server_root(app: &AppHandle) -> Result<(PathBuf, bool), String> {
     if let Ok(root) = std::env::var("EZPDF_TOOLKIT_ROOT") {
         if !root.trim().is_empty() {
@@ -173,15 +172,15 @@ fn server_root(app: &AppHandle) -> Result<(PathBuf, bool), String> {
     }
     #[cfg(dev)]
     {
-        let _ = app; // dev 分支用不到 AppHandle
+        let _ = app; // dev branch doesn't need AppHandle
         Ok((PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../pyserver"), false))
     }
     #[cfg(not(dev))]
     {
         let res = app.path().resource_dir().map_err(|e| e.to_string())?;
-        // bundle.resources 的 target 相对资源根（tauri.conf 的 "resources/pyserver": "pyserver"），
-        // 实测落位就是 <资源根>/pyserver（Linux deb = /usr/lib/ezpdf/pyserver）；
-        // 再兼容一层 resources/ 子目录（自定义打包布局）
+        // bundle.resources maps "resources/pyserver" → "pyserver", landing at
+        // <resource root>/pyserver (Linux deb = /usr/lib/ezpdf/pyserver); also accept a
+        // nested resources/ dir for custom layouts.
         let direct = res.join("pyserver");
         if direct.join("bootstrap.py").is_file() {
             return Ok((direct, true));
@@ -190,8 +189,8 @@ fn server_root(app: &AppHandle) -> Result<(PathBuf, bool), String> {
     }
 }
 
-/// 模型目录：EZPDF_MODELS_DIR 运行期覆盖；生产固定用户目录 ~/.ezpdf/models
-/// （1.9GB 下载与代码/安装目录分离，升级重装不丢），dev = pyserver/models。
+/// Models dir: EZPDF_MODELS_DIR overrides at runtime; prod always ~/.ezpdf/models (the 1.9 GB
+/// download stays out of the install dir and survives upgrades); dev = pyserver/models.
 fn models_dir(app: &AppHandle, root: &Path) -> PathBuf {
     if let Ok(dir) = std::env::var("EZPDF_MODELS_DIR") {
         if !dir.trim().is_empty() {
@@ -219,15 +218,15 @@ fn hide_window(cmd: &mut StdCommand) {
 #[cfg(not(windows))]
 fn hide_window(_cmd: &mut StdCommand) {}
 
-// ---- bootstrap.py 探测 -------------------------------------------------------------------
+// ---- bootstrap.py probe ----
 
-/// bootstrap.py 输出（snake_case 键）；仅解析用，对外合成 OcrEnvReport
+/// bootstrap.py output (snake_case keys); parsed internally and composed into OcrEnvReport.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct BootstrapRaw {
     python: Option<String>,
     python_path: Option<String>,
-    /// 探测脚本自身崩溃时只会吐 {"error": ...}：其余字段给默认值，别把原因弄丢
+    /// A crashing probe emits only {"error": ...}: default the rest so the reason survives.
     #[serde(default)]
     deps: BTreeMap<String, Option<String>>,
     #[serde(default)]
@@ -253,7 +252,7 @@ struct BootstrapModels {
     vl: bool,
 }
 
-/// 环境分层报告（OCR 设置页状态灯数据源）；Rust 持有并整份推给前端缓存渲染
+/// Layered env report (source for the OCR settings status lights); Rust owns it and pushes it whole.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -298,8 +297,8 @@ fn compose(raw: BootstrapRaw) -> OcrEnvReport {
     }
 }
 
-/// 探测拿不到结果时的空报告：error 文案分「没有解释器」和「脚本自己失败」两种，
-/// 后者必须带上真实原因，否则界面只会说"没找到 Python"，与事实不符。
+/// Empty report when probing yields nothing: error is either "no interpreter" or the script's
+/// real failure, which must be surfaced instead of a misleading "no Python found".
 fn failed_report(error: String) -> OcrEnvReport {
     OcrEnvReport {
         python: None,
@@ -313,11 +312,11 @@ fn failed_report(error: String) -> OcrEnvReport {
     }
 }
 
-/// 跑一次 bootstrap.py（服务解释器优先；不存在时系统 python 兜底——仅 dev 会走到）。
-/// 探测自身失败不作为错误抛出——报告即数据（error 字段），前端据此显示引导。
+/// Run bootstrap.py once (service interpreter first, falling back to system python in dev).
+/// A probe failure is data, not an error: it rides the report's error field for the frontend.
 fn probe_blocking(paths: &PyPaths) -> OcrEnvReport {
-    // 优先服务解释器（Linux 生产 = 用户级 venv）；venv 还没建时用随包基础解释器
-    // （报告要描述「我们真正会用的解释器」，而不是系统 python）
+    // Prefer the service interpreter (Linux prod = user-level venv), then the bundled base
+    // one: the report must describe the interpreter we'll actually use, not system python.
     let python = std::iter::once(&paths.python)
         .chain(paths.base_python.iter())
         .find(|p| p.is_file())
@@ -352,7 +351,7 @@ fn run_bootstrap(python: &Path, script: &Path, models: &Path) -> Result<Bootstra
     if !out.status.success() {
         return Err(format!("bootstrap exited with code {:?}", out.status.code()));
     }
-    // 逐行倒序找能解析成 JSON 的行（容忍解释器偶发的其他 stdout 输出）
+    // Scan lines in reverse for parseable JSON (tolerates stray interpreter stdout).
     let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines().rev() {
         if let Ok(raw) = serde_json::from_str::<BootstrapRaw>(line.trim()) {
@@ -362,8 +361,8 @@ fn run_bootstrap(python: &Path, script: &Path, models: &Path) -> Result<Bootstra
     Err("cannot parse bootstrap stdout".into())
 }
 
-/// 系统解释器发现：Windows = py -3 → PATH python；Unix = python3 → python
-/// （Debian/Ubuntu 默认没有裸 `python`）
+/// System interpreter discovery: Windows = py -3 → PATH python; Unix = python3 → python
+/// (Debian/Ubuntu has no bare `python`).
 fn find_system_python() -> Option<PathBuf> {
     if cfg!(windows) {
         try_python("py", &["-3"]).or_else(|| try_python("python", &[]))
@@ -386,9 +385,9 @@ fn try_python(exe: &str, pre: &[&str]) -> Option<PathBuf> {
     if p.is_file() { Some(p) } else { None }
 }
 
-// ---- 一键安装服务（用户 2026-09-14）：CPU/GPU 显式选择 + 镜像开关 + 阶段进度 ------------------
+// ---- Service install: explicit CPU/GPU choice + mirror switch + staged progress ----
 
-/// 安装模式（前端 radio；GPU 只要求 nvidia-smi 存在，驱动兼容性由运行期反馈）
+/// Install mode (frontend radio; GPU only requires nvidia-smi, driver compatibility is runtime feedback).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallMode {
     Cpu,
@@ -419,7 +418,7 @@ impl InstallMode {
     }
 }
 
-/// 安装进度事件（ocr://install）：阶段名 + 估算百分比（按钮旁进度条）
+/// Install progress event (ocr://install): phase name + estimated percent.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -442,8 +441,8 @@ async fn emit_progress(app: &AppHandle, phase: &str, percent: u32) {
     );
 }
 
-/// 子进程输出逐行转发（stdout/stderr 都用它）：每 3 行按阶段区间插值推一次进度
-/// （百分比只能估算——pip 进度条已关）。counter 由调用方共享，两个流合并计数。
+/// Forward child output line by line (both streams): every 3 lines, interpolate progress
+/// across the phase range (pip's bar is off, so percent is an estimate). The counter is shared.
 pub(crate) async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(
     r: &mut R,
     app: &AppHandle,
@@ -474,7 +473,7 @@ pub(crate) async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-/// 跑子进程并流式转发输出（stdout/stderr 合并进 ocr://log；进度可选）
+/// Run a child and stream its output (stdout/stderr merged into ocr://log; progress optional).
 async fn run_streamed(
     app: &AppHandle,
     exe: &Path,
@@ -532,7 +531,7 @@ fn svec(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| s.to_string()).collect()
 }
 
-/// pip 安装：镜像开关 → index 参数（torch 变体文件的 index-url 已在文件里移除，便于切换源）
+/// pip install: the mirror switch picks index args (the torch variant file's index-url was removed so sources can swap).
 async fn pip_install(
     app: &AppHandle,
     paths: &PyPaths,
@@ -549,7 +548,7 @@ async fn pip_install(
         &file.to_string_lossy(),
         "--progress-bar",
         "off",
-        // 镜像源偶发 IncompleteRead（实测 TUNA 丢过包）：放宽重试与超时
+        // Mirrors occasionally drop packages (IncompleteRead): widen retries and timeout.
         "--retries",
         "6",
         "--timeout",
@@ -564,9 +563,9 @@ async fn pip_install(
         let extra = if use_mirror { PYPI_MIRROR } else { PYPI_OFFICIAL };
         args.extend(svec(&["--index-url", &index, "--extra-index-url", extra]));
     } else if req_file.contains("torch-cpu") && !cfg!(windows) {
-        // Linux 的 PyPI torch 轮子默认**捆绑 CUDA**（实测 nvidia-* 2.7GB + triton 0.7GB），
-        // 且元数据版本不带 +cu 后缀，光看版本号骗得过去；CPU 变体必须走 CPU wheel 索引
-        // 才拿得到 +cpu 轮子（~250MB）。Windows 的 PyPI torch 本来就是 CPU 构建。
+        // PyPI's Linux torch silently bundles CUDA (nvidia-* + triton, ~3.4 GB) and its version
+        // has no +cu tag, so version checks miss it; the CPU variant must use the /cpu wheel
+        // index to get the +cpu wheel (~250 MB). Windows PyPI torch is already CPU-only.
         let index = if use_mirror {
             format!("{TORCH_MIRROR_BASE}/cpu")
         } else {
@@ -575,14 +574,14 @@ async fn pip_install(
         let extra = if use_mirror { PYPI_MIRROR } else { PYPI_OFFICIAL };
         args.extend(svec(&["--index-url", &index, "--extra-index-url", extra]));
     } else if use_mirror {
-        // CPU torch（Windows）与其余依赖都在 PyPI：镜像 = TUNA（官方 = 默认 PyPI，无需参数）
+        // Windows CPU torch and the rest live on PyPI: mirror = TUNA (official needs no args).
         args.extend(svec(&["--index-url", PYPI_MIRROR]));
     }
     run_streamed(app, &paths.python, &args, &paths.root, &paths.models, &[], progress).await
 }
 
-/// 已安装判定（用户 2026-09-14）：CPU 环境是 GPU 环境的子集——
-/// 装过 cu132（"cuda"）时 CPU 选择同样算已安装（不降级重装）；反向不成立。
+/// Installed check: a CPU env is a subset of a GPU env — a "cuda" torch build satisfies a
+/// CPU request (no downgrade reinstall), but not vice versa.
 fn env_satisfies(report: &OcrEnvReport, mode: InstallMode) -> bool {
     if report.python.is_none() || !report.missing.is_empty() {
         return false;
@@ -594,16 +593,16 @@ fn env_satisfies(report: &OcrEnvReport, mode: InstallMode) -> bool {
     }
 }
 
-/// 服务安装：解释器（dev 缺 venv 时用系统 python 创建）→ GPU 预检 → 基础依赖 →
-/// torch 变体（按选择；已是目标构建则跳过）→ 完成。进度经 ocr://install 推送。
-/// 返回 true = 已安装（未做任何安装；前端提示「服务已安装」）。
+/// Service install: interpreter (dev creates a venv with system python if missing) → GPU
+/// precheck → base deps → torch variant (selected build, skipped if already present) → done.
+/// Progress goes over ocr://install; returns true when nothing needed installing.
 pub async fn install_env(
     app: &AppHandle,
     paths: &PyPaths,
     mode: InstallMode,
     use_mirror: bool,
 ) -> Result<bool, String> {
-    // 先探测：环境齐备（且 torch 构建满足所选模式）→ 直接跳过，避免重复安装
+    // Probe first: a complete env with a satisfying torch build skips install entirely.
     let report = probe_blocking(paths);
     if env_satisfies(&report, mode) {
         emit_log(
@@ -628,8 +627,8 @@ pub async fn install_env(
     .await;
     emit_progress(app, "preparing", 2).await;
     if !paths.python.is_file() {
-        // 服务解释器不存在：Linux 生产 = 用随包解释器在 ~/.ezpdf 建用户级 venv
-        // （安装目录只读）；dev = 用系统 python 在 pyserver/ 建 .venv
+        // Service interpreter missing: Linux prod creates a user-level venv under ~/.ezpdf
+        // with the bundled interpreter (install dir read-only); dev uses system python in pyserver/.
         let base = std::iter::once(paths.base_python.clone())
             .chain(std::iter::once(find_system_python()))
             .flatten()
@@ -698,9 +697,9 @@ pub async fn install_env(
     Ok(false)
 }
 
-/// 模型下载：huggingface_hub（requirements-download.txt 按需补装，已装则 pip 秒过）
-/// → python -m app.fetch（快照下载到模型目录；断点续传由 hub 库内置）。
-/// 镜像开关：开 = hf-mirror（fetch.py 默认），关 = 官方 huggingface.co。
+/// Model download: huggingface_hub (installed on demand, a no-op if present) →
+/// python -m app.fetch (snapshot into the models dir, resumable by the hub library).
+/// Mirror switch: on = hf-mirror.com, off = huggingface.co.
 pub async fn download_models(
     app: &AppHandle,
     paths: &PyPaths,

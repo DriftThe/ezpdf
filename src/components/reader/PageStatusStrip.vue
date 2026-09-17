@@ -6,7 +6,7 @@ import { useReaderStore } from "../../stores/reader";
 
 const { t } = useI18n();
 
-/** 页级状态点阵：pdfjs 实测页数为总量，完成态按 1-based 页号从绑定 JSON 查表 */
+/** Per-page status dots: total comes from pdfjs' measured page count, done state is looked up by 1-based index in the bound JSON */
 const lib = useLibraryStore();
 const reader = useReaderStore();
 

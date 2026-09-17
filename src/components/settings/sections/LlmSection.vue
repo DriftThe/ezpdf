@@ -16,12 +16,12 @@ const settings = useSettingsStore();
 const parse = useParseStore();
 const { t } = useI18n();
 
-// 目录懒加载（~400KB 单独 chunk）：设置页打开 LLM 面板才拉
+// Catalog lazy-load (~400KB separate chunk): fetched only when the LLM panel opens
 onMounted(() => void settings.ensureCatalog());
 
 const isCustom = computed(() => settings.llm.provider === CUSTOM_PROVIDER);
 
-/** 当前供应商是「协议不支持」那一类（旧配置残留）：下拉里只留一个禁用项显示它 */
+/** Current provider is one of the "unsupported protocol" kind (stale config): show it as a single disabled option */
 const unsupportedProvider = computed(() =>
   settings.otherProviders.some((p) => p.id === settings.llm.provider),
 );
@@ -34,7 +34,7 @@ function onProtocol(e: Event): void {
   settings.applyProtocol((e.target as HTMLSelectElement).value);
 }
 
-/** Base URL 示例跟着协议走（自定义端点最容易填错路径） */
+/** Base URL example follows the protocol (custom endpoints most often get the path wrong) */
 const baseUrlPlaceholder = computed(() => {
   switch (settings.protocol) {
     case "anthropic-messages":
@@ -46,7 +46,7 @@ const baseUrlPlaceholder = computed(() => {
   }
 });
 
-/** 目标语言：预设命中就直接用，否则显示"自定义"并展开输入框（用户 2026-09-15） */
+/** Target language: use a preset hit directly, otherwise show "custom" and expand the input */
 const customLang = ref(false);
 const langPick = computed(() => {
   if (customLang.value) return CUSTOM_TARGET_LANG;
@@ -64,18 +64,20 @@ function onPickLang(e: Event): void {
   <div class="set-pane">
     <h2 class="set-title">{{ t("llm.title") }}</h2>
 
-    <!-- 启用翻译（用户 2026-09-15）：首项总开关；关闭时 Rust 把 OCR 文本原文记入译文列并
-         标记完成（不请求模型、也不留 null），重新打开翻译也不会回翻这些页面 -->
+    <!-- Enable translation: the master switch; when off, Rust records the OCR text into the
+         translation column and marks it done (no model request, no null), so re-enabling never
+         re-translates those pages -->
     <label class="set-check">
       <input v-model="settings.llm.translateEnabled" type="checkbox" />
       <span>{{ t("llm.translateEnabled") }}</span>
     </label>
 
     <!--
-      供应商预设（用户 2026-09-15 整合 pi-ai 目录）：选供应商 → 自动填端点 + 列出预设模型，
-      并把「协议 / max tokens 字段 / 关思考参数形态」派生给 Rust 客户端（lib/piModels.ts）。
-      协议暂不支持（google/bedrock/mistral/azure 等）的供应商不列出；旧配置若正指向这类
-      供应商，只把它作为禁用项显示，避免下拉框空掉。
+      Provider presets (integration of the pi-ai catalog): picking a provider fills the endpoint and
+      lists its preset models, and derives "protocol / max tokens field / thinking-off param shape"
+      for the Rust client (lib/piModels.ts). Providers with an unsupported protocol (google/bedrock/
+      mistral/azure etc.) are not listed; a stale config pointing at one shows it as a disabled option
+      so the dropdown isn't empty.
     -->
     <div class="set-field">
       <span>{{ t("llm.provider") }}</span>
@@ -94,9 +96,9 @@ function onPickLang(e: Event): void {
     </div>
 
     <!--
-      协议（用户 2026-09-16）：三种线协议各有一套请求体/认证头/取字段方式
-      （见 docs/protocols.md）。预设模型的协议由 pi-ai 目录决定，这里只读展示；
-      选「自定义」才能手挑协议，Base URL 的路径也按协议自动补。
+      Protocol: the three wire protocols each have their own request body/auth headers/field
+      extraction (see docs/protocols.md). Preset models get their protocol from the pi-ai
+      catalog and show it read-only; only "custom" lets you pick one and auto-fills the Base URL path.
     -->
     <div class="set-field">
       <span>{{ t("llm.protocol") }}</span>
@@ -111,7 +113,7 @@ function onPickLang(e: Event): void {
     </div>
     <p v-if="isCustom" class="set-hint">{{ t("llm.protocolHintCustom") }}</p>
 
-    <!-- 预设端点（用户 2026-09-17：关思考/环境变量一类的说明文字不再展示） -->
+    <!-- Preset endpoint (thinking-off/env-var explanations are no longer shown) -->
     <p v-if="!isCustom && settings.presetProvider" class="set-hint llm-meta">
       <code class="llm-url">{{ settings.llm.baseUrl }}</code>
     </p>
@@ -121,8 +123,9 @@ function onPickLang(e: Event): void {
       <input v-model="settings.llm.baseUrl" :placeholder="baseUrlPlaceholder" />
     </label>
 
-    <!-- API Key + 验证（用户 2026-09-14）：验证按钮检查连通性并探测关闭思考的参数策略；
-         预设已给出关思考形态时无需靠探测（策略仍会回写，作为显式覆盖） -->
+    <!-- API Key + verify: the verify button checks connectivity and probes the thinking-off
+         parameter strategy; a preset that already declares its shape needs no probe
+         (the strategy is still written back as an explicit override) -->
     <div class="set-field-row llm-row">
       <label class="set-field">
         <span>{{ t("llm.apiKey") }}</span>
@@ -133,7 +136,7 @@ function onPickLang(e: Event): void {
       </button>
     </div>
 
-    <!-- 模型：手填输入（「获取在线列表」补全 datalist；命中 pi-ai 目录就走预设快照） -->
+    <!-- Model: free-text input ("fetch online list" fills the datalist; a catalog hit uses the preset snapshot) -->
     <div class="set-field-row llm-row">
       <label class="set-field">
         <span>{{ t("llm.model") }}</span>
@@ -178,14 +181,14 @@ function onPickLang(e: Event): void {
 </template>
 
 <style scoped>
-/* 验证/获取按钮与输入行对齐（底部对齐，与输入框同高；行内 gap 收窄到 8px） */
+/* Verify/fetch buttons align with the input row (bottom-aligned, same height as inputs; inline gap narrows to 8px) */
 .llm-row {
   gap: 8px;
   align-items: flex-end;
   margin: 9px 0;
 }
 .llm-row .set-field {
-  margin: 0; /* 行内 field 的纵向 margin 交给 .llm-row，避免行高翻倍 */
+  margin: 0; /* the inline field's vertical margin goes to .llm-row, avoiding double row height */
 }
 .llm-verify {
   flex: none;

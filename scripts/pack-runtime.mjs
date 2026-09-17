@@ -1,16 +1,16 @@
-// 生产资源打包（用户 2026-09-14）：可重定位 Python 3.12（裸解释器 + pip）+
-// pyserver 代码 + 系统提示词 → src-tauri/resources/（gitignored；
-// tauri.conf.json 的 bundle.resources 把它们映射到安装目录）。
+// Pack production resources: relocatable Python 3.12 (bare interpreter + pip),
+// pyserver code, and system prompts -> src-tauri/resources/ (gitignored; mapped
+// into the install dir by bundle.resources in tauri.conf.json).
 //
-// 用法：node scripts/pack-runtime.mjs [--force]
+// Usage: node scripts/pack-runtime.mjs [--force]
 //
-// Python 来源（按序）：
-//   1. 本地缓存 src-tauri/resources/.cache/<asset>
-//   2. EZPDF_PYTHON_PKG 指向的本地压缩包（离线/下载慢时手动放置）
-//   3. 镜像链下载：南大镜像 → ghfast → GitHub 直连（实测南大 ~1MB/s，直连 ~20KB/s）
+// Python sources, in order:
+//   1. cached archive in src-tauri/resources/.cache/<asset>
+//   2. EZPDF_PYTHON_PKG pointing at a local archive (offline / slow download)
+//   3. mirror chain: NJU -> ghfast -> GitHub direct (NJU ~1MB/s, direct ~20KB/s)
 //
-// 依赖不预装（用户拍板：裸 Python + pip）；依赖由应用内「一键安装服务」下载。
-// 安全断言：dist/ 产物不得含 auth.cfg 的 apiKey（dev 密钥绝不能随包）。
+// Deps are not preinstalled; the in-app "install service" fetches them.
+// Safety assertion: dist/ must not contain the auth.cfg apiKey (never ship the dev key).
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,13 +21,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const resDir = path.join(root, "src-tauri", "resources");
 const cacheDir = path.join(resDir, ".cache");
 
-// 与 astral-sh/python-build-standalone 的发布对齐（20260901 发布的最新 3.12）
+// Pinned to this astral-sh/python-build-standalone release
 const PY_TAG = "20260901";
 const PY_VERSION = "3.12.14";
 
-/** 目标平台 → python-build-standalone 资产三元组 + 随包解释器相对路径。
- *  打包在哪个平台执行就必须打哪个平台的解释器（Tauri 不做交叉编译），
- *  故直接取 process.platform/arch；EZPDF_PACK_PLATFORM 仅供本地演练其他平台。 */
+/** Target platform -> python-build-standalone asset triple + interpreter path in the bundle.
+ *  Tauri does not cross-compile, so the host platform is always used;
+ *  EZPDF_PACK_PLATFORM only drills other platforms locally. */
 const PLATFORM = process.env.EZPDF_PACK_PLATFORM ?? process.platform;
 const ARCH = process.env.EZPDF_PACK_ARCH ?? process.arch;
 
@@ -45,9 +45,9 @@ function targetFor() {
 }
 
 const TARGET = targetFor();
-/** 用 stripped 变体：未 strip 的 Linux 运行时里 libpython3.12.so.1.0 就 209MB、
- *  bin/python3.12 又 98MB（Windows 侧则是 .pdb）；strip 只去调试符号不影响运行，
- *  已在两个平台上用「解释器自检 + 建 venv」验证过。 */
+/** Use the stripped variant: unstripped Linux libpython is 209MB and bin/python3.12 98MB
+ *  (Windows ships .pdb); stripping only drops debug symbols, verified on both platforms
+ *  with an interpreter self-check plus venv creation. */
 const PY_VARIANT = "install_only_stripped";
 const PY_ASSET = `cpython-${PY_VERSION}+${PY_TAG}-${TARGET.triple}-${PY_VARIANT}.tar.gz`;
 const ASSET_ENC = encodeURIComponent(PY_ASSET);
@@ -70,8 +70,8 @@ function rmrf(p) {
 
 function dirSize(p) {
   let total = 0;
-  // 硬链接去重：随包 Python 用硬链接复用同一份二进制（bin/python3.12、libpython*.so 等），
-  // tar/deb 只存一份，报体积也应按一份算（否则 Linux 侧会虚报 ~2 倍）
+  // Dedupe hard links: the bundled Python reuses one binary (bin/python3.12, libpython*.so),
+  // tar/deb store it once, so the reported size must count it once (else Linux doubles it)
   const seen = new Set();
   for (const entry of fs.readdirSync(p, { withFileTypes: true, recursive: true })) {
     // fs.readdirSync recursive gives relative paths in entry.parentPath
@@ -84,7 +84,7 @@ function dirSize(p) {
       seen.add(key);
       total += st.size;
     } catch {
-      /* 忽略竞态删除 */
+      /* ignore race deletions */
     }
   }
   return total;
@@ -94,7 +94,7 @@ function fmtSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
 }
 
-// ---- pyserver 代码 / 系统提示词 -----------------------------------------------------------
+// ---- pyserver code / system prompts -------------------------------------------------------
 
 const PY_EXCLUDES = new Set([".venv", "models", "__pycache__", ".pytest_cache", "cache"]);
 
@@ -107,7 +107,7 @@ function packDir(src, dst) {
   log(`复制 ${path.relative(root, src)} → ${path.relative(root, dst)}（${fmtSize(dirSize(dst))}）`);
 }
 
-// ---- Python 运行时 -------------------------------------------------------------------------
+// ---- Python runtime ------------------------------------------------------------------------
 
 async function download(url, file) {
   const resp = await fetch(url, { redirect: "follow" });
@@ -159,8 +159,8 @@ async function fetchArchive() {
   throw new Error("所有下载源均失败；可手动下载后设 EZPDF_PYTHON_PKG 指向压缩包");
 }
 
-/** Windows 自带 bsdtar（System32/tar.exe）；PATH 上的可能是 MSYS GNU tar，
- *  它会把 `D:\...` 当远程主机（"Cannot connect to D:"），必须显式用系统 tar */
+/** Windows ships bsdtar (System32/tar.exe); a PATH tar may be MSYS GNU tar,
+ *  which treats `D:\...` as a remote host ("Cannot connect to D:"), so use the system tar */
 const TAR =
   process.platform === "win32" && fs.existsSync("C:\\Windows\\System32\\tar.exe")
     ? "C:\\Windows\\System32\\tar.exe"
@@ -185,9 +185,9 @@ function extractPython(archive) {
   log(`Python 运行时就位：${path.relative(root, target)}（${fmtSize(dirSize(target))}）`);
 }
 
-/** 裁剪用不到的大件（tkinter/tcl/测试套件/头文件/share + Windows 调试符号）。
- *  Linux 布局由 tar 清单核对过：lib/tcl9.0/*、lib/tk9.0/*、lib/libtcl9.0.so、
- *  lib/pythonX.Y/config-<triplet>/、share/、include/；Windows 是 tcl/ + DLLs/*.pdb。 */
+/** Trim unused bulk (tkinter/tcl/test suite/headers/share + Windows debug symbols).
+ *  Linux layout checked against the tar manifest: lib/tcl9.0, lib/tk9.0, lib/libtcl9.0.so,
+ *  lib/pythonX.Y/config-<triplet>, share/, include/; Windows has tcl/ + DLLs/*.pdb. */
 function trimPython(dir) {
   const [major, minor] = PY_VERSION.split(".");
   const version = `${major}.${minor}`;
@@ -211,15 +211,15 @@ function trimPython(dir) {
       if (re.test(name)) rmrf(path.join(target, name));
     }
   };
-  scan("", /\.pdb$/i); // 顶层 python.pdb / python3.pdb / pythonw.pdb
-  scan("DLLs", /\.pdb$/i); // 扩展模块的调试符号（~30MB）
+  scan("", /\.pdb$/i); // top-level python.pdb / python3.pdb / pythonw.pdb
+  scan("DLLs", /\.pdb$/i); // extension module debug symbols (~30MB)
   scan("DLLs", /^(_tkinter|tcl|tk)\d*t?\.(pyd|dll)$/i);
-  scan("lib", /^(libtcl|libtk|tcl\d|tk\d|itcl|thread\d|tdbc)/i); // Linux tcl/tk 运行库与扩展
-  scan(path.join("lib", `python${version}`), /^config-/i); // 编译期头文件目录
+  scan("lib", /^(libtcl|libtk|tcl\d|tk\d|itcl|thread\d|tdbc)/i); // Linux tcl/tk runtime libs and extensions
+  scan(path.join("lib", `python${version}`), /^config-/i); // build-time header directory
   scan(path.join("Lib", "venv", "scripts", "nt"), /\.pdb$/i);
 }
 
-// ---- 安全断言：dist 不得携带 dev 密钥 -------------------------------------------------------
+// ---- safety assertion: dist must not carry the dev key -------------------------------------
 
 function assertNoAuthKey() {
   const authCfg = path.join(root, "auth.cfg");
@@ -237,7 +237,7 @@ function assertNoAuthKey() {
   log("安全断言通过：dist 未包含 auth.cfg 的 apiKey");
 }
 
-// ---- main ---------------------------------------------------------------------------------
+// ---- main -----------------------------------------------------------------------------------
 
 async function main() {
   fs.mkdirSync(resDir, { recursive: true });

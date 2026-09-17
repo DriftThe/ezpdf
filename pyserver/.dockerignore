@@ -1,4 +1,4 @@
-# 构建上下文只保留运行所需：app/ + 模型 + 依赖清单
+# Build context keeps only what runtime needs: app/ + models + dependency pins
 .venv/
 **/__pycache__/
 **/*.pyc

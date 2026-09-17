@@ -1,21 +1,21 @@
-# ezpdf 解析服务镜像（CPU / GPU 两种，靠 VARIANT 构建参数切换）
+# ezpdf parse service image (CPU / GPU, switched by the VARIANT build arg)
 #
 #   docker build -t ezpdf-pyserver:cpu --build-arg VARIANT=cpu pyserver
 #   docker build -t ezpdf-pyserver:gpu --build-arg VARIANT=gpu pyserver
 #
-# 模型（models/，~1.9GB）直接 COPY 进镜像 → 自包含快照，容器起来即可推理，不依赖联网。
-# torch 的 CUDA 依赖由 pip 的 nvidia-* 轮子自带（宿主只需装好驱动 + nvidia-container-toolkit），
-# 因此 GPU 变体也基于 python:3.12-slim，不需要 nvidia/cuda 基础镜像。
-# 基础镜像可换（Docker Hub 在部分地区不可达）：
+# Models (models/, ~1.9GB) are COPYed straight in → a self-contained snapshot, inference-ready offline.
+# CUDA deps come from pip's nvidia-* wheels (host only needs the driver + nvidia-container-toolkit),
+# so the GPU variant is also based on python:3.12-slim, no nvidia/cuda base image.
+# The base image is swappable (Docker Hub is unreachable in some regions):
 #   --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
 ARG BASE_IMAGE=python:3.12-slim
 FROM ${BASE_IMAGE}
 
 ARG VARIANT=cpu
-# 国内构建可用镜像源（与客户端「使用镜像源」同源）：
+# Mirrors for slow/blocked builds (the same ones the client's "use mirror" switch uses):
 #   --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
 #   --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
-#   --build-arg TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # GPU 变体用 .../cu132
+#   --build-arg TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # GPU variant: .../cu132
 ARG APT_MIRROR=""
 ARG PIP_INDEX=""
 ARG TORCH_INDEX=""
@@ -28,14 +28,14 @@ ENV PYTHONUNBUFFERED=1 \
     EZPDF_TOKEN_FILE=/data/token.txt \
     EZPDF_MAX_BATCH_PAGES=32
 
-# opencv-contrib-python 需要 libgl/libglib（slim 镜像不自带）——与本地 .venv 保持一致，
-# 不做 headless 替换（镜像按"忠实打包已验证环境"来，不为体积删依赖）
-# build-essential：CUDA 路径下管线会在运行时用 triton 即时编译内核（实测 GPU 推理报
-#   "Failed to find C compiler"），triton 的 JIT 需要 gcc/g++ 与 libc6 头文件；
-#   裸机 Linux 上通常已装，容器里必须显式带上
-# 可选换 apt 源（deb.debian.org 在部分地区会 502）
-# apt 缓存挂 BuildKit cache mount（列表/包都在缓存里，不进镜像层）：
-# 改了这层重跑也只从缓存解包，不会再下一遍 deb
+# opencv-contrib-python needs libgl/libglib (slim images lack them); kept in sync with the local .venv —
+# no headless swap, since the image is a faithful package of a verified env and packages are not trimmed for size
+# build-essential: on the CUDA path the pipeline JIT-compiles a triton kernel at runtime
+#   ("Failed to find C compiler" on GPU); triton's JIT needs gcc/g++ and libc6 headers, usually present
+#   on bare-metal Linux but required explicitly in a container
+# Optional apt mirror (deb.debian.org returns 502 in some regions)
+# apt cache uses a BuildKit cache mount (lists/packages stay in the cache, out of the image layer):
+# re-running this layer unpacks from cache instead of downloading debs again
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     set -eux; \
@@ -50,15 +50,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 WORKDIR /app
 
 COPY requirements.txt requirements-torch-cpu.txt requirements-torch-cuda.txt ./
-# pip 缓存同样挂 cache mount：改这层重跑时 torch 那几个大轮子直接从缓存装，
-# 不再重新下载（--no-cache-dir 会把这个缓存废掉，所以这里不传）
+# pip cache also uses a cache mount: re-running this layer installs the big torch wheels from
+# cache instead of re-downloading (--no-cache-dir would defeat it, so it is deliberately omitted)
 RUN --mount=type=cache,target=/root/.cache/pip \
     set -eux; \
     extra=""; [ -n "$PIP_INDEX" ] && extra="--extra-index-url $PIP_INDEX"; \
     pip install -r requirements.txt $extra; \
     if [ "$VARIANT" = "gpu" ]; then torch_index="https://download.pytorch.org/whl/cu132"; \
     else torch_index="https://download.pytorch.org/whl/cpu"; fi; \
-    # Linux 的 PyPI torch 轮子默认捆绑 CUDA（~5GB），CPU 变体必须走 /cpu 索引
+    # PyPI's Linux torch wheel bundles CUDA by default (~5GB), so the CPU variant must use the /cpu index
     [ -n "$TORCH_INDEX" ] && torch_index="$TORCH_INDEX"; \
     if [ "$VARIANT" = "gpu" ]; then \
         pip install -r requirements-torch-cuda.txt --index-url "$torch_index" $extra; \
@@ -70,12 +70,12 @@ COPY app ./app
 COPY bootstrap.py ./
 COPY models ./models
 
-# token.txt 落在 /data（compose 挂卷）——重建容器不换令牌，客户端不用重新粘贴
+# token.txt lives in /data (a compose volume) — container rebuilds keep the token, no client re-paste
 RUN mkdir -p /data
 
 EXPOSE 9055
 
-# 健康检查要带 token：从令牌文件读（/health 也在校验范围内）
+# Health check must send the token, read from the token file (/health is also auth-guarded)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD curl -fsS -H "x-ezpdf-token: $(cat $EZPDF_TOKEN_FILE)" "http://127.0.0.1:${EZPDF_PORT}/health" || exit 1
 

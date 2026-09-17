@@ -1,12 +1,12 @@
-# pyserver 基础依赖（torch 除外——按 GPU 探测装 cuda/cpu 变体，见 requirements-torch-*.txt）
-# 版本对齐 Wise-Paddle 已验证冻结集（Python 3.12 known-good）
+# pyserver base deps (no torch; GPU detection picks the cuda/cpu variant, see requirements-torch-*.txt)
+# Versions match the frozen Wise-Paddle known-good set (Python 3.12)
 fastapi==0.139.2
 uvicorn==0.51.0
 transformers==5.14.1
 pillow==12.3.0
 numpy==2.3.5
 safetensors==0.8.0
-tiktoken==0.13.0  # PaddleOCR-VL-1.6 分词器加载必需
-sentencepiece==0.2.2  # tokenizer.model 是 SentencePiece protobuf 格式
-protobuf==7.35.1  # SentencePieceExtractor 必需，缺它会被误判为 tiktoken 文件解析失败
-opencv-contrib-python==4.10.0.84  # PP-DocLayoutV3 post_process_object_detection 必需
+tiktoken==0.13.0  # required to load the PaddleOCR-VL-1.6 tokenizer
+sentencepiece==0.2.2  # tokenizer.model is SentencePiece protobuf
+protobuf==7.35.1  # required by SentencePieceExtractor; without it the file is misread as tiktoken
+opencv-contrib-python==4.10.0.84  # required by PP-DocLayoutV3 post_process_object_detection

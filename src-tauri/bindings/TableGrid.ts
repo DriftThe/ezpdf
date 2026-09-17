@@ -2,6 +2,6 @@
 import type { TableRow } from "./TableRow";
 
 /**
- * 表格网格：`cols` 是列位数（各行真实单元格的 colspan 之和 = cols）
+ * Table grid: `cols` is the slot count (a row's cell colspans sum to cols).
  */
 export type TableGrid = { cols: number, rows: Array<TableRow>, };

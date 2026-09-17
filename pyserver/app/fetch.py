@@ -1,26 +1,26 @@
-"""模型下载器（python -m app.fetch）：huggingface_hub 快照下载，默认走 hf-mirror 镜像（国内免梯）。
+"""Model downloader (python -m app.fetch): huggingface_hub snapshot download, defaulting to the hf-mirror mirror.
 
-Rust 的 ocr_download_models 调用；stdout/stderr 逐行 → ocr://log，退出码 0 = 成功。
+Called by Rust's ocr_download_models; stdout/stderr lines → ocr://log; exit code 0 = success.
 
-- 目标目录：EZPDF_MODELS_DIR（config.py，默认 <pyserver>/models）
-- 完整性判定与探测（bootstrap.py）同源：见 app/model_contract.py
-- 已完整的仓库直接跳过；未完整的由 huggingface_hub 断点续传
-- HF_ENDPOINT / HF_HUB_DISABLE_PROGRESS_BARS 可用环境变量覆盖
+- Target dir: EZPDF_MODELS_DIR (config.py, default <pyserver>/models)
+- Completeness rule is shared with the probe (bootstrap.py): see app/model_contract.py
+- Complete repos are skipped; incomplete ones resume through huggingface_hub
+- HF_ENDPOINT / HF_HUB_DISABLE_PROGRESS_BARS can be overridden from the environment
 """
 
 from __future__ import annotations
 
 import os
 
-# 必须在 import huggingface_hub 之前设置（镜像端点在导入期读取）
+# Must be set before importing huggingface_hub (the endpoint is read at import time)
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-# tqdm 进度条以 \r 刷新，经 IPC 管道逐行转发不可见，反而会把整段帧挤成一条脏日志
+# tqdm bars refresh with \r; forwarded line-by-line over IPC they just smear into one dirty log line
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 from app.config import LAYOUT_MODEL_DIR_NAME, MODELS_DIR, VL_MODEL_DIR_NAME  # noqa: E402
 from app.model_contract import model_dir_ok  # noqa: E402
 
-# 目录名 → hub 仓库；PP-DocLayoutV3 的 safetensors 权重在 _safetensors 子仓（主仓是 paddle 格式）
+# dir name → hub repo; PP-DocLayoutV3's safetensors weights live in the _safetensors sub-repo (main repo is paddle format)
 REPOS: dict[str, str] = {
     LAYOUT_MODEL_DIR_NAME: "PaddlePaddle/PP-DocLayoutV3_safetensors",
     VL_MODEL_DIR_NAME: "PaddlePaddle/PaddleOCR-VL-1.6",

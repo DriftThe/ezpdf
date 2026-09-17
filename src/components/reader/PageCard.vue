@@ -13,15 +13,14 @@ import PdfPageCanvas from "./PdfPageCanvas.vue";
 import TableCover from "./TableCover.vue";
 
 /**
- * 单页卡：pdfjs canvas（PdfPageCanvas 自虚拟化）+ 块覆盖层。
- * 卡片几何 = 每页真实 widthPt/heightPt × zoom（逐页实测，reader.pageSizeFor；
- * 旧版曾按第 1 页尺寸统一假设——页尺寸不一的扫描版 PDF 会整体错位，已改）。
- * 覆盖层体系（不改原 PDF 排版，全部绝对定位）：
- * - 原文栏：全部块虚线框标注（悬浮预览开关控制）；
- * - 译文栏：仅覆盖渲染类型（lib/blocks.ts isOverlayType = 用户勾选的送翻类型 + formula）白底覆盖框，
- *   框内文字 =
- *   translation ?? content（bypass 期 translation 全 null → 显示原文 content），
- *   字号经 v-fit 自适应：二分找"塞得下"的最大字号，填满且不溢出。
+ * Single page card: pdfjs canvas (self-virtualized in PdfPageCanvas) + block overlay.
+ * Card geometry = this page's real widthPt/heightPt × zoom (measured per page via
+ * reader.pageSizeFor; a page-1 size assumption misaligns scan PDFs with mixed sizes).
+ * Overlay system (absolute positioning, never reflows the original PDF):
+ * - Original pane: dashed boxes for all blocks (controlled by the hover-preview toggle);
+ * - Translation pane: a white cover box only for render types (lib/blocks.ts isOverlayType
+ *   = user-checked types + formula), text = translation ?? content (during bypass
+ *   translation is all null → shows the original content), font size auto-fitted by v-fit.
  */
 const props = defineProps<{
   doc: PDFDocumentProxy | null;
@@ -46,7 +45,7 @@ interface Rect {
   height: number;
 }
 
-/** loc = [x1, y1, x2, y2] 左上→右下角点 → 页面百分比矩形 */
+/** loc = [x1, y1, x2, y2] top-left → bottom-right corner → page-percentage rect */
 const rects = computed<Rect[]>(() =>
   props.blocks.map((b) => ({
     block: b,
@@ -57,7 +56,7 @@ const rects = computed<Rect[]>(() =>
   })),
 );
 
-/** 原文栏：块类型 → 虚线框颜色（image 绿、formula 紫、table 橙、标题加底边） */
+/** Original pane: block type → dashed box colour (image green, formula purple, table orange, title gets a bottom edge) */
 const TYPE_CLASS: Record<string, string> = {
   image: "lbl-figure",
   formula: "lbl-formula",
@@ -70,26 +69,26 @@ function typeClass(type: string): string {
   return TYPE_CLASS[type] ?? "lbl-text";
 }
 
-/** 百分比矩形 → 覆盖层绝对定位样式（原文虚线框 / 译文白框共用） */
+/** Percentage rect → absolute-position style (shared by original dashed box / translation white box) */
 function rectStyle(r: Rect): Record<string, string> {
   return { left: r.left + "%", top: r.top + "%", width: r.width + "%", height: r.height + "%" };
 }
 
 interface CoverRect extends Rect {
-  /** 内容 HTML：正文转义 + 公式 KaTeX（lib/richText.ts） */
+  /** Content HTML: body escaped + formulas via KaTeX (lib/richText.ts) */
   html: string;
 }
 
-/** 译文栏覆盖块：仅覆盖渲染类型且文本非空；内容渲染成富文本（figure 空串等不渲染白框） */
+/** Translation covers: render types with non-empty text only; content becomes rich text (empty figure etc. draws no white box) */
 const settings = useSettingsStore();
-/** 用户勾选的送翻类型（设置→常规）；未勾选的类型不覆盖，原 PDF 像素直出 */
+/** User-checked translate types (Settings → General); unchecked types are not covered, original PDF pixels show through */
 const overlayTypes = computed(() => new Set(settings.general.translateTypes));
 
 const coverRects = computed<CoverRect[]>(() =>
   rects.value
     .filter(
       (r) =>
-        r.block.type !== "table" && // 表格走 TableCover（网格渲染），不是单文本框
+        r.block.type !== "table" && // tables go through TableCover (grid render), not a text box
         isOverlayType(r.block.type, overlayTypes.value) &&
         (r.block.translation ?? r.block.content).trim(),
     )
@@ -97,8 +96,9 @@ const coverRects = computed<CoverRect[]>(() =>
 );
 
 /**
- * 译文栏的表格覆盖框（用户 2026-09-16）：勾选 table 且 Rust 已解析出网格才画。
- * 未勾选 / 尚未处理（无 grid / 标记解析失败）→ 不画，原 PDF 像素直出。
+ * Table covers in the translation pane: drawn only when table is checked and Rust has
+ * parsed a grid. Unchecked / not yet processed (no grid / parse failed) → not drawn,
+ * original PDF pixels show through.
  */
 const tableRects = computed<Rect[]>(() =>
   rects.value.filter(
@@ -106,9 +106,10 @@ const tableRects = computed<Rect[]>(() =>
   ),
 );
 
-// ---- 原文悬浮预览（用户 2026-09-14）：已翻译块悬浮显示译文卡片（不用 title，浮层渲染） ----
-// 位置跟随鼠标（mousemove 经 rAF 节流，只改定位不重渲内容）；视口下半区向上弹
-// （above → translateY(-100%)），水平限位防溢出。
+// ---- Original-pane hover preview: hovering a translated block shows a translation card
+// (a floating layer, deliberately not a title attribute). Position follows the cursor
+// (mousemove throttled via rAF, positioning only, no content re-render); in the lower
+// viewport half it flips upward (above → translateY(-100%)), clamped horizontally.
 
 interface HoverInfo {
   html: string;
@@ -119,7 +120,7 @@ interface HoverInfo {
 
 const hoverInfo = ref<HoverInfo | null>(null);
 
-/** 鼠标位置 → 卡片定位（右缘留 12px 限位；下 45% 视口向上弹） */
+/** Mouse position → card placement (12px right margin; flips up in the lower 45% of the viewport) */
 function previewPos(e: MouseEvent): { x: number; y: number; above: boolean } {
   const cardMax = Math.min(460, window.innerWidth - 24);
   const x = Math.max(8, Math.min(e.clientX + 16, window.innerWidth - cardMax - 12));
@@ -130,8 +131,8 @@ function previewPos(e: MouseEvent): { x: number; y: number; above: boolean } {
 
 function onBlockEnter(r: Rect, e: MouseEvent): void {
   const translated = r.block.translation?.trim();
-  if (!translated) return; // 未翻译（含不送翻类型）：不弹卡
-  // 表格：translation 是二维矩阵 JSON，转成可读的多行文本再渲染（不要弹原始 JSON）
+  if (!translated) return; // untranslated (including non-translate types): don't pop
+  // Table: translation is a 2-D matrix JSON; convert to readable multi-line text (don't show raw JSON)
   const grid = r.block.grid;
   const html =
     r.block.type === "table" && grid
@@ -143,7 +144,7 @@ function onBlockEnter(r: Rect, e: MouseEvent): void {
 let moveRaf = 0;
 let pendingMove: MouseEvent | null = null;
 
-/** 跟随鼠标：一帧最多更新一次定位（html 不变，Vue 只 patch style） */
+/** Follow the cursor: update position at most once per frame (html unchanged, Vue only patches style) */
 function onBlockMove(e: MouseEvent): void {
   if (!hoverInfo.value) return;
   pendingMove = e;
@@ -171,7 +172,7 @@ onBeforeUnmount(() => {
   if (moveRaf) cancelAnimationFrame(moveRaf);
 });
 
-// 悬浮预览开关关闭时，指示框一并消失 → 浮层立即收起
+// Close the preview when the toggle turns off: the indicator boxes disappear with it
 watch(
   () => reader.hoverPreview,
   (on) => {
@@ -179,11 +180,12 @@ watch(
   },
 );
 
-// ---- v-fit：白底框字号自适应（框尺寸 × 文字量 → 填满、不溢出） ----
-// 性能约束（2026-09-11 实测）：大书（200 页 × 十余块）缩放时全部覆盖框同时变尺寸，
-// 若逐框立即二分量算（强制同步布局），单次 zoom 阻塞主线程 ~3s。故只对视口附近的框
-// 量算：离屏框仅标脏（WeakSet，零布局），进入视口（IntersectionObserver，上下扩一屏）
-// 时才真正适配；updated / ResizeObserver 对离屏框同样退化为标脏。
+// ---- v-fit: cover-box font-size auto-fit (box size × text amount → fills without overflowing) ----
+// Performance constraint (measured): resizing all cover boxes at once on zoom and running the
+// binary search synchronously would block the main thread for seconds on large books. So measure
+// only boxes near the viewport: off-screen boxes are merely marked dirty (WeakSet, zero layout)
+// and fitted when they enter the viewport (IntersectionObserver, one screen of margin); updated /
+// ResizeObserver also just mark off-screen boxes dirty.
 
 const roMap = new WeakMap<HTMLElement, ResizeObserver>();
 const visibleBoxes = new Set<HTMLElement>();
@@ -191,9 +193,10 @@ const dirtyBoxes = new WeakSet<HTMLElement>();
 const pendingFits = new Set<HTMLElement>();
 let flushRaf = 0;
 
-// KaTeX 字体异步加载完成 = 字宽/行高变化：对当前可见框重适配一次（数量小，代价可忽略）。
-// 监听是全局的，而这段代码按"每个页卡实例"执行一次——卸载时必须摘掉，
-// 否则每页留一条永不回收的监听（闭包还攥着各自的 visibleBoxes）。
+// KaTeX font load completes = glyph widths/line heights changed: re-fit the currently
+// visible boxes (small count, negligible cost). The listener is global while this code
+// runs once per page-card instance — it must be removed on unmount, otherwise every page
+// leaves a never-collected listener (its closure pins each instance's visibleBoxes).
 const onFontsLoaded = (): void => {
   for (const box of visibleBoxes) fitCoverText(box);
 };
@@ -216,12 +219,12 @@ function fitCoverText(box: HTMLElement): void {
       return span.scrollHeight <= inner;
     },
     MIN,
-    inner, // 单行封顶 = 框内容高（再大必然纵向溢出）
+    inner, // single-line cap = box content height (larger would overflow vertically)
   );
-  span.style.fontSize = `${size}px`; // 最小号仍溢出时保持最小号，overflow:hidden 兜底截断
+  span.style.fontSize = `${size}px`; // when even MIN overflows, stay at MIN and let overflow:hidden truncate
 }
 
-/** 请求适配：离屏框只标脏等 IO；视口内框入批，帧末统一量算（updated/RO 同帧去重） */
+/** Request a fit: off-screen boxes just get marked dirty for the IO; visible boxes join the batch and are measured at frame end (updated/RO deduped within a frame) */
 function requestFit(box: HTMLElement): void {
   if (!visibleBoxes.has(box)) {
     dirtyBoxes.add(box);
@@ -250,23 +253,23 @@ const fitIO = new IntersectionObserver(
       visibleBoxes.add(box);
       if (dirtyBoxes.has(box)) {
         dirtyBoxes.delete(box);
-        fitCoverText(box); // 初始/滚入上报：绘制前完成适配，避免默认字号闪现
+        fitCoverText(box); // initial/entry report: fit before paint, avoiding a flash of the default size
       }
     }
   },
-  { rootMargin: "50% 0px" }, // 进入前约半屏即适配（画布虚拟化仍是上下各一屏）
+  { rootMargin: "50% 0px" }, // fit about half a screen before entry (canvas virtualization stays a full screen)
 );
 
 const vFit: Directive<HTMLElement> = {
   mounted(box) {
-    dirtyBoxes.add(box); // 不立即量算：等 IO 初报，离屏框不付布局代价
+    dirtyBoxes.add(box); // don't measure now: wait for the first IO report, off-screen boxes pay no layout cost
     fitIO.observe(box);
-    const ro = new ResizeObserver(() => requestFit(box)); // zoom/窗口变化 → 重适配
+    const ro = new ResizeObserver(() => requestFit(box)); // zoom/window change → re-fit
     ro.observe(box);
     roMap.set(box, ro);
   },
   updated(box) {
-    requestFit(box); // 文本/几何更新后重新适配
+    requestFit(box); // re-fit after text/geometry updates
   },
   unmounted(box) {
     fitIO.unobserve(box);
@@ -282,11 +285,11 @@ const vFit: Directive<HTMLElement> = {
 <template>
   <div class="page-wrap" :data-page-index="pageNumber - 1">
     <div class="page-card" :style="{ width: width + 'px', height: height + 'px' }">
-      <!-- pdfjs canvas：原/译两栏同一渲染，差异全在覆盖层 -->
+      <!-- pdfjs canvas: same render in both panes, all differences live in the overlays -->
       <PdfPageCanvas :doc="doc" :page-number="pageNumber" :zoom="zoom" />
 
-      <!-- 原文：OCR 块虚线标注（悬浮预览关闭时一并隐藏，悬浮目标随之消失）；
-           已翻译块悬浮弹译文卡片（自绘浮层，非 title） -->
+      <!-- Original: dashed OCR block boxes (also hides the hover targets when the preview is off);
+           hovering a translated block pops the translation card (a floating layer, not a title) -->
       <template v-if="kind === 'original' && reader.hoverPreview">
         <div
           v-for="(r, ri) in rects"
@@ -300,8 +303,8 @@ const vFit: Directive<HTMLElement> = {
         />
       </template>
 
-      <!-- 译文：仅覆盖渲染类型白底覆盖（未覆盖类型原 PDF 像素直出）；
-           框内 translation ?? content：bypass 期全 null → 显示原文 content -->
+      <!-- Translation: white covers for render types only (uncovered types show original PDF pixels);
+           box text = translation ?? content: during bypass all null → original content -->
       <template v-if="kind === 'translation'">
         <div
           v-for="(r, ri) in coverRects"
@@ -314,7 +317,7 @@ const vFit: Directive<HTMLElement> = {
         >
           <span class="cover-text" v-html="r.html"></span>
         </div>
-        <!-- 表格：网页表格重画（塞不下时组件自己透明化，原 PDF 像素直出） -->
+        <!-- Table: redrawn as a web table (the component goes transparent when it doesn't fit, original PDF pixels show through) -->
         <TableCover
           v-for="(r, ri) in tableRects"
           :key="`t${ri}`"
@@ -327,7 +330,7 @@ const vFit: Directive<HTMLElement> = {
     <div class="page-num">{{ pageNumber }}</div>
   </div>
 
-  <!-- 原文悬浮译文卡片：Teleport 到 body（脱离滚动容器裁剪），fixed 跟随光标 -->
+  <!-- Original-pane hover translation card: teleported to body (escapes the scroll container clip), fixed to follow the cursor -->
   <Teleport to="body">
     <div
       v-if="hoverInfo"
@@ -359,7 +362,7 @@ const vFit: Directive<HTMLElement> = {
   user-select: none;
 }
 
-/* ---- 原文：虚线块（页面恒白底，用主题无关的标注色） ---- */
+/* ---- Original: dashed boxes (page is always white, so annotation colours are theme-independent) ---- */
 .blk-line {
   position: absolute;
   border: 1px dashed var(--page-annot);
@@ -385,7 +388,7 @@ const vFit: Directive<HTMLElement> = {
   border-bottom-style: solid;
 }
 
-/* ---- 原文悬浮译文卡片（Teleport 到 body）：白卡片跟随光标，不拦截鼠标 ---- */
+/* ---- Original-pane hover translation card (teleported to body): white card follows the cursor, doesn't capture the mouse ---- */
 .hover-preview {
   position: fixed;
   z-index: 100;
@@ -399,22 +402,22 @@ const vFit: Directive<HTMLElement> = {
   font-size: 13px;
   line-height: 1.55;
   overflow-wrap: anywhere;
-  pointer-events: none; /* 纯展示：不抢原文块的鼠标事件 */
+  pointer-events: none; /* display only: don't steal mouse events from the original blocks */
 }
 .hover-preview.above {
-  transform: translateY(-100%); /* 视口下半区向上弹，避免被裁 */
+  transform: translateY(-100%); /* flip up in the lower viewport half to avoid clipping */
 }
 .hover-preview :deep(.katex-display) {
   margin: 0.1em 0;
 }
 
-/* ---- 译文：白底覆盖（不送翻类型零覆盖） ---- */
-/* 底样式见 main.css 的 .cover-box（与 TableCover 共用） */
+/* ---- Translation: white covers (unchecked types get no cover) ---- */
+/* Base styles in main.css .cover-box (shared with TableCover) */
 .blk-cover {
   padding: 0;
 }
-/* 公式：KaTeX 垂直居中（用户 2026-09-14）；KaTeX display 公式自带 1em 上下
-   margin，在 ~16pt 高的公式框里会把内容顶到贴顶、还逼 v-fit 选极小字号——收窄 */
+/* Formula: KaTeX vertically centered; KaTeX display formulas carry 1em top/bottom margins,
+   which in a ~16pt-high box push content to the top and force v-fit to pick a tiny size — trim them */
 .cover-formula {
   display: flex;
   align-items: center;
@@ -427,7 +430,7 @@ const vFit: Directive<HTMLElement> = {
   width: 100%;
   line-height: 1.25;
   color: #222;
-  /* 字号由 v-fit 指令按框尺寸×文字量动态设定 */
-  overflow-wrap: anywhere; /* 长词/URL 也能折行，宽度不溢出 */
+  /* font size is set dynamically by the v-fit directive from box size × text amount */
+  overflow-wrap: anywhere; /* long words/URLs also wrap, width never overflows */
 }
 </style>

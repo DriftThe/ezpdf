@@ -1,4 +1,3 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -23,9 +22,9 @@ pub struct RepoTree {
     pub pdfs: Vec<PDFStruct>,
 }
 
-/// 索引条目（.ezrepo 平铺索引的一行）：
-/// id = 稳定唯一标识符（导入时生成，挪动/改名不变）；name = PDF 名；
-/// bind = 结构 JSON 的仓库相对路径（None = 未解析）；belong = 所属顶层目录名（None = 根级）。
+/// Index entry (one line of the flat .ezrepo index):
+/// id = stable identifier minted at import (survives moves/renames); name = PDF name;
+/// bind = repo-relative bound-JSON path (None = unparsed); belong = logical folder label (None = root).
 #[derive(Clone, Serialize, TS, Deserialize)]
 #[ts(export)]
 pub struct PDFStruct {
@@ -35,10 +34,10 @@ pub struct PDFStruct {
     pub belong: Option<String>,
 }
 
-// ---- ezpdf PDF 实体域模型（绑定 JSON <name>-<id>.json 与 load_pdf 载荷同构；ts-rs 导出到 bindings/，前端 domain.ts re-export）----
+// ---- Domain model. The bound JSON <name>-<id>.json and the load_pdf payload are isomorphic; ts-rs exports to bindings/, re-exported by the frontend's domain.ts ----
 
-/// 解析状态机（书级）：Pending 未开始处理 / Processing 处理中 / Finished 完成。
-/// OCR 管线接入后维护后两态，当前导入即 Pending。
+/// Book-level parse state: Pending / Processing / Finished.
+/// Import creates Pending; the OCR pipeline drives the other two.
 #[derive(Clone, Copy, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "PascalCase")]
@@ -48,31 +47,29 @@ pub enum PDFStatus {
     Finished,
 }
 
-/// 版面块：OCR 检出的一个区域及其原文/译文。
-/// kind 为 PP-DocLayoutV3 标签（text/title/list/figure/figure_caption/table/formula/header/footer），
-/// 保留 string 通道以兼容后续新增标签，故不用 enum。
+/// Layout block: one OCR-detected region and its source/translated text.
+/// kind is a PP-DocLayoutV3 label; kept as a string (not an enum) so new labels pass through.
 #[derive(Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct Block {
     #[serde(rename = "type")]
     pub kind: String,
-    /// 原文内容：正文纯文本 / 公式 $$..$$ / 表格 markdown；figure 块为空串
+    /// Source content: plain text, $$..$$ formulas, or table markdown; empty for figures.
     pub content: String,
-    /// [x1, y1, x2, y2] 左上→右下角点，单位 PDF 点
+    /// [x1, y1, x2, y2] top-left → bottom-right, in PDF points.
     pub loc: [f64; 4],
-    /// 译文；figure/formula 块为 None（formula 原样渲染），未译为 None。
-    /// 表块（type == "table"）存的是译文矩阵的 JSON 文本（二维 string|null 数组，
-    /// 见 table.rs），与常规块"译文即字符串"的区别只在渲染侧解释。
+    /// Translation; None for figures/formulas (formulas render as-is) or when untranslated.
+    /// Table blocks hold the translated matrix as JSON text (2-D string|null, see table.rs).
     pub translation: Option<String>,
-    /// 表格网格（仅 type == "table"）：Rust 首次处理该块时解析 content 并落盘，
-    /// 前端只渲染、不再解析标记。解析失败（或老 JSON 未处理过）为 None → 不覆盖
+    /// Table grid (only for type == "table"): Rust parses content and persists it; the frontend
+    /// only renders. None when unparsable or not yet backfilled → no cover.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid: Option<table::TableGrid>,
 }
 
-/// 页：index 从 1 起（与绑定 JSON 一致）；finished 标记该页是否完成 OCR，
-/// translated 标记该页是否完成 LLM 翻译（旧 JSON 无此字段默认 false → 自动补翻）
+/// Page: 1-based index; finished = OCR done, translated = LLM pass done.
+/// Older JSONs lack translated, defaulting to false → re-translated automatically.
 #[derive(Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -84,7 +81,7 @@ pub struct PageInfo {
     pub blocks: Vec<Block>,
 }
 
-/// 绑定 JSON（<name>-<id>.json）的磁盘格式；load_pdf 凭它回填 status/pages
+/// On-disk bound-JSON format; load_pdf reads it back into status/pages.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BindDoc {
@@ -92,10 +89,9 @@ pub struct BindDoc {
     pub pages: Vec<PageInfo>,
 }
 
-/// 一份 PDF 的完整实体（身份字段 + 绑定 JSON 内容）。
-/// id = 稳定唯一标识符（与 .ezrepo 条目一致，前端一切键都以它为准）；
-/// bind = 绑定 JSON 的仓库相对路径，None = 未绑定（旧条目）；
-/// status/pages = 绑定 JSON 的内容（bind None 时为 Pending/空）。
+/// Full PDF entity: identity fields + bound-JSON content.
+/// bind = repo-relative bound-JSON path, None = unbound (legacy entry);
+/// status/pages come from the bound JSON (Pending/empty when bind is None).
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -108,7 +104,7 @@ pub struct PDF {
     pub pages: Vec<PageInfo>,
 }
 
-/// 多文件导入结果：best-effort——成功条目与逐文件失败原因一并返回
+/// Multi-file import result: best-effort — successes plus per-file failure reasons.
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -123,10 +119,9 @@ pub struct ImportFailure {
 pub struct ImportOutcome {
     pub imported: Vec<PDFStruct>,
     pub failed: Vec<ImportFailure>,
-    /// 导入成功但页数解析失败（加密/损坏 PDF）：pages 为空骨架，通知前端
+    /// Imported but page count unreadable (encrypted/damaged): pages is an empty skeleton.
     pub warnings: Vec<ImportFailure>,
 }
-// Check repo path input availablity
 fn is_dir_empty<P: AsRef<Path>>(path: P) -> io::Result<bool> {
     let mut entries = fs::read_dir(path)?;
     match entries.next().transpose()? {
@@ -143,7 +138,7 @@ fn check_and_build_repo(root: &str) -> Result<bool, String> {
     }
     let sign_path = dir.join(".ezrepo");
     match is_dir_empty(dir) {
-        // 空目录 = 新仓库：建索引并返回 true；已有 .ezrepo = 打开既有仓库
+        // Empty dir = new repo: create the index, return true. Existing .ezrepo = open it.
         Ok(true) => {
             write_text_atomic(&sign_path, r#"{"folders":[],"pdfs":[]}"#)?;
             Ok(true)
@@ -154,7 +149,7 @@ fn check_and_build_repo(root: &str) -> Result<bool, String> {
     }
 }
 
-/// 读取仓库索引（.ezrepo）
+/// Read the repo index (.ezrepo).
 fn read_index(root: &str) -> Result<RepoTree, String> {
     let sign_path = Path::new(root).join(".ezrepo");
     let text = fs::read_to_string(&sign_path)
@@ -162,15 +157,15 @@ fn read_index(root: &str) -> Result<RepoTree, String> {
     serde_json::from_str(&text).map_err(|e| format!("Failed when reading string: {e}"))
 }
 
-/// 原子写文本：临时文件 + rename（Windows 的 rename = 覆盖已存在目标）。
-/// 索引 / 绑定 JSON / 设置三处共用——半截文件比写失败更难收拾。
+/// Atomic text write: temp file + rename (on Windows rename overwrites the target).
+/// Half-written files are worse than a failed write.
 pub(crate) fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, text).map_err(|e| format!("failed to write temporary file: {e}"))?;
     fs::rename(&tmp, path).map_err(|e| format!("failed to replace file: {e}"))
 }
 
-/// pretty JSON 原子写（索引 / 绑定 JSON 共用）
+/// Atomic pretty-JSON write.
 pub(crate) fn write_json_atomic<T: serde::Serialize>(
     path: &Path,
     value: &T,
@@ -181,17 +176,17 @@ pub(crate) fn write_json_atomic<T: serde::Serialize>(
     write_text_atomic(path, &text)
 }
 
-/// 回写仓库索引（pretty JSON）
+/// Write the repo index back (pretty JSON).
 fn write_index(root: &str, index: &RepoTree) -> Result<(), String> {
     write_json_atomic(&Path::new(root).join(".ezrepo"), index, ".ezrepo")
 }
 
-/// 索引里没有这个 id：读/删/移/解析四处共用同一句文案
+/// Shared "id not in index" message for read/delete/move/parse paths.
 pub(crate) fn pdf_not_found(id: &str) -> String {
     format!("PDF id not found in repo: {id}")
 }
 
-/// 按 id 取索引条目快照（只读入口：load_pdf / parse::load_bind）
+/// Snapshot an index entry by id (read-only entry point for load_pdf / parse::load_bind).
 pub(crate) fn find_pdf(root: &str, id: &str) -> Result<PDFStruct, String> {
     read_index(root)?
         .pdfs
@@ -200,7 +195,7 @@ pub(crate) fn find_pdf(root: &str, id: &str) -> Result<PDFStruct, String> {
         .ok_or_else(|| pdf_not_found(id))
 }
 
-/// 磁盘命名（导入时生成，天然免重名）：`<name>-<id>.pdf` / `<name>-<id>.json`
+/// Disk naming (minted at import, collision-free): `<name>-<id>.pdf` / `<name>-<id>.json`.
 fn pdf_file_name(name: &str, id: &str) -> String {
     format!("{name}-{id}.pdf")
 }
@@ -209,8 +204,8 @@ fn bind_file_name(name: &str, id: &str) -> String {
     format!("{name}-{id}.json")
 }
 
-/// 仓库相对路径词法校验：非空、无绝对路径/盘符前缀/`..`（允许 `./`）。
-/// 防手写 `.ezrepo` 的 name/bind 逃逸仓库根。
+/// Lexical repo-relative path check: non-empty, no absolute/drive prefix/`..` (`.` allowed).
+/// Stops hand-written .ezrepo name/bind values from escaping the repo root.
 fn check_relative(rel: &str) -> Result<(), String> {
     let ok = !rel.is_empty()
         && Path::new(rel)
@@ -223,8 +218,8 @@ fn check_relative(rel: &str) -> Result<(), String> {
     }
 }
 
-/// 解析绑定 JSON 路径：词法校验 + canonicalize 后必须仍在仓库根内
-/// （词法拦截 `../`；canonicalize 再拦截仓库内符号链接逃逸）
+/// Resolve a bound-JSON path: lexical check + canonicalize must stay inside the repo root
+/// (lexical stops `../`; canonicalize catches symlink escapes).
 fn resolve_bind_path(root: &str, rel: &str) -> Result<PathBuf, String> {
     check_relative(rel)?;
     let root_canon = fs::canonicalize(root).map_err(|e| format!("invalid repo root path: {e}"))?;
@@ -236,12 +231,11 @@ fn resolve_bind_path(root: &str, rel: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-//Get repoTree from config
 #[tauri::command]
 async fn gettree_from_config(app: tauri::AppHandle, root: &str) -> Result<RepoTree, String> {
-    // 先确认是仓库（读得到 .ezrepo）再授权，避免对任意目录递归放行 asset 协议；
-    // 静态 scope 留空，此处按仓库根运行时放行（最小权限）——选仓库/刷新必经本命令；
-    // AppHandle 由 Tauri 注入，前端 invoke 参数不变
+    // Read the index first to confirm a repo, then grant the asset protocol for its root only;
+    // the static scope is empty, so this runtime grant is the single entry point (least privilege).
+    // AppHandle is injected by Tauri; the frontend invoke args are unchanged.
     let index = read_index(root)?;
     app.asset_protocol_scope()
         .allow_directory(root, true)
@@ -249,7 +243,7 @@ async fn gettree_from_config(app: tauri::AppHandle, root: &str) -> Result<RepoTr
     Ok(index)
 }
 
-/// 读并解析绑定 JSON（load_pdf / parse.rs 的批量写回共用同一错误文案与语义）
+/// Read and parse a bound JSON (shared by load_pdf and parse.rs batch writes).
 pub(crate) fn read_bind_doc(abs: &Path) -> Result<BindDoc, String> {
     let text = fs::read_to_string(abs).map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("Failed when parsing bound JSON: {e}"))
@@ -261,18 +255,18 @@ async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
     let dir = Path::new(_root);
     let entry = find_pdf(_root, _id)?;
 
-    // 物理命名（导入时生成）：name-id.pdf / name-id.json，天然免重名
+    // Physical names minted at import: name-id.pdf / name-id.json.
     let name = entry.name.clone();
     let pdf_name = pdf_file_name(&name, &entry.id);
-    check_relative(&pdf_name)?; // 手写 .ezrepo 可带 ../ 的 name/id，拼装后同样拒绝
+    check_relative(&pdf_name)?; // a hand-written .ezrepo can smuggle ../ via name/id
     let pdf_path = dir.join(&pdf_name).to_string_lossy().to_string();
     let (status, pages) = match &entry.bind {
         Some(rel) => {
             let json_abs = resolve_bind_path(_root, rel)?;
             let mut doc = read_bind_doc(&json_abs)?;
-            // 表块网格补齐（用户 2026-09-16）：老 JSON 没有 grid → 解析一次并落盘，
-            // 前端才能渲染表格、并只对"可解析且未翻"的表格发起补翻。拿同一把文件锁，
-            // 避免与翻译批次的读改写相互覆盖
+            // Backfill table grids for older JSONs, then persist so the frontend can render
+            // them and only re-translate parsable untranslated tables. Same file lock as
+            // translation batches to avoid clobbering a concurrent read-modify-write.
             let lock = parse::file_lock(_root, &_id);
             let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             if parse::backfill_table_grids(&mut doc) {
@@ -295,22 +289,22 @@ async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
     })
 }
 
-/// 内容哈希 → 12 位十六进制稳定 id。同内容同 id（重复导入直接拦截）；
-/// DefaultHasher 跨版本算法可能变化，但 id 只需仓库内唯一，不受影响。
+/// Content hash → 12 hex-char stable id; same content = same id (blocks duplicate imports).
+/// DefaultHasher's algorithm can change across versions, but ids only need repo-local uniqueness.
 fn content_id(bytes: &[u8]) -> String {
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
     format!("{:016x}", hasher.finish())[..12].to_string()
 }
 
-/// 实测 PDF 页数（lopdf 解析页树，含 xref/对象流）；加密或损坏 → None（调用方回退空骨架）
+/// Real page count via lopdf (incl. xref/object streams); encrypted/corrupt → None (empty skeleton fallback).
 fn pdf_page_count(bytes: &[u8]) -> Option<u32> {
     let doc = lopdf::Document::load_mem(bytes).ok()?;
     u32::try_from(doc.get_pages().len()).ok()
 }
 
-/// 单文件导入：校验 → 内容哈希生成 id → copy 入库（name-id 命名）→ 写绑定 JSON
-/// （pages 按实测页数预填充骨架，解析失败回退空数组并给出原因）→ 返回 (索引条目, 页数警告)
+/// Import one file: validate → content-hash id → copy in (name-id naming) → write bound JSON
+/// (pages pre-filled from the real count, empty on failure) → return (index entry, page warning).
 fn import_one(
     dir: &Path,
     belong: Option<&str>,
@@ -342,14 +336,14 @@ fn import_one(
         return Err("content duplicates an already-imported PDF".into());
     }
 
-    // 物理命名 name-id：不同目录导入同名文件也不会互相覆盖
+    // name-id naming: same-named files from different dirs don't collide.
     let pdf_name = pdf_file_name(&name, &id);
     let json_name = bind_file_name(&name, &id);
     fs::write(dir.join(&pdf_name), &bytes).map_err(|e| format!("failed to store into repo: {e}"))?;
     let page_count = pdf_page_count(&bytes);
     let pages = match page_count {
         Some(n) => parse::build_skeleton(n)?,
-        None => Vec::new(), // 解析失败（如加密）：空骨架，打开书时再补
+        None => Vec::new(), // parse failed (e.g. encrypted): empty skeleton, filled when opened
     };
     let doc = BindDoc {
         status: PDFStatus::Pending,
@@ -390,7 +384,7 @@ async fn import_pdf(
         match import_one(dir, belong.as_deref(), src, &index) {
             Ok((entry, page_warning)) => {
                 if let Some(b) = &entry.belong {
-                    // 与 move_pdf 同样校验（逻辑标签也要合法：过长的名字会毁掉索引）
+                    // Same validation as move_pdf: an overly long label would wreck the index.
                     if let Err(reason) = check_folder_name(b) {
                         failed.push(ImportFailure { path: src.clone(), reason });
                         continue;
@@ -420,10 +414,10 @@ async fn import_pdf(
     })
 }
 
-// ---- 仓库条目增删改（用户 2026-09-14）：文件夹为逻辑分组（belong 标签，不落物理目录），
-//      PDF/绑定 JSON 始终平铺在仓库根；建/移文件夹只改索引，删文件夹级联删除其中的文件 ----
+// ---- Repo entry CRUD: folders are logical only (belong labels, nothing on disk);
+//      PDFs/bound JSONs always stay flat in the repo root; deleting a folder cascades ----
 
-/// 文件夹名（逻辑标签）词法校验：非空、无路径分隔符/盘符、非 `.`/`..`、长度上限
+/// Folder-name (logical label) check: non-empty, no separators/drive, not `.`/`..`, length-capped.
 fn check_folder_name(name: &str) -> Result<(), String> {
     let bad = name.trim().is_empty()
         || name.contains(['/', '\\', ':'])
@@ -437,14 +431,14 @@ fn check_folder_name(name: &str) -> Result<(), String> {
     }
 }
 
-/// 确保索引里有该文件夹（幂等；belong 是逻辑标签，无物理目录）
+/// Ensure the folder exists in the index (idempotent; belong is a label, no physical dir).
 fn ensure_folder(index: &mut RepoTree, name: &str) {
     if !index.folders.iter().any(|f| f == name) {
         index.folders.push(name.to_string());
     }
 }
 
-/// 新建文件夹（仅索引；重名直接拒绝）
+/// Create a folder (index only; duplicate names rejected).
 #[tauri::command]
 fn create_folder(root: &str, name: String) -> Result<RepoTree, String> {
     let name = name.trim().to_string();
@@ -458,8 +452,8 @@ fn create_folder(root: &str, name: String) -> Result<RepoTree, String> {
     Ok(index)
 }
 
-/// 删除一份 PDF 的库内文件（PDF + 绑定 JSON）：best-effort——索引条目为准，
-/// bind 越界/文件缺失不致命（残留文件不影响使用）
+/// Delete a PDF's files (PDF + bound JSON), best-effort: the index is authoritative,
+/// so out-of-bounds/missing bind paths are non-fatal (stray files don't break anything).
 fn remove_pdf_files(root: &str, entry: &PDFStruct) {
     let pdf_name = pdf_file_name(&entry.name, &entry.id);
     if check_relative(&pdf_name).is_ok() {
@@ -472,9 +466,9 @@ fn remove_pdf_files(root: &str, entry: &PDFStruct) {
     }
 }
 
-/// 删除文件夹：级联删除其中的全部 PDF（索引 + 库内文件）。用户拍板 2026-09-14：
-/// 不再拒绝非空——确认框明示“一并删除”后由用户决定。与在途 OCR/翻译批次的竞态：
-/// 批任务重读绑定 JSON 失败即安全中止，不会复活已删数据。
+/// Delete a folder, cascading over all its PDFs (index + files). The frontend confirm dialog
+/// states the cascade. Racy in-flight OCR/translation batches abort safely when they fail to
+/// re-read a deleted bound JSON, so deleted data can't come back.
 #[tauri::command]
 fn delete_folder(root: &str, name: String) -> Result<RepoTree, String> {
     let mut index = read_index(root)?;
@@ -498,7 +492,7 @@ fn delete_folder(root: &str, name: String) -> Result<RepoTree, String> {
     Ok(index)
 }
 
-/// 删除 PDF：摘除索引条目 + best-effort 删除库内 PDF 与绑定 JSON
+/// Delete a PDF: remove its index entry + best-effort delete the PDF and bound JSON.
 #[tauri::command]
 fn delete_pdf(root: &str, id: &str) -> Result<RepoTree, String> {
     let mut index = read_index(root)?;
@@ -513,7 +507,7 @@ fn delete_pdf(root: &str, id: &str) -> Result<RepoTree, String> {
     Ok(index)
 }
 
-/// 移动 PDF：belong=Some 移入文件夹（不存在则自动建组），None 移出到根级
+/// Move a PDF: belong=Some moves it into a folder (auto-created), None moves it to the root.
 #[tauri::command]
 fn move_pdf(root: &str, id: &str, belong: Option<String>) -> Result<RepoTree, String> {
     let mut index = read_index(root)?;
@@ -532,12 +526,11 @@ fn move_pdf(root: &str, id: &str, belong: Option<String>) -> Result<RepoTree, St
     Ok(index)
 }
 
-// ---- 应用设置持久化（用户 2026-09-14）：dev = 仓库根 config.json；生产 = 应用所在目录 config.json ----
+// ---- Settings persistence: dev = `config.json` in the repo root; prod = beside the app. ----
 
-/// 设置文件位置：Windows 生产 = exe 所在目录（NSIS per-user 安装，目录可写；用户拍板
-/// 2026-09-14「所有设置都存应用目录的 cfg 文件」）；Linux/macOS 生产 = ~/.ezpdf/config.json
-/// （deb/rpm 装到 root 所有的 /usr/lib、AppImage 是只读挂载，应用目录写不进去）。
-/// dev = 源码仓库根。
+/// Settings location: Windows prod = the exe's directory (NSIS per-user install, writable);
+/// Linux/macOS prod = ~/.ezpdf/config.json (deb/rpm install under root-owned /usr/lib and
+/// AppImage mounts read-only, so the app dir isn't writable). dev = source repo root.
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     #[cfg(dev)]
     {
@@ -550,8 +543,8 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// 生产设置路径（独立函数：dev 构建也参与编译检查）。
-/// Windows = exe 同目录；其他平台 = ~/.ezpdf/config.json（与模型目录同一处）。
+/// Production settings path (separate fn so dev builds still compile-check it).
+/// Windows = beside the exe; elsewhere = ~/.ezpdf/config.json (same place as models).
 #[cfg_attr(dev, allow(dead_code))]
 fn prod_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if cfg!(windows) {
@@ -566,7 +559,7 @@ fn prod_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(home.join(".ezpdf").join("config.json"))
 }
 
-/// 读设置：文件不存在 → Ok(None)（前端用默认值，不打断启动）
+/// Read settings; missing file → Ok(None) so the frontend keeps defaults and still starts.
 #[tauri::command]
 fn load_settings(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let path = settings_path(&app)?;
@@ -577,10 +570,10 @@ fn load_settings(app: tauri::AppHandle) -> Result<Option<String>, String> {
     }
 }
 
-/// 设置文件上限：正常 config.json 只有几 KB；挡住前端失控时的超大写入
+/// Settings size cap (real config.json is a few KB) to stop runaway frontend writes.
 const MAX_SETTINGS_BYTES: usize = 8 * 1024 * 1024;
 
-/// 写设置（JSON 校验 + 临时文件原子替换）：退出设置页时前端整份下发
+/// Write settings (JSON validated, temp-file atomic replace); the frontend sends the whole file.
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
     if json.len() > MAX_SETTINGS_BYTES {
@@ -594,8 +587,8 @@ fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
     write_text_atomic(&path, &json)
 }
 
-// ---- OCR 服务（阶段2.5）：环境报告 / 环境安装 / 生命周期。探测与安装细节在 pyenv.rs，
-//      进程状态机在 pyserver.rs；check_python/check_cuda 已被 ocr_env_report 取代 ----
+// ---- OCR service: env report / env install / lifecycle. Probe+install details live in
+//      pyenv.rs, the process state machine in pyserver.rs ----
 
 #[tauri::command]
 async fn ocr_env_report(paths: tauri::State<'_, pyenv::PyPaths>) -> Result<pyenv::OcrEnvReport, String> {
@@ -628,7 +621,7 @@ async fn ocr_start(
     svc: tauri::State<'_, pyserver::PyService>,
 ) -> Result<(), String> {
     if !svc.startable() {
-        return Ok(()); // Starting/Connected 期间忽略重复拉起
+        return Ok(()); // ignore duplicate starts while Starting/Connected
     }
     svc.reset_for_start();
     let app2 = app.clone();
@@ -644,21 +637,21 @@ async fn ocr_stop(
     svc: tauri::State<'_, pyserver::PyService>,
 ) -> Result<(), String> {
     if svc.has_child() {
-        svc.stop(); // 关 stdin → Python stdin-EOF 自灭；状态经 ocr://status 事件回报
+        svc.stop(); // closing stdin makes Python exit; status is reported via ocr://status
     } else {
-        svc.disconnect(&app); // 在线模式：没有子进程可停，清端点 + 复位状态
+        svc.disconnect(&app); // remote mode: no child to stop, just clear the endpoint
     }
     Ok(())
 }
 
-/// 在线模式探活（OCR 设置页地址框右侧「测试」）：只探测，不改连接状态。
-/// 返回服务端公布的批大小（前端拿它做提示 + 后续每批的协商值）
+/// Remote-mode probe (the "Test" button): probe only, no connection state change.
+/// Returns the server's advertised batch size (used for hints and per-batch negotiation).
 #[tauri::command]
 async fn ocr_health(url: String, token: String) -> Result<pyserver::ParseServiceHealth, String> {
     pyserver::probe_health(&url, &token).await
 }
 
-/// 在线模式连接：探活通过才登记为 OCR 目标（用户 2026-09-15，见 pyserver/PROTOCOL.md）
+/// Remote-mode connect: register as the OCR target only after a successful probe.
 #[tauri::command]
 async fn ocr_start_remote(
     app: tauri::AppHandle,
@@ -681,10 +674,10 @@ async fn ocr_start_remote(
     Ok(health)
 }
 
-// ---- OCR 解析回路（阶段4）：批量 OCR + 骨架补齐 + 同批 LLM 翻译；细节在 parse.rs / translate.rs ----
+// ---- OCR parse loop: batch OCR + skeleton prefill + per-batch LLM translation; details in parse.rs / translate.rs ----
 
-/// parse_append 的后端落点：一批（≤4 页、同书）页图 → 整批 OCR → 一次原子写回；
-/// 翻译由前端随后调 translate_pdf 并发执行（用户拍板：pipeline 不再等翻译）
+/// Backend entry for one OCR batch (≤4 pages, same book): page images → whole-batch OCR →
+/// one atomic write. The frontend then fires translate_pdf concurrently (no waiting).
 #[tauri::command]
 async fn parse_pdf(
     root: &str,
@@ -698,7 +691,7 @@ async fn parse_pdf(
     parse::parse_batch(root, id, pages, &base, &token).await
 }
 
-/// 翻译失败页重试（不 OCR）：finished && !translated 的页才处理
+/// Retry translation-only (no OCR) for finished && !translated pages.
 #[tauri::command]
 async fn translate_pdf(
     root: &str,
@@ -709,31 +702,31 @@ async fn translate_pdf(
     parse::translate_batch(root, id, pages, &llm).await
 }
 
-/// 打开书补骨架：pdfjs 实测页数回填 pages 为空的绑定 JSON（lopdf 解析失败书）
+/// Prefill on open: backfill pages for bound JSONs left empty by a failed lopdf parse, using pdfjs's real count.
 #[tauri::command]
 async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
     parse::prefill_pages(root, id, total).await
 }
 
-/// 清除一本书的解析状态（用户 2026-09-15）：重建空骨架、丢弃 OCR 块与译文，PDF 不动
+/// Clear a book's parse state: rebuild an empty skeleton, drop OCR blocks and translations; the PDF is untouched.
 #[tauri::command]
 fn reset_pdf_state(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
     parse::reset_pdf_state(root, id, total)
 }
 
-/// LLM 连通性验证 + 关思考策略探测（设置页 API Key 旁「验证」按钮，用户 2026-09-14）
+/// LLM connectivity check + thinking-off strategy probe (the "Verify" button).
 #[tauri::command]
 async fn verify_llm(llm: translate::LlmConfig) -> Result<translate::LlmVerifyReport, String> {
     translate::verify_llm(&llm).await
 }
 
-/// 拉取模型列表（模型输入框自动补全，用户 2026-09-14；api = 协议，决定路径与认证头）
+/// Fetch the model list for autocomplete; `api` is the protocol, deciding path and auth headers.
 #[tauri::command]
 async fn fetch_llm_models(base_url: String, api_key: String, api: String) -> Result<Vec<String>, String> {
     translate::fetch_models(&base_url, &api_key, &api).await
 }
 
-/// 检查更新（GitHub Releases 最新版本 vs 应用版本；启动静默/手动 toast 由前端决定）
+/// Check for updates (latest GitHub Release vs app version); the frontend decides silent vs toast.
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<update::UpdateInfo, String> {
     let current = app.package_info().version.to_string();
@@ -749,8 +742,8 @@ pub fn run() {
             println!("[ezpdf] PyPaths = {paths:?}");
             app.manage(paths);
             app.manage(pyserver::PyService::new());
-            translate::init_log(app.handle()); // 翻译日志 → llm://log（LLM 设置页底部）
-            translate::init_prompt_dir(app.handle()); // 提示词目录：生产 = 安装目录资源
+            translate::init_log(app.handle()); // translation logs → llm://log
+            translate::init_prompt_dir(app.handle()); // prompt dir: prod = install resources
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -783,7 +776,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                // 退出收尾：关 stdin → Python stdin-EOF 自灭（防孤儿）
+                // On exit close stdin so Python's stdin-EOF watchdog exits (no orphans).
                 if let Some(svc) = app.try_state::<pyserver::PyService>() {
                     svc.stop();
                 }
@@ -810,8 +803,8 @@ mod tests {
         assert!(check_relative("../foo.json").is_err());
         assert!(check_relative("sub/../../foo.json").is_err());
         assert!(check_relative("/abs/foo.json").is_err());
-        // Windows 盘符前缀/反斜杠只在 Windows 上构成越界：Unix 里 `\` 是普通字符，
-        // 这类值等于「仓库内一个奇怪文件名」，出不了仓库，不适用同一断言
+        // Drive prefixes/backslashes only escape on Windows; on Unix `\` is an ordinary
+        // character, so these values stay in-repo and the assertions don't apply.
         #[cfg(windows)]
         {
             assert!(check_relative(r"C:\evil\foo.json").is_err());
@@ -841,11 +834,11 @@ mod tests {
         write_index(&root_s, &RepoTree { folders: vec![], pdfs: vec![] }).unwrap();
 
         assert!(create_folder(&root_s, "理论".into()).is_ok());
-        assert!(create_folder(&root_s, " 理论 ".into()).is_err()); // trim 后重名
+        assert!(create_folder(&root_s, " 理论 ".into()).is_err()); // duplicate after trim
         let index = create_folder(&root_s, "实验".into()).unwrap();
         assert_eq!(index.folders, vec!["理论".to_string(), "实验".to_string()]);
 
-        // 非空文件夹级联删除：索引条目 + 库内 PDF/绑定 JSON 一并删除（用户拍板 2026-09-14）
+        // Non-empty folder cascade: index entries + repo PDF/bound JSON are deleted too
         fs::write(root.join("book-abc.pdf"), b"pdf").unwrap();
         fs::write(root.join("book-abc.json"), b"{}").unwrap();
         let with_pdf = RepoTree {
@@ -863,9 +856,9 @@ mod tests {
         assert!(after.pdfs.is_empty());
         assert!(!root.join("book-abc.pdf").exists());
         assert!(!root.join("book-abc.json").exists());
-        assert!(delete_folder(&root_s, "理论".into()).is_err()); // 已删
+        assert!(delete_folder(&root_s, "理论".into()).is_err()); // already deleted
 
-        // 移动 PDF：根级 → 文件夹（自动建组保留）→ 根级
+        // Move a PDF: root → folder (auto-created, kept) → root
         let single = RepoTree {
             folders: vec!["实验".into()],
             pdfs: vec![PDFStruct {

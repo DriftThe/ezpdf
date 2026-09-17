@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""开发者用：在本机起一个"解析服务器"（默认 127.0.0.1:9055），供应用「在线服务」模式联调。
+"""Developer tool: run a parse "service" locally (default 127.0.0.1:9055) for the app's Online service mode.
 
-与 `python -m app.main`（应用托管的进程内模式）的区别：
-- 固定端口、不打 EZPDF_READY、不读 stdin，Ctrl+C 停；
-- 默认不校验 token（`--token` 可打开，用于验证鉴权路径）；
-- 不做环境/模型就绪检查（缺件时首个请求会失败，日志里有原因）。
+Differences from `python -m app.main` (the app-managed in-process mode):
+- fixed port, no EZPDF_READY line, does not read stdin, stops on Ctrl+C;
+- no token check by default (`--token` enables it to exercise the auth path);
+- no env/model readiness check (a missing piece fails the first request; the log says why).
 
-用法（用与服务同一套依赖的 python 跑，例如 pyserver/.venv）：
+Usage (run with a python that has the same deps as the service, e.g. pyserver/.venv):
 
     python server_test.py                          # 127.0.0.1:9055
     python server_test.py --host 0.0.0.0 --port 9055
-    python server_test.py --token secret           # 要求 x-ezpdf-token: secret
-    python server_test.py --reload                 # 改代码自动重载（开发）
+    python server_test.py --token secret           # require x-ezpdf-token: secret
+    python server_test.py --reload                 # auto-reload on code change (dev)
 
-然后在应用里：设置 → OCR 服务 → 服务来源「在线服务」→ 服务地址 http://127.0.0.1:9055
-→ 点「测试」探活 → 点「启动服务」登记为 OCR 目标。
+Then in the app: Settings → OCR Service → Service Source "Online service" → Service URL http://127.0.0.1:9055
+→ click "Test" to probe → click "Start service" to register it as the OCR target.
 
-HTTP 契约（端口、请求/响应字段、坐标换算、生命周期）见 pyserver/PROTOCOL.md。
+HTTP contract (ports, request/response fields, coordinate conversion, lifecycle) is in pyserver/PROTOCOL.md.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import argparse
 import os
 import sys
 
-# 允许从任意 cwd 运行：pyserver 根（app 包所在目录）进 sys.path
+# Allow running from any cwd: put the pyserver root (the app package's dir) on sys.path
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -48,10 +48,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def warn_incomplete_env(models_dir: str) -> None:
-    """缺件只提示，不阻止启动——方便先连上再看请求报错（正常由应用端一键安装服务）"""
+    """Missing pieces only warn; startup is not blocked so you can connect and read the request error."""
     try:
         import torch  # noqa: F401
-    except Exception as exc:  # pragma: no cover - 开发提示
+    except Exception as exc:  # pragma: no cover - dev hint
         print(f"[server_test] warning: torch is not importable ({exc}); run 一键安装服务 first")
     for name in (LAYOUT_MODEL_DIR_NAME, VL_MODEL_DIR_NAME):
         if not os.path.isdir(os.path.join(models_dir, name)):
@@ -60,7 +60,7 @@ def warn_incomplete_env(models_dir: str) -> None:
 
 def main() -> int:
     args = parse_args()
-    # 必须在导入 app.* 之前设置：app/config.py 在导入时读环境变量
+    # Must be set before importing app.*: app/config.py reads the environment at import time
     if args.token:
         os.environ["EZPDF_TOKEN"] = args.token
     if args.models_dir:
@@ -87,7 +87,7 @@ def main() -> int:
     warn_incomplete_env(str(MODELS_DIR))
 
     if args.reload:
-        # reload 需要 import string（uvicorn 自行 re-import app.main:create_app）
+        # reload needs an import string (uvicorn re-imports app.main:create_app itself)
         uvicorn.run(
             "app.main:create_app",
             factory=True,

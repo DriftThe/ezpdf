@@ -3,11 +3,12 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 
 /**
- * 单页 pdfjs canvas，自虚拟化：IntersectionObserver 监听（root=null 视口，上下各扩
- * 一屏缓冲），进入才渲染、滚出即释放位图（width=0）——大 PDF 内存恒定。
- * CSS 尺寸由父级 page-card 决定（canvas width/height 100%，逐页真实几何），
- * backing store 按本页 viewport×zoom×DPR 渲染保证清晰度；zoom 变化先由旧位图
- * CSS 拉伸顶住，防抖后重渲。
+ * Single-page pdfjs canvas, self-virtualized: an IntersectionObserver (root=null,
+ * one screen of buffer above/below) renders on entry and releases the bitmap
+ * (width=0) on exit — memory stays flat for large PDFs.
+ * CSS size comes from the parent page-card (canvas 100%, true per-page geometry);
+ * the backing store renders at that page's viewport×zoom×DPR for sharpness. While
+ * zoom changes, the old bitmap is stretched via CSS, then re-rendered after debounce.
  */
 const props = defineProps<{
   doc: PDFDocumentProxy | null;
@@ -19,11 +20,11 @@ const canvasEl = ref<HTMLCanvasElement | null>(null);
 type RenderTask = ReturnType<PDFPageProxy["render"]>;
 
 let task: RenderTask | null = null;
-let seq = 0; // 渲染序号：只有最新一次的结果允许落盘
+let seq = 0; // render sequence: only the latest result may commit
 let io: IntersectionObserver | null = null;
 let visible = false;
 let timer = 0;
-/** 上次成功落盘的位图标识（doc 引用 + 页号 + zoom），命中则跳过重渲 */
+/** Last committed bitmap identity (doc ref + page number + zoom); a hit skips re-render */
 let lastDoc: PDFDocumentProxy | null = null;
 let lastPage = 0;
 let lastZoom = 0;
@@ -33,14 +34,14 @@ function cancelTask(): void {
   try {
     task.cancel();
   } catch {
-    // 已完成的 task 取消是 no-op，个别实现可能抛错——忽略
+    // Cancelling a finished task is a no-op; some implementations may throw — ignore
   }
   task = null;
 }
 
-/** 释放位图（滚出渲染窗口/卸载） */
+/** Release the bitmap (scrolled out of the render window/unmounted) */
 function release(): void {
-  seq++; // 作废在途渲染
+  seq++; // invalidate in-flight renders
   cancelTask();
   const canvas = canvasEl.value;
   if (canvas && canvas.width > 0) {
@@ -67,23 +68,23 @@ async function render(): Promise<void> {
     const viewport = page.getViewport({ scale: myZoom * dpr });
     canvas.width = Math.max(1, Math.floor(viewport.width));
     canvas.height = Math.max(1, Math.floor(viewport.height));
-    // v6 起 render 必传 canvas（context 由 pdfjs 自取）
+    // Since v6, render requires a canvas (pdfjs fetches the context itself)
     const t = page.render({ canvas, viewport });
     task = t;
     await t.promise;
-    if (mySeq !== seq) return; // 已被更新的渲染/释放作废
+    if (mySeq !== seq) return; // superseded by a newer render/release
     lastDoc = doc;
     lastPage = myPage;
     lastZoom = myZoom;
   } catch (e) {
-    // 渲染取消（新渲染/释放打断）不是错误
+    // Render cancellation (interrupted by a new render/release) is not an error
     if ((e as { name?: string } | null)?.name !== "RenderingCancelledException") {
       console.warn(`[PdfPageCanvas] render page ${myPage} failed:`, e);
     }
   }
 }
 
-/** 可见性/入参变化 → 决定渲染、释放或防抖重渲 */
+/** Visibility/input change → render, release, or debounced re-render */
 function sync(immediate = false): void {
   if (!visible || !props.doc) {
     release();
@@ -104,7 +105,7 @@ onMounted(() => {
       if (visible) sync(true);
       else release();
     },
-    { rootMargin: "100% 0px" }, // 上下各扩一屏：邻近页预渲染
+    { rootMargin: "100% 0px" }, // one screen above/below: pre-render neighbouring pages
   );
   if (canvasEl.value) io.observe(canvasEl.value);
 });

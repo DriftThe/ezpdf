@@ -38,7 +38,7 @@ function onPageInput(e: Event): void {
   if (Number.isFinite(v) && v > 0) reader.gotoPage(v);
 }
 
-/** 适应宽度按钮：仅手动缩放模式下可点（已适应宽度则无事发生） */
+/** Fit-width button: clickable only in manual zoom mode (no-op when already fit) */
 function onFitWidthClick(): void {
   if (reader.fitMode === "custom") reader.toggleFit();
 }
@@ -46,7 +46,7 @@ function onFitWidthClick(): void {
 
 <template>
   <header class="toolbar">
-    <!-- 侧栏开关 -->
+    <!-- Sidebar toggle -->
     <button class="icon-btn" :disabled="settings.pageOpen" :title="lib.sidebarOpen ? t('toolbar.collapseSidebar') : t('toolbar.expandSidebar')" @click="lib.toggleSidebar">
       <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
         <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
@@ -55,7 +55,7 @@ function onFitWidthClick(): void {
 
     <span class="divider" />
 
-    <!-- 布局切换 -->
+    <!-- Layout switch -->
     <div class="seg" role="group" :aria-label="t('toolbar.layoutAria')">
       <button
         v-for="opt in layoutOptions"
@@ -71,7 +71,7 @@ function onFitWidthClick(): void {
 
     <span class="divider" />
 
-    <!-- 缩放：百分比显示实际比例；点击在适应宽度与 100% 间切换 -->
+    <!-- Zoom: percentage shows the actual ratio; click toggles fit-width and 100% -->
     <div class="zoom">
       <button class="icon-btn" :title="t('toolbar.zoomOut')" @click="reader.zoomOut">−</button>
       <button
@@ -92,7 +92,7 @@ function onFitWidthClick(): void {
 
     <span class="divider" />
 
-    <!-- 页码导航 -->
+    <!-- Page navigation -->
     <div class="pagenav">
       <button class="icon-btn" :title="t('toolbar.prevPage')" :disabled="!hasPdf || reader.currentPage <= 1" @click="reader.stepPage(-1)">‹</button>
       <span class="page-ind">
@@ -111,7 +111,7 @@ function onFitWidthClick(): void {
 
     <span class="divider" />
 
-    <!-- 悬浮预览开关 -->
+    <!-- Hover preview toggle -->
     <label class="switch" :title="t('toolbar.hoverPreviewTitle')">
       <input v-model="reader.hoverPreview" type="checkbox" />
       <span class="track"><span class="thumb" /></span>
@@ -120,18 +120,18 @@ function onFitWidthClick(): void {
 
     <span class="spacer" />
 
-    <!-- 暂停/启动：驱动调度回路（OCR 批次与翻译链都不再提交新任务） -->
+    <!-- Pause/start: drives the scheduling loop (OCR batches and translation chain submit no new tasks while paused) -->
     <button class="btn ghost" :class="{ warn: parse.paused }" :title="t('toolbar.pauseResumeTitle')" @click="parse.togglePaused">
       {{ parse.paused ? t("toolbar.startTranslation") : t("toolbar.pauseTranslation") }}
     </button>
 
-    <!-- OCR 服务状态 -->
+    <!-- OCR service status -->
     <span class="svc" :class="parse.serviceStatus" :title="t('toolbar.svcTitle')">
       <span class="svc-dot" />{{ svcText }}
     </span>
 
     <button class="icon-btn" :title="t('toolbar.settings')" @click="settings.openPage">
-      <!-- 标准齿轮（原"圆 + 放射线"看起来像浅色模式太阳图标，用户 2026-09-14 要求更换） -->
+      <!-- Standard gear (the old "circle + rays" read as a light-mode sun icon, hence replaced) -->
       <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3" />
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -151,7 +151,7 @@ function onFitWidthClick(): void {
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   position: relative;
-  z-index: 20; /* 压在设置整页（z-10）之上：设置打开时工具栏保持可见可点 */
+  z-index: 20; /* above the settings page (z-10): toolbar stays visible/clickable while settings is open */
 }
 .divider {
   width: 1px;
@@ -163,7 +163,7 @@ function onFitWidthClick(): void {
   flex: 1;
 }
 
-/* 分段按钮 */
+/* Segmented buttons */
 .seg {
   display: flex;
   background: var(--bg-hover);
@@ -191,7 +191,7 @@ function onFitWidthClick(): void {
   box-shadow: var(--shadow-1);
 }
 
-/* 缩放 */
+/* Zoom */
 .zoom {
   display: flex;
   align-items: center;
@@ -217,7 +217,7 @@ function onFitWidthClick(): void {
   color: var(--text-1);
 }
 
-/* 页码 */
+/* Page number */
 .pagenav {
   display: flex;
   align-items: center;

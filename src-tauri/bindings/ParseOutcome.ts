@@ -3,6 +3,6 @@ import type { PDFStatus } from "./PDFStatus";
 import type { PageInfo } from "./PageInfo";
 
 /**
- * parse_pdf 返回：进度摘要 + 本批实际更新的页
+ * parse_pdf result: status summary + the pages actually updated.
  */
 export type ParseOutcome = { bookStatus: PDFStatus, updatedPages: Array<PageInfo>, };

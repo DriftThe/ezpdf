@@ -1,4 +1,4 @@
-# GPU 变体：torch 2.13 CUDA 13.2 构建（~3GB 下载）
-# index-url 由 Rust 按【镜像源开关】显式传入（TUNA/SJTU 镜像或官方源），见 pyenv.rs
+# GPU variant: torch 2.13 CUDA 13.2 build (~3GB download)
+# Rust passes index-url explicitly per the mirror switch (TUNA/SJTU or official), see pyenv.rs
 torch==2.13.0+cu132
 torchvision==0.28.0+cu132

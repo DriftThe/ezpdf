@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# 把一个已构建好的解析服务镜像打成分片快照并上传到 Release。
+# Split an already-built pyserver image into part files and upload them to a Release.
 #
 #   bash scripts/docker-snapshot.sh cpu v0.1.2 pyserver-v0.1.2
 #   bash scripts/docker-snapshot.sh gpu v0.1.2 pyserver-v0.1.2
-#     ↑ 第 2 个参数是构建源 tag（决定文件名），第 3 个是上传目标 Release
-#       （镜像与应用安装包分开发布：pyserver-<应用 tag>；缺省等于第 2 个参数）
+#     arg2 = build-source tag (names the files), arg3 = target Release
+#     (images ship separately from installers: pyserver-<app tag>; defaults to arg2)
 #
-# 前置：镜像已存在（ezpdf-pyserver:cpu / :gpu，见 pyserver/Dockerfile），
-#       本机已登录 gh（CI 里用 GITHUB_TOKEN），依赖 GNU coreutils 的 split/sha256sum（Linux）。
+# Requires the image (ezpdf-pyserver:cpu / :gpu, see pyserver/Dockerfile), a logged-in gh
+# (GITHUB_TOKEN in CI), and GNU coreutils split/sha256sum (Linux).
 #
-# 为什么要切分：GitHub Release 单个附件上限 2GiB，而实测 tar 为 CPU 2.1GB / GPU 4.5GB。
-# 客户端下载后按 README「用 Docker 部署解析服务」里的说明合并（cat 或 copy /b）再 docker load。
+# Parts are needed because a GitHub Release asset is capped at 2 GiB while the tar is
+# ~2.1GB (CPU) / ~4.5GB (GPU); downloaders merge them (cat or copy /b) then docker load.
 set -euo pipefail
 
 variant="${1:?usage: docker-snapshot.sh <cpu|gpu> <tag> [release]}"
@@ -20,7 +20,7 @@ release="${3:-$tag}"
 tar="ezpdf-pyserver-${tag}-${variant}.tar"
 sha="ezpdf-pyserver-${tag}-${variant}.tar.sha256"
 
-# 同时打上版本 tag：载入后既有 ezpdf-pyserver:cpu 这个稳定名，也能看出快照属于哪一版
+# Also tag with the version, so a loaded image keeps the stable :cpu name and shows its snapshot
 docker save -o "$tar" "ezpdf-pyserver:${variant}" "ezpdf-pyserver:${tag}-${variant}"
 sha256sum "$tar" > "$sha"
 
@@ -30,5 +30,5 @@ rm -f "$tar"
 ls -l "${tar}".part-* "$sha" | awk '{printf "%12d  %s\n", $5, $9}'
 gh release upload "$release" "${tar}".part-* "$sha" --clobber
 
-# 分片上传完就删掉：GPU 快照前还要腾一次盘（tar + 镜像同时在会很占地方）
+# Delete the parts after upload to free disk before a GPU snapshot (tar + image is large)
 rm -f "${tar}".part-*

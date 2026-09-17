@@ -1,6 +1,6 @@
-//! pyserver 生命周期状态机（唯一持有者）：
-//! unknown → starting → connected / failed(冷启超时 60s、连崩 3 次终态)；
-//! 断线自动重启（指数退避）；停止与应用退出经关 stdin 触发 Python 自灭（stdin-EOF 防孤儿）。
+//! pyserver lifecycle state machine (sole owner): unknown → starting → connected / failed
+//! (60 s cold-start timeout, 3 consecutive crashes = terminal); crashes auto-restart with
+//! exponential backoff; stop/exit closes stdin so Python's stdin-EOF watchdog exits (no orphans).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,18 +18,18 @@ use crate::pyenv::PyPaths;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// 就绪行前缀：`EZPDF_READY {"port":...,"pid":...}`（stdout 单行 JSON）
+/// Ready-line prefix: `EZPDF_READY {"port":...,"pid":...}` (single-line JSON on stdout).
 const READY_PREFIX: &str = "EZPDF_READY ";
-/// 冷启上限（READY 行等待）
+/// Cold-start cap (wait for the READY line).
 const START_TIMEOUT: Duration = Duration::from_secs(60);
-/// 连续崩溃终态阈值
+/// Consecutive-crash threshold for the terminal state.
 const MAX_CRASHES: u32 = 3;
-/// 主动停止后等待 Python 自灭的上限，超时强杀
+/// Grace period for Python to self-exit after a stop; force-killed on timeout.
 const STOP_GRACE: Duration = Duration::from_secs(8);
-/// 自动重启退避上限
+/// Backoff cap for auto-restart.
 const BACKOFF_CAP: Duration = Duration::from_secs(15);
 
-/// 服务生命周期状态（前端「服务」灯数据源）；serde 序列化为小写
+/// Service lifecycle status (frontend "service" light source); serde serializes it as camelCase.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -43,18 +43,18 @@ pub enum ServiceStatus {
 
 struct PyServiceInner {
     status: Mutex<ServiceStatus>,
-    /// 主动停止/应用退出标记；重启循环见到它即退出
+    /// Stop/exit flag; the restart loop exits on seeing it.
     stopping: AtomicBool,
-    /// 持有子进程 stdin 不关是防孤儿的前提；stop() 主动 drop 触发 Python EOF 自灭
+    /// Holding the child's stdin open prevents orphans; stop() drops it to trigger Python's EOF exit.
     stdin: Mutex<Option<tokio::process::ChildStdin>>,
-    /// 最近一次成功握手的 base URL 与 token（阶段4 OCR 调用取用）
+    /// Last successful handshake's base URL and token (used for OCR calls).
     endpoint: Mutex<Option<String>>,
     token: Mutex<String>,
     stop_tx: watch::Sender<bool>,
     stop_rx: watch::Receiver<bool>,
 }
 
-/// 状态机共享柄（Clone = 内部 Arc 引用复制，代价可忽略）
+/// Shared state handle (Clone just copies the inner Arc).
 #[derive(Clone)]
 pub struct PyService(Arc<PyServiceInner>);
 
@@ -86,43 +86,43 @@ impl PyService {
         *self.0.token.lock().unwrap_or_else(|e| e.into_inner()) = token;
     }
 
-    /// OCR 调用取用点（阶段4）：握手成功后的 (base, token)；未连接 → None
+    /// OCR call target: (base, token) after a successful handshake; None when disconnected.
     pub fn ocr_target(&self) -> Option<(String, String)> {
         let base = self.0.endpoint.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
         let token = self.0.token.lock().unwrap_or_else(|e| e.into_inner()).clone();
         Some((base, token))
     }
 
-    /// 在线模式（用户 2026-09-15）：把远端解析服务登记为 OCR 目标。
-    /// 探测通过由调用方负责；这里只落端点 + token + 置 Connected（前端「服务」灯靠它）。
-    /// token 由服务端决定要不要（Docker/裸机部署见 app/server_docker.py 的 token.txt），
-    /// 本地托管形态才是「服务端随机生成、客户端拿着用」的那一套。
+    /// Remote mode: register a remote parse service as the OCR target.
+    /// The caller must have probed already; this only stores the endpoint + token and sets
+    /// Connected. The server decides whether a token is required (see server_docker.py's
+    /// token.txt for Docker/bare-metal); locally hosted mode injects a random one.
     pub fn set_remote(&self, app: &AppHandle, base: String, token: String) {
         self.set_endpoint(base, token);
         self.set_status(app, ServiceStatus::Connected);
     }
 
-    /// 在线模式断开：清端点 + 复位状态（无子进程，不碰 stdin / supervisor）
+    /// Remote disconnect: clear the endpoint and reset status (no child, no stdin/supervisor).
     pub fn disconnect(&self, app: &AppHandle) {
         *self.0.endpoint.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.0.token.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
         self.set_status(app, ServiceStatus::Unknown);
     }
 
-    /// 是否托管着本地子进程（在线模式没有）；ocr_stop 据此选择断开方式
+    /// Whether a local child is managed (remote mode has none); ocr_stop picks its disconnect path from this.
     pub fn has_child(&self) -> bool {
         self.0.stdin.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
-    /// 停止（同步）：置标记 + 通知 supervisor + 关 stdin（Python 优雅退出）。
-    /// 供 RunEvent::Exit（同步上下文）与 ocr_stop 命令共用。
+    /// Stop (sync): set the flag, notify the supervisor, close stdin (Python exits gracefully).
+    /// Shared by RunEvent::Exit and the ocr_stop command.
     pub fn stop(&self) {
         self.0.stopping.store(true, Ordering::SeqCst);
         let _ = self.0.stop_tx.send(true);
-        drop(self.0.stdin.lock().unwrap_or_else(|e| e.into_inner()).take()); // EOF → python 自灭
+        drop(self.0.stdin.lock().unwrap_or_else(|e| e.into_inner()).take()); // EOF → python exits on its own
     }
 
-    /// 门控：Starting/Connected 期间忽略重复 ocr_start；Unknown/Disconnected/Failed 可拉起
+    /// Gate: duplicate ocr_start is ignored while Starting/Connected; Unknown/Disconnected/Failed can start.
     pub fn startable(&self) -> bool {
         !matches!(self.status(), ServiceStatus::Starting | ServiceStatus::Connected)
     }
@@ -133,7 +133,8 @@ impl PyService {
     }
 }
 
-/// 随机会话 token（防本地误连即可，非密码学用途）。/// RandomState 的密钥取自 OS 熵（sys::hashmap_random_keys），比"时间+pid"可预测种子强。
+/// Random session token (not cryptographic; only guards accidental local connections).
+/// RandomState draws its key from OS entropy (sys::hashmap_random_keys), stronger than time+pid.
 fn fresh_token() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash, Hasher};
@@ -148,27 +149,27 @@ fn fresh_token() -> String {
     format!("{:016x}{:016x}", seed.finish(), extra)
 }
 
-/// supervisor 主循环：spawn → READY → /health → connected → 等退出；
-/// 退出且非主动停止 → 崩溃计数 → 退避重启；连崩 3 次 → failed 终态。
+/// Supervisor loop: spawn → READY → /health → connected → wait for exit; a non-intentional exit
+/// counts a crash and restarts with backoff; 3 consecutive crashes → failed terminal state.
 pub async fn supervise(app: AppHandle, paths: PyPaths, svc: PyService) {
     let mut backoff = Duration::from_secs(1);
     let mut crashes: u32 = 0;
     loop {
         if svc.0.stopping.load(Ordering::SeqCst) {
             svc.set_status(&app, ServiceStatus::Unknown);
-            break; // 停止请求（可能发生在退避等待期间）：复位为未启动再收尾
+            break; // stop requested (possibly during backoff): reset to unstarted and finish
         }
         svc.set_status(&app, ServiceStatus::Starting);
         match start_once(&app, &paths, &svc).await {
             Ok(mut child) => {
                 svc.set_status(&app, ServiceStatus::Connected);
-                backoff = Duration::from_secs(1); // 成功过一次即重置退避
+                backoff = Duration::from_secs(1); // one success resets the backoff
                 let mut stop_rx = svc.0.stop_rx.clone();
-                stop_rx.borrow_and_update(); // 标记当前值已读，changed() 只等下一次
+                stop_rx.borrow_and_update(); // mark the current value read so changed() waits for the next
                 let _exit = tokio::select! {
                     st = child.wait() => st,
                     _ = stop_rx.changed() => {
-                        // stdin 已由 stop() 关闭：等 Python 优雅退出，超时强杀兜底
+                        // stdin was closed by stop(): wait for graceful exit, force-kill on timeout
                         match tokio::time::timeout(STOP_GRACE, child.wait()).await {
                             Ok(st) => st,
                             Err(_) => {
@@ -180,7 +181,7 @@ pub async fn supervise(app: AppHandle, paths: PyPaths, svc: PyService) {
                 };
                 if svc.0.stopping.load(Ordering::SeqCst) {
                     svc.set_status(&app, ServiceStatus::Unknown);
-                    break; // 主动停止 / 应用退出：状态复位为未启动，允许再次拉起
+                    break; // stop/app exit: reset to unstarted so it can start again
                 }
                 if handle_failure(&app, &svc, &mut crashes, &mut backoff, None).await {
                     break;
@@ -195,8 +196,8 @@ pub async fn supervise(app: AppHandle, paths: PyPaths, svc: PyService) {
     }
 }
 
-/// 一次启动失败/异常退出后的统一善后：崩溃计数 → 终态或退避等待。
-/// 返回 true = 已达终态（调用方 break）。
+/// Shared cleanup after a failed start/abnormal exit: bump the crash count, then go terminal
+/// or wait out the backoff. Returns true when terminal (the caller breaks).
 async fn handle_failure(
     app: &AppHandle,
     svc: &PyService,
@@ -218,7 +219,7 @@ async fn handle_failure(
     false
 }
 
-/// 单次启动：spawn → 逐行读 stdout 等 READY（超时 60s）→ /health 确认 → 持 stdin
+/// One start attempt: spawn → read stdout lines for READY (60 s timeout) → /health confirm → hold stdin.
 async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result<tokio::process::Child, String> {
     if !paths.python.is_file() {
         return Err("python interpreter not found; run \"Install service\" in Settings".into());
@@ -238,12 +239,12 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
     cmd.creation_flags(CREATE_NO_WINDOW);
     let mut child = cmd.spawn().map_err(|e| format!("failed to spawn python: {e}"))?;
 
-    // stdin 存入全局状态：select 主分支持有 child，stop() 拿走 stdin 触发 EOF
+    // Store stdin globally so stop() can take it to trigger EOF while the select branch owns the child.
     if let Some(stdin) = child.stdin.take() {
         *svc.0.stdin.lock().unwrap_or_else(|e| e.into_inner()) = Some(stdin);
     }
 
-    // stderr → ocr://log（uvicorn / 引擎日志）
+    // stderr → ocr://log (uvicorn / engine logs).
     if let Some(mut stderr) = child.stderr.take() {
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -251,7 +252,7 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
         });
     }
 
-    // stdout 逐行读：READY 行经 oneshot 回报端口，其余行进日志
+    // Read stdout line by line: the READY line reports the port via oneshot, the rest go to the log.
     let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Option<u16>>();
     let app3 = app.clone();
@@ -281,7 +282,7 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
             }
         }
         if let Some(tx) = ready_tx.take() {
-            let _ = tx.send(None); // EOF 未见到 READY
+            let _ = tx.send(None); // EOF before READY
         }
     });
 
@@ -301,7 +302,7 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
         }
     };
 
-    // /health 轻量复核（READY 已意味着服务在跑）
+    // Light /health recheck (READY already means the service is up).
     let base = format!("http://127.0.0.1:{port}");
     let client = reqwest::Client::new();
     for _ in 0..5 {
@@ -322,17 +323,17 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
     Err("health check failed".into())
 }
 
-// ---- 在线模式（用户 2026-09-15）：远端解析服务探活/登记 ----
+// ---- Remote mode: probe/register a remote parse service ----
 //
-// 与本地托管服务的区别：没有子进程可管、没有会话 token（远端由部署方决定要不要鉴权，
-// 文档见 pyserver/PROTOCOL.md）；连接期只有一次 /health 探测。开发联调用
-// `pyserver/server_test.py`（默认 127.0.0.1:9055）起一个本地解析服务当"远端"。
+// Unlike the local managed service there is no child and no session token (the deployer decides
+// on auth; see pyserver/PROTOCOL.md); connecting is a single /health probe. For local dev use
+// `pyserver/server_test.py` (default 127.0.0.1:9055) as a fake remote.
 
-/// 探活超时：/health 是纯内存响应，超过这个时间说明地址/网络不对
+/// Probe timeout: /health is in-memory, so exceeding this means a wrong address/network.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// 规范化用户输入的地址：去空白/尾斜杠，缺协议按 http 补（本地开发最常见）。
-/// 空串报错（避免把空地址当成"连上了"）。
+/// Normalize a user-supplied URL: trim whitespace/trailing slash, default a missing scheme to
+/// http (common in local dev). An empty string errors rather than counting as connected.
 pub fn normalize_base(url: &str) -> Result<String, String> {
     let trimmed = url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -343,44 +344,44 @@ pub fn normalize_base(url: &str) -> Result<String, String> {
     } else {
         format!("http://{trimmed}")
     };
-    // 只接受 http(s)，避免把 file:// 之类当服务地址
+    // Accept only http(s), so file:// etc. can't masquerade as a service URL.
     if !(with_scheme.starts_with("http://") || with_scheme.starts_with("https://")) {
         return Err(format!("unsupported parse service URL: {with_scheme}"));
     }
     Ok(with_scheme)
 }
 
-/// 回环地址：系统代理不该插手本机服务（与 Rust 侧本地托管的直连语义一致）
+/// Loopback detection: the system proxy shouldn't touch local services (matches local direct connect).
 fn is_loopback(base: &str) -> bool {
     let authority = base.split("://").nth(1).unwrap_or(base);
     let authority = authority.split(['/', '?']).next().unwrap_or("");
     let hostport = authority.rsplit('@').next().unwrap_or(authority);
     let host = match hostport.strip_prefix('[') {
-        Some(rest) => rest.split(']').next().unwrap_or(""), // IPv6 字面量 [::1]:9055
+        Some(rest) => rest.split(']').next().unwrap_or(""), // IPv6 literal [::1]:9055
         None => hostport.split(':').next().unwrap_or(""),
     };
     matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
 }
 
-/// 在线解析服务的握手结果（在线模式「测试」按钮 + 每次 OCR 请求前的批大小协商）。
-/// `max_batch_pages` 由服务端公布（PROTOCOL.md §4），已夹到 1..=32
+/// Remote parse-service handshake result (the "Test" button and per-request batch negotiation).
+/// `max_batch_pages` comes from the server (PROTOCOL.md §4), clamped to 1..=32.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ParseServiceHealth {
-    /// u32 而非 u64：ts-rs 会把 u64 映射成 bigint，前端只想拿它显示
+    /// u32 not u64: ts-rs maps u64 to bigint, and the frontend only displays this.
     pub pid: Option<u32>,
-    /// 服务端允许的单批最大页数
+    /// Server-allowed max pages per batch.
     pub max_batch_pages: u32,
-    /// 本次探活耗时（ms）
+    /// This probe's elapsed time (ms).
     pub elapsed_ms: u32,
 }
 
-/// 服务端没公布/公布得不可信时的批大小：与客户端本地托管的批大小一致
+/// Batch size when the server doesn't advertise a usable value (matches local hosting's size).
 const FALLBACK_BATCH_PAGES: u32 = 4;
 
-/// 解析服务探活：GET {base}/health → (pid, 耗时 ms, 服务端公布的批大小)。失败给出可读
-/// 原因（前端「测试」按钮、在线模式连接前确认、每次 OCR 请求前的批大小握手共用）。
+/// Probe a parse service: GET {base}/health → (pid, elapsed ms, advertised batch size).
+/// Readable failures; shared by the "Test" button, pre-connect confirmation and per-request negotiation.
 pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth, String> {
     let base = normalize_base(base)?;
     let url = format!("{base}/health");
@@ -400,7 +401,7 @@ pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth,
         .map_err(|e| format!("cannot reach {url}: {e}"))?;
     let status = resp.status();
     if !status.is_success() {
-        // 403 基本都是令牌不对/没填：给出可操作的提示（服务端开了鉴权才会有）
+        // 403 almost always means a wrong/missing token: give an actionable hint.
         if status.as_u16() == 403 {
             return Err(format!("{url} answered HTTP 403: service token rejected"));
         }
@@ -414,8 +415,8 @@ pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth,
     })
 }
 
-/// 服务端公布的批大小 → 客户端可用值：缺失/非法回落 4，越界夹进 1..=32。
-/// 夹上界是硬要求——本地 Rust 侧的批次上限就是 32，超了整批会被拒
+/// Advertised batch size → usable client value: missing/invalid falls back to 4, out-of-range
+/// clamps to 1..=32. The upper clamp is required since Rust rejects batches over 32.
 fn advertised_batch_pages(body: &serde_json::Value) -> u32 {
     match body["max_batch_pages"].as_u64() {
         Some(n) if n >= 1 => (n.min(crate::parse::MAX_BATCH_PAGES as u64)) as u32,
@@ -438,8 +439,7 @@ mod tests {
         assert!(normalize_base("file:///etc/passwd").is_err());
     }
 
-    /// 回环判定：决定探活请求是否绕开系统代理
-    /// 批大小协商：服务端缺失/非法值回落 4，越界夹进 1..=32（本地 Rust 上限 32）
+    /// Batch-size negotiation: missing/invalid falls back to 4, out-of-range clamps to 1..=32.
     #[test]
     fn advertised_batch_pages_is_clamped() {
         assert_eq!(advertised_batch_pages(&serde_json::json!({"max_batch_pages": 6})), 6);

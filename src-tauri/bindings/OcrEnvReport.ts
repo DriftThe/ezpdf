@@ -3,6 +3,6 @@ import type { GpuInfo } from "./GpuInfo";
 import type { OcrModels } from "./OcrModels";
 
 /**
- * 环境分层报告（OCR 设置页状态灯数据源）；Rust 持有并整份推给前端缓存渲染
+ * Layered env report (source for the OCR settings status lights); Rust owns it and pushes it whole.
  */
 export type OcrEnvReport = { python: string | null, pythonPath: string | null, deps: { [key in string]: string | null }, missing: Array<string>, torchBuild: string | null, gpu: GpuInfo | null, models: OcrModels | null, error: string | null, };

@@ -3,11 +3,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "../../lib/env";
 
 /**
- * 无边框窗口的缩放热区（用户 2026-09-15，Linux 适配）：
- * Windows 上 `decorations: false` 仍保留系统缩放边框，但 GTK/WebKitGTK 下窗口完全没有
- * 边框也就没有缩放入口——只剩拖动和最大化。这里在窗口四周补 8 条热区，
- * 按下即调用 startResizeDragging（权限见 capabilities/default.json）。
- * 只在 Linux 渲染：其他平台交给系统边框，避免与原生行为叠加。
+ * Resize hit zones for the borderless window (Linux only):
+ * with `decorations: false`, Windows still keeps its native resize border but
+ * GTK/WebKitGTK has no resize entry point; these 8 zones call startResizeDragging
+ * (permissions in capabilities/default.json). Other platforms use the native border.
  */
 const isLinux = isTauri && /Linux/i.test(navigator.userAgent);
 const win = isLinux ? getCurrentWindow() : null;
@@ -43,7 +42,7 @@ function start(e: MouseEvent, dir: Direction): void {
 </template>
 
 <style scoped>
-/* 只吃边缘 4px（角落 8px）的指针事件，中间区域完全透传 */
+/* Pointer events only on the 4px edges (8px corners); the middle stays pass-through */
 .resize-edges {
   position: absolute;
   inset: 0;

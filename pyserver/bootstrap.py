@@ -1,20 +1,20 @@
-"""EZPDF pyserver 环境探测脚本。
+"""EZPDF pyserver environment probe.
 
-零第三方依赖（纯 stdlib），venv 内外均可运行：
-    python bootstrap.py          # stdout 单行 JSON（Rust 解析）
-    python bootstrap.py | python -m json.tool   # 人工查看
+Zero third-party deps (pure stdlib); runs inside or outside a venv:
+    python bootstrap.py          # one-line JSON on stdout (parsed by Rust)
+    python bootstrap.py | python -m json.tool   # human-readable
 
-模型目录取 EZPDF_MODELS_DIR（生产 = ~/.ezpdf/models），未设时用 <脚本目录>/models。
+Models come from EZPDF_MODELS_DIR (production = ~/.ezpdf/models), defaulting to <script dir>/models.
 
-输出契约（供 Rust 的 ocr_env_report 合成前端状态灯数据）：
+Output contract (Rust's ocr_env_report turns it into frontend status-light data):
     {
       "python": "3.12.10", "python_path": "...",
-      "deps": {"fastapi": "0.139.2", ...},     # 版本号，缺失为 null
+      "deps": {"fastapi": "0.139.2", ...},     # version string, null when missing
       "missing": ["torch"],
-      "torch_build": "cuda" | "cpu" | null,    # torch 版本 +cu 后缀判定，不 import torch
+      "torch_build": "cuda" | "cpu" | null,    # from the +cu suffix; never imports torch
       "gpu": {"present": true, "name": "...", "driver": "...", "cuda": "13.2"} | null,
       "models": {"layout": true, "vl": false},
-      "error": null                            # 探测本身出错时的兜底信息
+      "error": null                            # fallback info when the probe itself fails
     }
 """
 
@@ -31,7 +31,8 @@ from pathlib import Path
 
 from app import model_contract
 
-# (发行名, 导入名)；版本取发行名。torch 在列——bootstrap 只看版本元数据，不 import
+# (distribution name, import name); versions come from the distribution. torch is listed too —
+# bootstrap only reads version metadata, it never imports torch
 DEPS: list[tuple[str, str]] = [
     ("fastapi", "fastapi"),
     ("uvicorn", "uvicorn"),
@@ -42,15 +43,15 @@ DEPS: list[tuple[str, str]] = [
     ("torch", "torch"),
 ]
 
-# 模型目录约定：EZPDF_MODELS_DIR 覆盖（生产 = ~/.ezpdf/models），默认 <pyserver>/models；
-# 目录名与完整性口径来自 app/model_contract.py（与下载入口 fetch.py 同一份，纯标准库）
+# Model dir convention: EZPDF_MODELS_DIR overrides (production = ~/.ezpdf/models), default <pyserver>/models;
+# dir names and completeness come from app/model_contract.py (the same stdlib module used by fetch.py)
 MODEL_ROOT = Path(os.environ.get("EZPDF_MODELS_DIR") or (Path(__file__).resolve().parent / "models"))
 MODEL_DIRS: dict[str, str] = {
     "layout": model_contract.LAYOUT_MODEL_DIR_NAME,
     "vl": model_contract.VL_MODEL_DIR_NAME,
 }
 
-_CREATE_NO_WINDOW = 0x08000000  # 隐藏子进程控制台（与 Rust CREATE_NO_WINDOW 同值）
+_CREATE_NO_WINDOW = 0x08000000  # hide the child console (same value as Rust's CREATE_NO_WINDOW)
 
 
 def _dep_report() -> tuple[dict[str, str | None], list[str]]:
@@ -70,8 +71,9 @@ def _dep_report() -> tuple[dict[str, str | None], list[str]]:
 
 
 def _has_bundled_cuda() -> bool:
-    """PyPI 的 Linux torch 轮子**捆绑 CUDA** 却不带 `+cu` 本地版本号（实测 2.13.0
-    自述 torch.version.cuda=13.2），只能靠随它装进来的 nvidia-* / triton 判断。"""
+    """PyPI's Linux torch wheel bundles CUDA but carries no `+cu` local version tag
+    (2.13.0 reports torch.version.cuda=13.2 while its metadata looks cpu-only), so the
+    installed nvidia-* / triton distributions are the only usable signal."""
     try:
         for dist in importlib.metadata.distributions():
             name = (dist.metadata["Name"] or "").lower()
@@ -83,7 +85,7 @@ def _has_bundled_cuda() -> bool:
 
 
 def _torch_build(deps: dict[str, str | None]) -> str | None:
-    """torch 构建变体：+cuNNN 后缀 = cuda 构建，+cpu = cpu 构建；未装 = None。"""
+    """torch build variant: +cuNNN suffix = cuda, +cpu = cpu; not installed = None."""
     version = deps.get("torch")
     if version is None:
         return None
@@ -95,7 +97,7 @@ def _torch_build(deps: dict[str, str | None]) -> str | None:
 
 
 def _gpu_report() -> dict | None:
-    """nvidia-smi 探测：无卡/无驱动/调用失败一律返回 None（常态，不算错误）。"""
+    """nvidia-smi probe: no card, no driver, or a failed call all return None (normal, not an error)."""
     exe = shutil.which("nvidia-smi")
     if exe is None:
         return None
@@ -110,7 +112,7 @@ def _gpu_report() -> dict | None:
         if query.returncode != 0:
             return None
         name, driver = (query.stdout.splitlines()[0].split(","))[:2]
-        # 驱动可跑的 CUDA 版本在 nvidia-smi 表头（首行是日期，CUDA Version 在其下几行内）
+        # The driver's CUDA version is in the nvidia-smi header (first line is the date; CUDA Version is a few lines down)
         bare = subprocess.run([exe], **kwargs)
         cuda = None
         for line in (bare.stdout.splitlines() or [])[:5]:
@@ -139,8 +141,8 @@ def probe() -> dict:
 def main() -> int:
     try:
         report = probe()
-    except Exception as exc:  # 探测自身崩溃也必须吐 JSON，且以成功码退出（报告即数据）
-        # 契约仍是完整报告：缺字段会让 Rust 侧反序列化失败，真正的原因就到不了界面
+    except Exception as exc:  # a crashed probe still emits JSON and exits 0 (the report is the data)
+        # Keep the report complete: a missing field breaks Rust deserialization and the real reason never reaches the UI
         report = {
             "python": None,
             "python_path": None,

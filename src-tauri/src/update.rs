@@ -1,6 +1,6 @@
-//! 更新检查（用户 2026-09-14）：查询 GitHub Releases 最新发布，与当前版本比较。
-//! 只做提醒（toast + 常规设置页文字），不下载不安装——仓库地址固定为项目主页。
-//! 网络失败/仓库未发布（404）→ Err，由调用方决定是否打扰（启动检查静默、手动检查 toast）。
+//! Update check: fetch the latest GitHub Release and compare it with the running version.
+//! Notify only (toast + settings text); no download or install.
+//! Network/404 failure → Err; the caller decides whether to surface it (silent at launch, toast on manual check).
 
 use std::time::Duration;
 
@@ -8,24 +8,24 @@ use serde::Serialize;
 use serde_json::Value;
 use ts_rs::TS;
 
-/// 发布仓库（用户提供：https://github.com/DriftThe/ezpdf）
+/// Upstream repo checked for releases.
 const UPDATE_REPO: &str = "DriftThe/ezpdf";
 
-/// 更新检查结果（前端 settings store 展示）
+/// Update-check result (rendered by the frontend).
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
-    /// 当前应用版本（tauri.conf 的 version）
+    /// Running app version (from tauri.conf).
     pub current: String,
-    /// 最新发布版本（tag 去掉 v 前缀）；无发布时应为 Err 而非 None
+    /// Latest release tag without the `v` prefix; a missing release is an Err, not None.
     pub latest: Option<String>,
-    /// 是否有更新（语义化数字比较）
+    /// Whether a newer version is available (numeric comparison).
     pub newer: bool,
 }
 
-/// 版本比较：`v1.2.3` vs `1.2.3` 均可；按数字段比较（缺失段视作 0），
-/// 非数字后缀（-beta 等）忽略。a > b → true。
+/// Numeric-segment compare: `v1.2.3` and `1.2.3` both parse, missing segments count as 0,
+/// non-numeric suffixes (-beta) are ignored. a > b → true.
 fn version_gt(a: &str, b: &str) -> bool {
     let parts = |s: &str| -> Vec<u64> {
         s.trim()
@@ -53,7 +53,7 @@ fn version_gt(a: &str, b: &str) -> bool {
     false
 }
 
-/// 查询最新 release 并比较；网络/HTTP/解析失败 → Err（启动检查静默处理）
+/// Fetch the latest release and compare; network/HTTP/parse failure → Err (silent at launch).
 pub async fn check_update(current: &str) -> Result<UpdateInfo, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -97,6 +97,6 @@ mod tests {
         assert!(!version_gt("1.2.3", "1.2.3"));
         assert!(!version_gt("v1.2", "1.2.0"));
         assert!(!version_gt("0.1.0", "0.1.1"));
-        assert!(version_gt("1.2.3-beta", "1.2.2")); // 非数字后缀忽略
+        assert!(version_gt("1.2.3-beta", "1.2.2")); // non-numeric suffix ignored
     }
 }

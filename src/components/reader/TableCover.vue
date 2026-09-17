@@ -6,12 +6,14 @@ import { renderRichText } from "../../lib/richText";
 import { parseTableMatrix } from "../../lib/table";
 
 /**
- * 表格覆盖框（用户 2026-09-16）：译文栏里用网页表格重画 OCR 表格。
+ * Table cover: redraws an OCR table as a web table in the translation pane.
  *
- * - 数据来自绑定 JSON：`grid`（Rust 解析标记流后落盘）+ `translation`（二维矩阵 JSON 文本）；
- * - 自适应：二分字号塞进 loc 框，最小字号仍溢出 → 整框透明（原 PDF 像素直出，绝不比现在差）；
- * - 合并：`colspan`（`<lcel>`）用 CSS 网格跨列；纵向合并 v1 由 Rust 解析成空格子；
- * - 单元格文本走 renderRichText（`\(...\)` 行内公式渲染成 KaTeX）。
+ * - Data from the bound JSON: `grid` (Rust persists it after parsing the markup stream) +
+ *   `translation` (2-D matrix JSON text);
+ * - Auto-fit: binary-search a font size into the loc box; if even the minimum overflows, the
+ *   whole cover goes transparent (original PDF pixels show through, never worse than nothing);
+ * - Merge: `colspan` (`<lcel>`) via CSS grid; vertical merges are parsed by Rust into empty cells;
+ * - Cell text goes through renderRichText (inline `\(...\)` renders as KaTeX).
  */
 const props = defineProps<{
   grid: TableGrid;
@@ -37,7 +39,7 @@ const rows = computed<DisplayCell[][]>(() =>
 );
 
 const el = ref<HTMLElement | null>(null);
-/** 塞不下 → 整框透明（text/公式那条路径由 v-fit 兜底截断，表格截断会丢内容，所以直接不覆盖） */
+/** Doesn't fit → whole cover transparent (text/formula paths fall back to v-fit truncation; truncating a table loses content, so don't cover) */
 const fitted = ref(true);
 
 const MIN = 5;
@@ -55,7 +57,7 @@ function fit(): void {
     MAX,
   );
   if (size === MIN && !(box.scrollHeight <= box.clientHeight + 1)) {
-    fitted.value = false; // 最小号仍溢出：整框透明（截断会丢表格内容）
+    fitted.value = false; // even the minimum overflows: whole cover transparent (truncation would lose table content)
     return;
   }
   box.style.setProperty("--tbl-font", `${size}px`);
@@ -92,7 +94,7 @@ onBeforeUnmount(() => {
   }
 });
 
-// 译文/网格变化（翻译完成、清除解析状态）→ 重新适配
+// Translation/grid change (translation done, parse state cleared) → re-fit
 watch([() => props.translation, () => props.grid], scheduleFit);
 </script>
 
@@ -122,12 +124,12 @@ watch([() => props.translation, () => props.grid], scheduleFit);
 </template>
 
 <style scoped>
-/* 底样式见 main.css 的 .cover-box（与 PageCard 的文本块共用）；尺寸由 loc 百分比定 */
+/* Base styles in main.css .cover-box (shared with PageCard's text blocks); size comes from the loc percentage */
 .tbl-cover {
   padding: 1px;
   --tbl-font: 10px;
 }
-/* 塞不下：整框透明 → 原 PDF 像素直出（不拦鼠标：原文栏的悬停块才是交互面） */
+/* Doesn't fit: whole cover transparent → original PDF pixels show through (no mouse capture: the original pane's hover blocks are the interaction surface) */
 .tbl-cover.is-unfit {
   opacity: 0;
   pointer-events: none;
@@ -148,7 +150,7 @@ watch([() => props.translation, () => props.grid], scheduleFit);
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-/* 表头首行加粗（OCR 表格首行绝大多数是表头；不做语义判断，只是视觉提示） */
+/* Bold first row (the overwhelming majority of OCR tables have a header there; no semantic judgement, just a visual hint) */
 .tbl td.cell-head {
   font-weight: 600;
   background: rgba(0, 0, 0, 0.03);

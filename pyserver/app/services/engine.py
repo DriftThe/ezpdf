@@ -1,7 +1,7 @@
-"""OCR 引擎单例：懒加载 + 单锁串行。
+"""OCR engine singleton: lazy load + single-lock serialization.
 
-退化自 Wise-Paddle 的 PipelinePool + BatchScheduler——ezpdf 中 Rust 是唯一
-调度者、无多用户并发，一个 pipeline 实例 + threading.Lock 足够。
+Simplified from Wise-Paddle's PipelinePool + BatchScheduler — Rust is the sole scheduler and
+there is no multi-user concurrency, so one pipeline instance + a threading.Lock is enough.
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ class Engine:
         self._pipe: OCRPipeline | None = None
 
     def load(self) -> OCRPipeline:
-        """首次调用才吃显存（拓扑 A：引擎懒加载）。加载耗时以分钟计。"""
+        """VRAM is only claimed on first call (lazy load). Loading takes minutes."""
         with self._lock:
             if self._pipe is None:
-                import torch  # 懒加载：torch 未装/未导入不阻塞服务启动
+                import torch  # lazy: a missing/absent torch does not block service startup
 
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 self._pipe = OCRPipeline(
@@ -35,11 +35,11 @@ class Engine:
 
     def recognize(self, image) -> PageResult:
         pipe = self.load()
-        with self._lock:  # 单实例推理串行
+        with self._lock:  # one instance, inference serialized
             return pipe.process_page(image)
 
     def recognize_batch(self, images: Sequence) -> list[PageResult]:
-        """多页批量推理：layout 跨页堆叠 + VL 跨页 label 分桶（同锁串行整批）。"""
+        """Multi-page batch: layout stacked across pages + VL bucketed by label across pages (whole batch under one lock)."""
         pipe = self.load()
         with self._lock:
             return pipe.process_pages(images)

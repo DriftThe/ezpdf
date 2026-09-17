@@ -1,11 +1,11 @@
-//! OCR 批量解析（阶段4）：前端离屏渲染页图 → 批量调 pyserver /ocr/pages →
-//! px→pt 映射 → 整批一次原子写回绑定 JSON。翻译走独立的 translate_pdf（前端在
-//! OCR 批次返回后立即排队并发，见 PLAN-LLM.md §4）。
+//! Batch OCR: the frontend renders page images offscreen → batch call pyserver /ocr/pages →
+//! px→pt mapping → one atomic write of the bound JSON per batch. Translation is separate
+//! (translate_pdf, queued concurrently by the frontend after each OCR batch returns).
 //!
-//! 批次语义（用户拍板）：parse_pdf 每批 ≤4 页、同一本书；本模块每批恰好
-//! 一次读 JSON → 一次批量推理 → 一次 tmp+rename 原子写——崩溃最多丢一批
-//! （≤4 页），JSON 恒为完整一致快照，永不半写。
-//! OCR 与翻译可能并发落盘：锁只包住"读盘 → 改 → 原子写"小段（网络/模型调用在锁外）。
+//! Batch semantics: parse_pdf handles ≤4 pages of one book; each batch is exactly one
+//! read → one inference → one tmp+rename write, so a crash loses at most one batch and the
+//! JSON is always a complete snapshot. OCR and translation may write concurrently: the lock
+//! only covers read-modify-atomic-write (network/model calls stay outside it).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ use crate::translate::{self, LlmConfig};
 use crate::table::TABLE;
 use crate::{resolve_bind_path, BindDoc, Block, PageInfo, PDFStatus};
 
-/// 书级文件锁（键 = root/id）：OCR 批次与翻译批次并发落盘时序列化读改写
+/// Per-book file lock (key = root/id) serializing concurrent OCR/translation writes.
 static FILE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
 pub(crate) fn file_lock(root: &str, id: &str) -> Arc<Mutex<()>> {
@@ -31,7 +31,7 @@ pub(crate) fn file_lock(root: &str, id: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-/// parse_pdf 批次输入页（前端离屏渲染产物；index 1-based，与绑定 JSON 对齐）
+/// One parse_pdf input page (frontend offscreen render); index is 1-based, matching the bound JSON.
 #[derive(Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -41,7 +41,7 @@ pub struct ParsePageInput {
     pub scale: f64,
 }
 
-/// parse_pdf 返回：进度摘要 + 本批实际更新的页
+/// parse_pdf result: status summary + the pages actually updated.
 #[derive(Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +50,7 @@ pub struct ParseOutcome {
     pub updated_pages: Vec<PageInfo>,
 }
 
-// ---- pyserver /ocr/pages 响应（只取需要的字段）----
+// ---- pyserver /ocr/pages response (only the needed fields) ----
 
 #[derive(Deserialize)]
 struct OcrBatchResponse {
@@ -69,15 +69,13 @@ struct OcrBlockResponse {
     markdown: String,
 }
 
-/// bbox 像素 → PDF pt（pt = px/scale），保留 2 位小数
+/// bbox pixels → PDF points (pt = px/scale), rounded to 2 decimals.
 fn px_to_pt(v: f64, scale: f64) -> f64 {
     ((v / scale) * 100.0).round() / 100.0
 }
 
-/// OCR 响应块 → 绑定 JSON Block：label 原样（string 通道，PP-DocLayoutV3
-/// 实测输出 text/paragraph_title/doc_title/table/formula/image/chart/
-/// abstract/reference/reference_content/footer/header/footnote/seal/number
-/// 等 20 类）；image 块 content 置空串（figure 契约）；translation=None（bypass）
+/// OCR response block → bound-JSON Block: label kept as-is (PP-DocLayoutV3 emits ~20 classes);
+/// image blocks get an empty content (figure contract); translation=None (bypass stage).
 fn map_blocks(blocks: &[OcrBlockResponse], scale: f64) -> Vec<Block> {
     blocks
         .iter()
@@ -95,8 +93,8 @@ fn map_blocks(blocks: &[OcrBlockResponse], scale: f64) -> Vec<Block> {
         .collect()
 }
 
-/// 把一批 (index, blocks) patch 进 BindDoc：整批 finished=true、translated=false
-/// （重新 OCR 的页需重翻）；索引不在骨架内的页静默跳过；返回实际更新页的 index
+/// Patch a batch of (index, blocks) into the BindDoc: finished=true, translated=false
+/// (re-OCR'd pages need re-translation); unknown indexes are skipped; returns updated indexes.
 fn patch_pages(doc: &mut BindDoc, updates: Vec<(u32, Vec<Block>)>) -> Vec<u32> {
     let mut patched = Vec::new();
     for (index, blocks) in updates {
@@ -110,10 +108,9 @@ fn patch_pages(doc: &mut BindDoc, updates: Vec<(u32, Vec<Block>)>) -> Vec<u32> {
     patched
 }
 
-/// 书级状态迁移（Rust 单写者职责）：
-/// - 全页 finished（且至少一页）→ Finished
-/// - 尚未开始（Pending）→ Processing（批间残留状态；崩溃后重启据此续跑）
-/// - 已是 Processing/Finished → 保持
+/// Book status transition (Rust is the single writer):
+/// all pages finished (and at least one) → Finished; Pending → Processing on the first batch;
+/// Processing/Finished stay put.
 fn finalize_status(doc: &mut BindDoc) {
     if !doc.pages.is_empty() && doc.pages.iter().all(|p| p.finished) {
         doc.status = PDFStatus::Finished;
@@ -122,10 +119,9 @@ fn finalize_status(doc: &mut BindDoc) {
     }
 }
 
-/// 补齐表块网格（用户 2026-09-16）：表格支持之前解析的 JSON 没有 `grid`，
-/// 前端既无法渲染、也无法判断"哪些表格还值得翻"。load_pdf 时顺带解析落盘一次
-/// （纯派生数据，不涉及 LLM），之后前端就能只挑**可解析且未翻**的表格补翻。
-/// 返回是否有变更（无变更不写盘）。
+/// Backfill table grids: pre-table JSONs have no `grid`, so the frontend can neither render
+/// nor re-translate them. Parsed once and persisted on load (derived data, no LLM), letting
+/// the frontend target only parsable untranslated tables. Returns whether anything changed.
 pub(crate) fn backfill_table_grids(doc: &mut BindDoc) -> bool {
     let mut changed = false;
     for page in doc.pages.iter_mut() {
@@ -142,13 +138,12 @@ pub(crate) fn backfill_table_grids(doc: &mut BindDoc) -> bool {
     changed
 }
 
-/// 原子写绑定 JSON：tmp + rename（Windows fs::rename = MOVEFILE_REPLACE_EXISTING，
-/// 覆盖已存在目标）
+/// Atomic bound-JSON write: tmp + rename (Windows rename = MOVEFILE_REPLACE_EXISTING).
 pub(crate) fn write_bind_atomic(json_path: &Path, doc: &BindDoc) -> Result<(), String> {
     crate::write_json_atomic(json_path, doc, "bound JSON")
 }
 
-/// 读索引定位绑定 JSON 并解析为 BindDoc（parse_batch / prefill_pages 共用入口）
+/// Locate and parse a book's bound JSON into a BindDoc (shared entry point).
 fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
     let entry = crate::find_pdf(root, id)?;
     let bind = entry
@@ -160,7 +155,7 @@ fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
     Ok((json_path, doc))
 }
 
-/// 文档中指定 index 的页快照（updatedPages 回传用）
+/// Snapshots of the given page indexes (for updatedPages).
 fn pages_by_index(doc: &BindDoc, indices: &[u32]) -> Vec<PageInfo> {
     indices
         .iter()
@@ -168,7 +163,7 @@ fn pages_by_index(doc: &BindDoc, indices: &[u32]) -> Vec<PageInfo> {
         .collect()
 }
 
-/// 批量结果摘要（parse_batch / translate_batch 共用）
+/// Batch result summary (shared by parse_batch / translate_batch).
 fn outcome(doc: &BindDoc, updated: Vec<PageInfo>) -> ParseOutcome {
     ParseOutcome {
         book_status: doc.status,
@@ -176,9 +171,8 @@ fn outcome(doc: &BindDoc, updated: Vec<PageInfo>) -> ParseOutcome {
     }
 }
 
-/// 解析一批页（OCR）：读索引定位绑定 JSON → POST /ocr/pages（token 头）→
-/// 块映射 + 页 patch → 状态迁移 → 整批一次原子写。翻译由前端随后调 translate_pdf
-/// 并发执行（用户拍板 2026-09-14：pipeline 不再等翻译，翻页隔页并发见 translate_batch）
+/// Parse one OCR batch: locate the bound JSON → POST /ocr/pages (token header) → map blocks
+/// + patch pages → status transition → one atomic write. Translation follows via translate_pdf.
 pub async fn parse_batch(
     root: &str,
     id: &str,
@@ -196,14 +190,14 @@ pub async fn parse_batch(
         ));
     }
 
-    // 快速失败：书/绑定 JSON 不存在就没必要跑模型
+    // Fail fast: no need to run the model if the book/bound JSON is missing.
     {
         let lock = file_lock(root, id);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let _ = load_bind(root, id)?;
     }
 
-    // 批量推理：reqwest 默认无总超时——引擎懒加载时首个请求以分钟计
+    // No total timeout: with lazy engine loading the first request can take minutes.
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "pages": pages
@@ -236,7 +230,7 @@ pub async fn parse_batch(
         ));
     }
 
-    // 锁内落盘：重读（合并翻译批次同时写入的译文）→ patch → 原子写
+    // Persist under lock: re-read (merging concurrent translation writes) → patch → atomic write.
     let result = {
         let lock = file_lock(root, id);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -263,7 +257,7 @@ pub async fn parse_batch(
     Ok(result)
 }
 
-/// 翻译相位分组（隔页并发）：位置 0,2,4… 一相位、1,3,5… 一相位
+/// Translation phase grouping (stride-2 concurrency): positions 0,2,4… in one phase, 1,3,5… in the other.
 fn phase_pages(indices: &[u32], phase: usize) -> Vec<u32> {
     indices
         .iter()
@@ -273,17 +267,17 @@ fn phase_pages(indices: &[u32], phase: usize) -> Vec<u32> {
         .collect()
 }
 
-/// 只翻译（不 OCR）指定页：供翻译失败重试（finished && !translated）。
-/// 隔页并发（用户拍板 2026-09-14）：位置 0,2,4… 一个相位、1,3,5… 一个相位——
-/// 相位内页互不相邻，上下文候选不会互踩；相位间串行，后相位可见前相位落盘的
-/// external 绑定。页级 catch，全部无进展则不写盘（前端按无进展记 strike）。
+/// Translate-only (no OCR) for the given pages, used for retries (finished && !translated).
+/// Stride-2 phases: neighbors never translate concurrently, so context candidates don't
+/// collide; phases run serially, and phase 2 sees phase 1's persisted external bindings.
+/// Per-page catch; if nothing progressed the write is skipped (the frontend records a strike).
 pub async fn translate_batch(
     root: &str,
     id: &str,
     indices: Vec<u32>,
     llm: &LlmConfig,
 ) -> Result<ParseOutcome, String> {
-    // 每页 = 一次付费 LLM 请求（两相位并发跑）：限页数与去重，别让前端的错参数放大成并发风暴
+    // Each page is a paid LLM request: cap the count and dedupe so bad frontend args can't fan out.
     let mut indices = indices;
     indices.sort_unstable();
     indices.dedup();
@@ -296,7 +290,7 @@ pub async fn translate_batch(
             indices.len()
         ));
     }
-    // 翻译被用户关掉（2026-09-15）：不碰网络，原文当译文落盘并标记完成
+    // Translation disabled: no network, source text is stored as the translation and marked done.
     if !llm.translate_enabled {
         return bypass_batch(root, id, &indices, llm);
     }
@@ -317,7 +311,7 @@ pub async fn translate_batch(
             continue;
         }
 
-        // 快照（锁内读盘；相位 2 可见相位 1 落盘的 external 绑定）
+        // Snapshot under lock; phase 2 sees phase 1's persisted external bindings.
         let tasks: Vec<translate::PageTask> = {
             let lock = file_lock(root, id);
             let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -331,7 +325,7 @@ pub async fn translate_batch(
             continue;
         }
 
-        // 并发翻译（锁外；相位内页互不相邻）
+        // Concurrent translation (outside the lock; pages in a phase are non-adjacent).
         let mut handles = Vec::with_capacity(tasks.len());
         for task in tasks {
             let (cfg, prompt, client) = (llm.clone(), prompt.clone(), client.clone());
@@ -351,7 +345,7 @@ pub async fn translate_batch(
             continue;
         }
 
-        // 锁内落盘：重读 → 应用本相位结果（含 external 邻页）→ 原子写
+        // Persist under lock: re-read → apply this phase's results (incl. external neighbour bindings) → atomic write.
         let lock = file_lock(root, id);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let (json_path, mut doc) = load_bind(root, id)?;
@@ -373,8 +367,8 @@ pub async fn translate_batch(
     Ok(outcome(&doc, pages_by_index(&doc, &touched)))
 }
 
-/// 翻译禁用路径（用户 2026-09-15）：不碰网络/提示词，逐页把原文复制成译文并标记完成，
-/// 一次原子写。前端调度链与联网路径完全一致（都是 translate_pdf），只有这里分流。
+/// Disabled-translation path: no network/prompts, copies source into translation per page and
+/// marks it done in one atomic write. The frontend chain is identical; only this branch differs.
 fn bypass_batch(
     root: &str,
     id: &str,
@@ -407,8 +401,8 @@ fn bypass_batch(
     Ok(outcome(&doc, pages_by_index(&doc, &touched)))
 }
 
-/// 打开书补骨架：pages 为空（lopdf 解析失败的书）时按实测页数重建 1..=N 骨架；
-/// 已有页一律 no-op（绝不覆盖既有 OCR 数据）。返回当前书状态。
+/// Prefill on open: when pages is empty (failed lopdf parse) rebuild a 1..=N skeleton from
+/// the real count; never touches existing pages. Returns the current book status.
 pub async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
     let (json_path, mut doc) = load_bind(root, id)?;
     if !doc.pages.is_empty() || total == 0 {
@@ -419,9 +413,9 @@ pub async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus
     Ok(doc.status)
 }
 
-/// 清除一本书的解析状态（用户 2026-09-15）：丢弃全部 OCR 块与译文，按页数重建
-/// 1..=N 空骨架并原子写回（PDF 本体不动，译文栏回到未解析态）。
-/// total = 前端 pdfjs 实测页数；为 0（书未打开/取不到）时沿用 JSON 里已有的页数。
+/// Clear a book's parse state: drop all OCR blocks/translations and rebuild a 1..=N empty
+/// skeleton (the PDF itself is untouched). total = pdfjs page count; when 0 (book not open)
+/// the existing JSON page count is reused.
 pub fn reset_pdf_state(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
     let lock = file_lock(root, id);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -436,15 +430,14 @@ pub fn reset_pdf_state(root: &str, id: &str, total: u32) -> Result<PDFStatus, St
     Ok(doc.status)
 }
 
-/// 页数上限：正常 PDF 远低于此；畸形/恶意文件（或前端传错）不能让我们分配巨型 Vec——
-/// release 下 panic=abort，OOM 会直接杀掉进程
-/// 单批页数上限（Rust 侧硬上限：OCR 批与翻译批共用；服务端公布值会被夹到它）
+/// Rust-side hard batch limit shared by OCR and translation batches; advertised values clamp to it.
+/// Guards against malformed/malicious counts allocating huge Vecs (release is panic=abort, so OOM kills).
 pub(crate) const MAX_BATCH_PAGES: u32 = 32;
 
-/// 导入预填充的页数上限（畸形 PDF 保护）
+/// Page-count cap for import prefill (malformed-PDF guard).
 const MAX_PAGES: u32 = 20_000;
 
-/// 1..=N 空页骨架（导入预填充 / 打开书补骨架共用）
+/// 1..=N empty page skeleton (shared by import prefill and open-time backfill).
 pub(crate) fn build_skeleton(total: u32) -> Result<Vec<PageInfo>, String> {
     if total > MAX_PAGES {
         return Err(format!("page count out of range: {total} > {MAX_PAGES}"));
@@ -459,7 +452,7 @@ pub(crate) fn build_skeleton(total: u32) -> Result<Vec<PageInfo>, String> {
         .collect())
 }
 
-/// 单行截断到 ≤cap 个字符（日志/错误摘要；按字符边界切，不 panic）
+/// Truncate a single line to ≤cap chars (log/error summaries; char-boundary safe).
 pub(crate) fn truncate(s: &str, cap: usize) -> &str {
     match s.char_indices().nth(cap) {
         Some((i, _)) => &s[..i],
@@ -471,9 +464,8 @@ pub(crate) fn truncate(s: &str, cap: usize) -> &str {
 mod tests {
     use super::*;
 
-    /// 清除解析状态（用户 2026-09-15）：整份 JSON 回到 1..=N 空骨架，PDF 不动
-    /// 表块网格补齐（用户 2026-09-16）：只对可解析表格落盘，
-    /// 解析不了的保持 grid=None（前端据此不把它当补翻目标）
+    /// Backfill: only parsable tables get a grid; unparsable ones stay grid=None (so the
+    /// frontend does not treat them as re-translation targets).
     #[test]
     fn backfill_fills_only_parsable_tables() {
         let blk = |content: &str, grid| Block {
@@ -511,7 +503,7 @@ mod tests {
         .unwrap();
         let full = std::fs::canonicalize(&root).unwrap();
         let path = full.join(bind);
-        // 有内容、已翻译、状态 Finished 的绑定 JSON
+        // A bound JSON with content, translated, status Finished
         let doc = BindDoc {
             status: PDFStatus::Finished,
             pages: vec![page_for_reset(1), page_for_reset(2)],
@@ -524,7 +516,7 @@ mod tests {
         assert_eq!(after.pages.len(), 3, "page count comes from the caller");
         assert!(after.pages.iter().all(|p| !p.finished && !p.translated && p.blocks.is_empty()));
 
-        // total = 0 → 沿用 JSON 里已有页数
+        // total = 0 → reuse the page count already in the JSON
         let status = reset_pdf_state(full.to_str().unwrap(), "ab12", 0).unwrap();
         assert!(matches!(status, PDFStatus::Pending));
         assert_eq!(crate::read_bind_doc(&path).unwrap().pages.len(), 3);
@@ -584,7 +576,7 @@ mod tests {
         assert_eq!(out[0].kind, "text");
         assert_eq!(out[0].content, "hello");
         assert_eq!(out[0].loc, [0.0, 0.0, 100.0, 20.0]);
-        // image → content 空串（figure 契约），translation None（bypass 阶段）
+        // image → empty content (figure contract), translation None (bypass stage)
         assert_eq!(out[1].kind, "image");
         assert!(out[1].content.is_empty());
         assert!(out[1].translation.is_none());
@@ -612,7 +604,7 @@ mod tests {
         assert_eq!(patched, vec![2]);
         assert!(!doc.pages[0].finished);
         assert!(doc.pages[1].finished);
-        assert!(!doc.pages[1].translated); // 新 OCR 的页需重翻
+        assert!(!doc.pages[1].translated); // freshly OCR'd page needs re-translation
         assert_eq!(doc.pages[1].blocks.len(), 1);
     }
 
@@ -634,7 +626,7 @@ mod tests {
         finalize_status(&mut doc);
         assert!(matches!(doc.status, PDFStatus::Processing));
 
-        // Processing 保持
+        // Processing stays put
         doc.status = PDFStatus::Processing;
         doc.pages = vec![page(1, false)];
         finalize_status(&mut doc);
@@ -646,7 +638,7 @@ mod tests {
         let pages = build_skeleton(3).unwrap();
         assert_eq!(pages.iter().map(|p| p.index).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert!(pages.iter().all(|p| !p.finished && p.blocks.is_empty()));
-        // 上限：畸形页数一律拒绝，不分配巨型 Vec
+        // cap: malformed page counts are rejected outright
         assert!(build_skeleton(MAX_PAGES).is_ok());
         assert!(build_skeleton(MAX_PAGES + 1).is_err());
     }

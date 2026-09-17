@@ -9,8 +9,8 @@ import ReaderPane from "./ReaderPane.vue";
 import EmptyState from "../common/EmptyState.vue";
 
 /**
- * 阅读区：按布局 4 态编排 1–2 个 ReaderPane，并负责滚动同步。
- * 同步策略：比例映射（两栏页面几何一致时即 1:1 对应）。
+ * Reader area: arranges 1–2 ReaderPanes for the 4 layout modes and handles scroll sync.
+ * Sync strategy: ratio mapping (1:1 when both panes have identical page geometry).
  */
 type PaneKind = "original" | "translation";
 type Side = "left" | "right";
@@ -57,12 +57,12 @@ function onPageVisible(page: number): void {
   reader.setVisiblePage(page);
 }
 
-/** 未开始解析的 PDF（绑定 JSON 缺失或 status 为 Pending）：译文视窗用 EmptyState 提示，原文视窗仍显示空白页 */
+/** PDF not yet being parsed (bound JSON missing or status Pending): the translation pane shows EmptyState, the original pane still shows blank pages */
 function isTranslationPending(kind: PaneKind): boolean {
   return kind === "translation" && (lib.currentPdf?.bind === null || lib.currentPdf?.status === "Pending");
 }
 
-// ---- pdfjs 文档生命周期（阶段2）：唯一持有者在本组件，两栏共用同一 doc ----
+// ---- pdfjs document lifecycle: this component is the sole owner, both panes share one doc ----
 const pdfDoc = shallowRef<PDFDocumentProxy | null>(null);
 const docState = ref<"idle" | "loading" | "ready" | "error">("idle");
 const docError = ref("");
@@ -74,14 +74,14 @@ watch(
   },
 );
 
-/** 切书：销毁旧 doc → 载入新 doc → 上报几何 → 后台量逐页尺寸
- *  （异步期间用 id 复核，竞态结果丢弃） */
+/** Switch book: destroy old doc → load new doc → report geometry → measure per-page sizes in
+ *  the background (re-check the id across awaits, discard race results) */
 async function openDocument(id: string | null, oldId: string | null): Promise<void> {
   if (oldId) void destroyPdfDoc(oldId);
   pdfDoc.value = null;
   docError.value = "";
-  reader.setPdfGeometry(0, 0, 0); // 切书：旧几何失效（pageCount 回退绑定 JSON）
-  reader.setPageSizes([]); // 逐页尺寸一并失效
+  reader.setPdfGeometry(0, 0, 0); // book switch: stale geometry invalid (pageCount falls back to the bound JSON)
+  reader.setPageSizes([]); // per-page sizes invalid too
   const path = lib.currentPdf?.pdfPath;
   if (!id || !path) {
     docState.value = "idle";
@@ -89,13 +89,13 @@ async function openDocument(id: string | null, oldId: string | null): Promise<vo
   }
   docState.value = "loading";
   try {
-    // pin：焦点书 doc 不参与 LRU 淘汰（调度桥后台书最多再占 1 本）
+    // pin: the focused book's doc is not LRU-evicted (background books in the scheduling bridge take at most 1 more)
     const doc = await loadPdfDoc(id, path, true);
     if (lib.currentPdfId !== id) {
-      void destroyPdfDoc(id); // 竞态：加载完成时书已切走 → 丢弃
+      void destroyPdfDoc(id); // race: book switched away before load finished → discard
       return;
     }
-    // 几何上报：真实页数 + 第 1 页尺寸（pt，getViewport scale=1 时 1pt=1px）
+    // Geometry report: real page count + page-1 size (pt; getViewport scale=1 gives 1pt=1px)
     const page1 = await doc.getPage(1);
     if (lib.currentPdfId !== id) {
       void destroyPdfDoc(id);
@@ -103,23 +103,25 @@ async function openDocument(id: string | null, oldId: string | null): Promise<vo
     }
     const vp = page1.getViewport({ scale: 1 });
     reader.setPdfGeometry(doc.numPages, vp.width, vp.height);
-    // 几何就绪后重新装填待跳页：restorePageFor 设置的 jumpTarget 会在几何就绪前
-    // 被提前消费（当时页卡尚未渲染），在此重置才能恢复到记住的阅读位置
+    // Re-arm the pending jump once geometry is ready: the jumpTarget set by restorePageFor is
+    // consumed too early (page cards don't exist yet) before geometry, so reset it here to
+    // restore the remembered reading position
     reader.jumpTarget = reader.currentPage;
     pdfDoc.value = doc;
     docState.value = "ready";
-    void measurePageSizes(id, doc); // 后台逐页实测（渐进生效，先按第 1 页尺寸顶住）
+    void measurePageSizes(id, doc); // background per-page measurement (progressive; page-1 size holds until then)
   } catch (error) {
-    if (lib.currentPdfId !== id) return; // 已切书，错误不再相关
+    if (lib.currentPdfId !== id) return; // book already switched, error no longer relevant
     docError.value = String(error);
     docState.value = "error";
   }
 }
 
 /**
- * 逐页实测尺寸（后台，分批并发）：页尺寸不一的 PDF（扫描版每页裁剪不同，
- * 还有横页）覆盖层定位必须按每页真实几何——OCR 的 loc 也是按每页真实
- * viewport 换算的，两端必须同源。getPage 为纯元数据解析，无渲染开销。
+ * Per-page measurement (background, batched concurrent): PDFs with mixed page sizes
+ * (crops differ per scan page, plus landscape pages) require overlay positioning from
+ * each page's true geometry — OCR's loc is converted from the same per-page viewport,
+ * so both ends must agree. getPage is pure metadata parsing, no render cost.
  */
 async function measurePageSizes(id: string, doc: PDFDocumentProxy): Promise<void> {
   const sizes: Array<{ w: number; h: number }> = new Array(doc.numPages);
@@ -134,11 +136,11 @@ async function measurePageSizes(id: string, doc: PDFDocumentProxy): Promise<void
         }),
       ),
     );
-    if (lib.currentPdfId !== id) return; // 已切书：旧测量作废
+    if (lib.currentPdfId !== id) return; // book already switched: stale measurement
     chunk.forEach((s, k) => {
       sizes[i + k] = s;
     });
-    reader.setPageSizes([...sizes]); // 渐进生效：已量出的页立刻用真实尺寸
+    reader.setPageSizes([...sizes]); // progressive: measured pages immediately use their real size
   }
 }
 
@@ -147,8 +149,8 @@ onBeforeUnmount(() => {
   if (id) void destroyPdfDoc(id);
 });
 
-/** 工具栏/状态条跳页、切换 PDF 恢复位置 → 两栏同步滚动（手动滚动不触发）。
- *  flush post：DOM 更新后再滚动，切书/几何就绪时页卡才真实存在 */
+/** Toolbar/status-strip page jump, PDF switch position restore → sync-scroll both panes (manual scroll doesn't trigger).
+ *  flush post: scroll after the DOM update, page cards only exist then (book switch/geometry ready) */
 watch(
   () => reader.jumpTarget,
   (p) => {
@@ -164,7 +166,7 @@ watch(
 <template>
   <div class="reader-area">
     <template v-if="lib.currentPdf">
-      <!-- 文档级加载/错误态（取数失败两栏都无事可做） -->
+      <!-- Document-level load/error state (both panes are useless if fetching failed) -->
       <div v-if="docState === 'error'" class="pane-slot">
         <EmptyState :title="t('reader.loadFailed')" :desc="docError" />
       </div>
@@ -172,7 +174,7 @@ watch(
         <EmptyState :title="t('common.loading')" :desc="t('reader.loadingDesc')" />
       </div>
       <template v-else>
-        <!-- 左栏 -->
+        <!-- Left pane -->
         <div v-if="left && isTranslationPending(left)" class="pane-slot">
           <EmptyState :title="t('reader.notParsed')" :desc="t('reader.notParsedDesc')" />
         </div>
@@ -185,7 +187,7 @@ watch(
           @page-visible="onPageVisible"
         />
         <div v-if="right" class="pane-divider" />
-        <!-- 右栏 -->
+        <!-- Right pane -->
         <div v-if="right && isTranslationPending(right)" class="pane-slot">
           <EmptyState :title="t('reader.notParsed')" :desc="t('reader.notParsedDesc')" />
         </div>

@@ -1,7 +1,7 @@
-/* ===== ezpdf 全局样式：变量 / 重置 / 通用控件 ===== */
+/* ===== ezpdf global styles: variables / reset / shared controls ===== */
 
 :root {
-  /* 浅色 = 蓝白（用户 2026-09-14）：中性色带蓝调，强调色为蓝 */
+  /* Light = blue-white: blue-tinted neutrals, blue accent */
   --bg-app: #eef3fc;
   --bg-panel: #ffffff;
   --bg-hover: #e9f0fd;
@@ -18,7 +18,7 @@
   --accent-weak: rgba(47, 107, 255, 0.14);
   --accent-contrast: #ffffff;
 
-  /* 页面内标注色（页面恒为白底，不随主题切换） */
+  /* In-page annotation colors (pages stay white, independent of theme) */
   --page-annot: #2f6bff;
   --page-annot-figure: #2ea44f;
   --page-annot-formula: #8b5cf6;
@@ -43,10 +43,9 @@
   --titlebar-h: 34px;
 }
 
-/* 深色：显式 data-theme（主题切换的真相源在 JS；不再用媒体查询，
-   跟随系统由 theme.ts 解析成 light/dark 后写入该属性） */
+/* Dark: explicit data-theme (JS is the source of truth; theme.ts resolves system → light/dark) */
 :root[data-theme="dark"] {
-  /* 黑灰白单色系 */
+  /* Black/gray/white monochrome */
   --bg-app: #121212;
   --bg-panel: #1c1c1c;
   --bg-hover: #262626;
@@ -75,8 +74,7 @@
   --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.6);
 }
 
-/* 主题切换瞬间：只在此期间给所有元素挂颜色过渡（0.3s，用户 2026-09-14），
-   不常驻——否则 hover 等交互也会被过渡拖慢 */
+/* Only during a theme switch: apply color transitions (0.3 s), not permanently, so hover stays fast */
 html.theme-switching,
 html.theme-switching *,
 html.theme-switching *::before,
@@ -122,7 +120,7 @@ textarea {
   color: var(--text-1);
 }
 
-/* ---- 通用按钮 ---- */
+/* ---- shared buttons ---- */
 .btn {
   border: 1px solid var(--border-strong);
   background: var(--bg-panel);
@@ -161,7 +159,7 @@ textarea {
 .btn.warn {
   color: var(--warn);
 }
-/* 危险操作（删除确认等）：实心红，两主题通用（--err 两套均已定义） */
+/* Destructive (e.g. delete confirm): solid red, both themes define --err */
 .btn.danger {
   background: var(--err);
   border-color: var(--err);
@@ -193,7 +191,7 @@ textarea {
   cursor: default;
 }
 
-/* ---- 服务状态（工具栏 / 设置弹窗共用） ---- */
+/* ---- service status (toolbar / settings) ---- */
 .svc {
   display: inline-flex;
   align-items: center;
@@ -221,14 +219,14 @@ textarea {
 .svc.disconnected {
   color: var(--err);
 }
-/* 通用修饰（设置页 OCR 服务面板复用）：ok=就绪/空闲 info=信息态(CPU) err=失败 */
+/* Shared modifiers: ok=ready/idle, info=info (CPU), err=failed */
 .svc.ok .svc-dot {
   background: var(--ok);
 }
 .svc.info .svc-dot {
   background: var(--accent);
 }
-/* 处理中：服务在线且一批在途（区别于启动中的琥珀色，用强调色脉动表示"在干活"） */
+/* Busy: online with a batch in flight (accent pulse, vs amber for starting) */
 .svc.busy .svc-dot {
   background: var(--accent);
   animation: ez-pulse 1.2s ease-in-out infinite;
@@ -241,8 +239,8 @@ textarea {
 .svc.failed {
   color: var(--err);
 }
-/* 设置页：日志区（OCR 服务 stderr/pip、LLM 翻译链路；流式输出） */
-/* 译文栏白底覆盖框（PageCard 文本块 / TableCover 表格共用底样式；位置与尺寸由调用方给） */
+/* Settings log area (OCR stderr/pip, LLM chain; streaming output) */
+/* Translation-pane white cover box (shared by text blocks and TableCover; caller positions it) */
 .cover-box {
   position: absolute;
   background: #fff;
@@ -272,7 +270,7 @@ textarea {
   }
 }
 
-/* ---- 开关 ---- */
+/* ---- toggle switch ---- */
 .switch {
   display: inline-flex;
   align-items: center;
@@ -311,7 +309,7 @@ textarea {
   left: 14px;
 }
 
-/* ---- 设置页子项面板（settings/sections/ 共用） ---- */
+/* ---- settings panes (shared by settings/sections/) ---- */
 .set-pane {
   padding: 24px 32px;
 }
@@ -345,7 +343,7 @@ textarea {
 }
 .set-field-row {
   display: flex;
-  flex-wrap: wrap; /* 行内项目多时（如 OCR 四项检查）窄窗自动换行 */
+  flex-wrap: wrap; /* wrap when items are many (e.g. OCR checks) in a narrow window */
   gap: 40px;
 }
 .set-field-row .set-field {
@@ -363,12 +361,12 @@ textarea {
 .set-check input {
   accent-color: var(--accent);
 }
-/* 自绘下拉选择（安装模式等；风格与软件一致，箭头由外层 SVG 画） */
+/* Self-drawn select (install mode etc.); arrow drawn by an outer SVG */
 .set-select-wrap {
   position: relative;
   display: inline-flex;
   align-items: center;
-  /* grid 子项默认 stretch：不写就会被拉满整列，绝对定位的箭头会飞到最右端 */
+  /* grid items stretch by default; without this the absolute arrow flies to the far right */
   justify-self: start;
 }
 .set-select {
@@ -396,7 +394,7 @@ textarea {
   pointer-events: none;
   color: var(--text-3);
 }
-/* 设置项说明文字（勾选项下方的小字提示） */
+/* Field hint text (small note under checkboxes) */
 .set-hint {
   margin: -4px 0 10px;
   font-size: 12px;
@@ -405,12 +403,9 @@ textarea {
   max-width: 560px;
 }
 
-/*
- * 设置页按钮：与 set-field input 同规格（同高同框同字号），独立使用
- * class="set-button"；不支持与 .btn 叠加。
- */
+/* Settings button: same specs as set-field input; standalone class, do not combine with .btn */
 .set-button {
-  justify-self: start; /* 在 set-field 的 1fr 格子里保持自然宽度，不拉满整行 */
+  justify-self: start; /* keep natural width in the 1fr cell */
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
@@ -429,7 +424,7 @@ textarea {
   cursor: default;
 }
 
-/* ---- 滚动条 ---- */
+/* ---- scrollbar ---- */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;

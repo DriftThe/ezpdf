@@ -3,9 +3,8 @@ import type { PDFStatus } from "./PDFStatus";
 import type { PageInfo } from "./PageInfo";
 
 /**
- * 一份 PDF 的完整实体（身份字段 + 绑定 JSON 内容）。
- * id = 稳定唯一标识符（与 .ezrepo 条目一致，前端一切键都以它为准）；
- * bind = 绑定 JSON 的仓库相对路径，None = 未绑定（旧条目）；
- * status/pages = 绑定 JSON 的内容（bind None 时为 Pending/空）。
+ * Full PDF entity: identity fields + bound-JSON content.
+ * bind = repo-relative bound-JSON path, None = unbound (legacy entry);
+ * status/pages come from the bound JSON (Pending/empty when bind is None).
  */
 export type PDF = { id: string, name: string, pdfPath: string, bind: string | null, status: PDFStatus, pages: Array<PageInfo>, };

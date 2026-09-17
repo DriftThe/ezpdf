@@ -1,15 +1,13 @@
 name: Pyserver images
 
-# 解析服务的镜像快照：构建 CPU/GPU 两个自包含镜像（模型打在镜像里，离线可用），
-# 容器冒烟测试（/health 鉴权 + 真实推理）后 docker save、切成 <2GiB 分片，
-# 上传到**独立于应用发布**的 `pyserver-<应用 tag>` Release（用户 2026-09-17 拍板：
-# 镜像与应用安装包分开，别把 6.5GB 附件塞进应用 Release）。
+# Pyserver image snapshots: build self-contained CPU/GPU images (models baked in, offline-ready),
+# smoke test them (/health auth + real inference), docker save, split under 2 GiB, upload to a
+# `pyserver-<app tag>` Release kept separate from the app release (6.5 GB of assets would bloat it).
 #
-# 为什么手动触发：一次要现下模型（1.9GB）与 torch 轮子（CPU 约 0.3GB / GPU 约 5GB），
-# 单变体约 20-30 分钟，没必要挂在每次发版上。应用发版仍只由 release.yml 负责安装包。
-# 为什么切分：GitHub Release 单个附件上限 2GiB，实测 tar 为 2.1GB（CPU）/ 4.5GB（GPU），
-# 客户端下载分片后按 README 合并再 docker load。
-# 为什么先 draft：与应用发版同一节奏——草稿自检后再手动转正（`gh release edit --draft=false`）。
+# Manual dispatch because one run needs models (1.9 GB) and torch wheels (CPU ~0.3 GB / GPU ~5 GB)
+# and takes 20-30 min per variant. Model downloads happen here to bake them into the image.
+# Parts because a GitHub Release asset is capped at 2 GiB while the tar is 2.1GB (CPU) / 4.5GB (GPU);
+# downloaders merge and docker load. Draft first; publish with `gh release edit --draft=false`.
 on:
   workflow_dispatch:
     inputs:
@@ -34,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 需要 tag，构建必须与发出去的那一版同源
+          fetch-depth: 0 # need the tag; the build must match the published version
 
       - name: Resolve tag
         id: vars
@@ -59,10 +57,10 @@ jobs:
           echo "building from $(git rev-parse --short HEAD)"
           df -h / | tail -1
 
-      # 镜像 Release 与应用 Release 分开（用户 2026-09-17）：另建 pyserver-<tag>，首次为 draft，
-      # 自检后手动转正（gh release edit pyserver-<tag> --draft=false）；应用 Release 不背镜像附件。
-      # 正文用本步骤里的双语说明（不从仓库文件取）；tag 可能已经推好，没有再就地建一个
-      # （--verify-tag 要求 tag 已存在，这里刻意不用它——否则忘了推 tag 就会在这一步失败）。
+      # Separate pyserver-<tag> release, created as a draft and published manually
+      # (gh release edit pyserver-<tag> --draft=false); the app release carries no image assets.
+      # The body is the bilingual text below (not from a repo file). --verify-tag is deliberately
+      # omitted so a dispatch does not need the release tag to exist yet.
       - name: Ensure pyserver draft release
         run: |
           set -euo pipefail
@@ -103,12 +101,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Dockerfile 里模型是 COPY 进镜像的（自包含），CI 上先下到构建上下文。
-      # 与客户端「一键安装服务」走同一条代码路径（python -m app.fetch）。
+      # The Dockerfile COPYs models into the image (self-contained), so fetch them into the
+      # build context here, via the same code path as the app's install service (python -m app.fetch).
       - name: Download models into the build context
         working-directory: pyserver
         env:
-          HF_ENDPOINT: https://huggingface.co # fetch.py 默认镜像端点，runner 直连官方源更快
+          HF_ENDPOINT: https://huggingface.co # fetch.py's default mirror; direct official is faster on the runner
           EZPDF_MODELS_DIR: ${{ github.workspace }}/pyserver/models
         run: |
           set -euo pipefail
@@ -122,13 +120,13 @@ jobs:
           docker build -t ezpdf-pyserver:cpu -t "ezpdf-pyserver:${{ steps.vars.outputs.tag }}-cpu" \
             --build-arg VARIANT=cpu pyserver
 
-      # 冒烟测试：只探 /health 不够，镜像是"能推理"才算可用，所以容器里真跑一次。
-      # 无令牌必须 403、带令牌必须 200（服务端鉴权默认开启）。
+      # /health alone is not enough: the image is usable only if it can infer, so run it for real.
+      # No token must return 403, with token 200 (server-side auth is on by default).
       - name: Smoke test CPU image
         if: contains(inputs.variants, 'cpu')
         run: |
           set -euo pipefail
-          trap 'docker rm -f smoke' EXIT # 失败时别把容器留在 runner 上
+          trap 'docker rm -f smoke' EXIT # don't leave the container on the runner after a failure
           docker run -d --name smoke -p 127.0.0.1:9055:9055 \
             -v "$PWD/ci-data:/data" \
             -v "$PWD/scripts/smoke-inference.py:/smoke.py:ro" \
@@ -144,9 +142,8 @@ jobs:
             docker logs smoke
             exit 1
           fi
-          # 令牌必须从容器里读：服务端以 root 写 /data/token.txt 并 chmod 0600，宿主机挂出来的
-          # ci-data/token.txt 对非 root 的 runner 用户不可读（旧写法踩过：cat 报 Permission denied
-          # → 令牌为空 → /health 403 → curl -fsS 以 22 退出）
+          # Read the token inside the container: the server writes /data/token.txt as root with
+          # mode 0600, so the host-mounted copy is unreadable by the non-root runner user.
           docker exec smoke sh -c 'test -s /data/token.txt'
           TOKEN=$(docker exec smoke cat /data/token.txt)
           [ -n "$TOKEN" ] || {
@@ -161,7 +158,7 @@ jobs:
         if: contains(inputs.variants, 'cpu')
         run: bash scripts/docker-snapshot.sh cpu "${{ steps.vars.outputs.tag }}" "${{ steps.vars.outputs.release }}"
 
-      # GPU 镜像比 CPU 大一个量级，构建前把 CPU 镜像与分片清掉，别把 runner 的盘撑爆
+      # The GPU image is an order of magnitude larger; drop the CPU image and parts to free disk
       - name: Free disk before the GPU build
         if: contains(inputs.variants, 'cpu') && contains(inputs.variants, 'gpu')
         run: |
@@ -175,11 +172,10 @@ jobs:
           docker build -t ezpdf-pyserver:gpu -t "ezpdf-pyserver:${{ steps.vars.outputs.tag }}-gpu" \
             --build-arg VARIANT=gpu pyserver
 
-      # runner 没有 GPU，CUDA 路径测不了（GPU 侧真实推理是本机验证的：RTX 4060 约 4.7s/页）。
-      # 退一步确认：CUDA 版 torch 与 triton 都能 import，并让同镜像在 CPU 模式下真跑一次推理
-      # —— torch 的 cu132 构建在无 GPU 机器上会回落到 CPU，这样至少覆盖了依赖完整性。
-      # 注意：triton 的即时编译是 CUDA 路径才走的，所以 gcc 的必要性在这里测不出来，
-      # 删 Dockerfile 里的 build-essential 会让 GPU 侧推理在运行时才炸。
+      # The runner has no GPU. Confirm CUDA torch and triton import and run inference in CPU
+      # mode (the cu132 build falls back to CPU) to cover dependency completeness.
+      # NOTE: triton JIT only runs on the CUDA path, so this cannot prove gcc is needed —
+      # removing build-essential from the Dockerfile breaks GPU inference only at runtime.
       - name: Smoke test GPU image
         if: contains(inputs.variants, 'gpu')
         run: |

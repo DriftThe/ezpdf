@@ -10,7 +10,7 @@ import { useSettingsStore } from "./settings";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
-/** 导入结果文案：失败详情；仅页数未知则给原因；全部成功则简讯（措辞与原来一致） */
+/** Import result text: failure details, unknown-page reasons, or a success note. */
 function formatImportOutcome(outcome: ImportOutcome): { text: string; kind: "warn" | "info" } {
   if (outcome.failed.length > 0) {
     const reasons = outcome.failed.map((f) => f.reason).join("；");
@@ -43,22 +43,20 @@ function formatImportOutcome(outcome: ImportOutcome): { text: string; kind: "war
 
 export const useLibraryStore = defineStore("library", () => {
   const repoRoot = ref<string | null>(null);
-  /** .ezrepo 平铺索引（真相源）；树形呈现由 repoGroups 按 belong 派生，不做物理路径拼接 */
+  /** Flat .ezrepo index (source of truth); repoGroups derives the tree by belong. */
   const repoIndex = ref<RepoTree | null>(null);
   const currentPdfId = ref<PDFId | null>(null);
-  /** 侧栏展开状态（打开 PDF 后自动收起为三条杠） */
+  /** Sidebar open state (auto-collapses after opening a PDF). */
   const sidebarOpen = ref(true);
-  /** 全部已加载 PDF 实体，键 = 稳定 id（.ezrepo 条目 id） */
+  /** Loaded PDF entities keyed by stable id. */
   const pdfs = ref<Record<PDFId, PDF>>({});
 
   const currentPdf = computed<PDF | null>(() =>
     currentPdfId.value ? (pdfs.value[currentPdfId.value] ?? null) : null,
   );
 
-  /**
-   * 索引 → UI 分组视图：按 belong 归组（null = 根级），folders 里的空目录也占位；
-   * 文件夹组按名排序，组内 PDF 按名排序。
-   */
+  /** Index → grouped view by belong (null = root); empty folders still get a group.
+   *  Folders and PDFs within each group are sorted by name. */
   const repoGroups = computed<RepoGroup[] | null>(() => {
     const idx = repoIndex.value;
     if (!idx) return null;
@@ -86,11 +84,9 @@ export const useLibraryStore = defineStore("library", () => {
     return groups;
   });
 
-  /**
-   * 凭稳定 id 拉取 PDF 实体并写回缓存（load_pdf 的唯一调用点：打开书 / 补骨架后重读）。
-   * 以请求的 id 归一化，保证实体 id 与存储键一致；后端凭 id 查索引解析物理路径，前端不拼路径。
-   * 失败 throw，由调用方决定 toast 还是静默（后台书直读不走这里，见 parse.bookState）。
-   */
+  /** Fetch a PDF by id into the cache (the only load_pdf call site).
+   *  Normalizes id to the request key; the backend resolves the path, the frontend never builds it.
+   *  Throws on failure; background books read directly instead (parse.bookState). */
   async function loadPdf(id: string): Promise<PDF> {
     const loaded = await invoke<PDF>("load_pdf", { root: repoRoot.value, id });
     const normalized: PDF = { ...loaded, id };
@@ -98,10 +94,7 @@ export const useLibraryStore = defineStore("library", () => {
     return normalized;
   }
 
-  /**
-   * 打开一份 PDF：凭稳定 id（.ezrepo 条目 id）。
-   * 未加载时 invoke load_pdf 向后端查询；缓存策略：即用即丢——只保留当前 PDF。
-   */
+  /** Open a PDF by stable id; cached use-and-discard — only the current PDF is kept. */
   async function selectPdf(pdf: PDFStruct): Promise<void> {
     const key = pdf.id;
 
@@ -111,7 +104,7 @@ export const useLibraryStore = defineStore("library", () => {
         return;
       }
       try {
-        await loadPdf(key); // id 不在索引/读取失败 → toast 后不切书
+        await loadPdf(key); // id missing / read failure → toast and don't switch
       } catch (error) {
         toast(String(error), "error");
         return;
@@ -119,11 +112,11 @@ export const useLibraryStore = defineStore("library", () => {
     }
 
     currentPdfId.value = key;
-    sidebarOpen.value = false; // 打开 PDF 后自动收起侧栏，把空间留给阅读器
+    sidebarOpen.value = false; // collapse the sidebar to give the reader room
     useReaderStore().restorePageFor(key);
-    useParseStore().wake(); // 打开书 = 调度事件：聚焦书自动开跑（含 Pending 书第一批）
+    useParseStore().wake(); // opening a book wakes the scheduler (incl. a first batch for Pending)
 
-    // 即用即丢：只保留当前 PDF（结构 JSON 重读便宜；真正的内存大头在阶段2 pdfjs 层释放）
+    // use-and-discard: keep only the current PDF (re-reading the JSON is cheap)
     for (const id of Object.keys(pdfs.value)) {
       if (id !== key) {
         delete pdfs.value[id];
@@ -135,7 +128,7 @@ export const useLibraryStore = defineStore("library", () => {
     sidebarOpen.value = !sidebarOpen.value;
   }
 
-  // ---- 仓库：选择/加载 + 条目增删改 ----
+  // ---- repo: select/load + entry create/delete/move ----
   async function chooseRepoRoot(): Promise<void> {
     const repoPath = await open({
       directory: true,
@@ -158,10 +151,7 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
 
-  /**
-   * 启动自动打开上次仓库（用户 2026-09-14）：路径来自 config.json（settings.repoPath）。
-   * 失败（目录被删/移动/索引损坏）→ 提示并清除持久化路径，回到未选择状态。
-   */
+  /** Auto-open the last repo from settings.repoPath; on failure clear it and go unselected. */
   async function openLastRepo(): Promise<void> {
     const settings = useSettingsStore();
     const root = settings.repoPath;
@@ -174,15 +164,11 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
 
-  /** 导入进行中（后端多文件导入期间置 true，finally 保证释放）：
-   *  置位后所有导入入口（侧栏按钮、文件夹加号）失能并显示"导入中"；importPdf 开头拦截重复触发 */
+  /** Import in progress; disables all import entries and blocks re-entry. */
   const importing = ref(false);
 
-  /**
-   * 多文件导入：dialog 多选 PDF → 后端 copy 入库（name-id 命名）+ 写绑定 JSON 骨架 + 更新 .ezrepo
-   * → 返回成败明细 → 前端拉取新索引刷新树。
-   * @param belong 目标顶层目录；null = 仓库根级（侧栏/空态按钮入口）
-   */
+  /** Multi-file import: dialog → backend copy (name-id) + skeleton JSON + .ezrepo update
+   *  → outcome details → reload the index. `belong` null = repo root. */
   async function importPdf(belong: string | null = null): Promise<void> {
     if (importing.value) {
       toast(t("library.importingBusy"), "warn");
@@ -208,10 +194,10 @@ export const useLibraryStore = defineStore("library", () => {
         belong,
         paths,
       });
-      // 前端请求刷新仓库：gettree_from_config → repoIndex → repoGroups → 树自动更新
+      // reload the index: gettree_from_config → repoIndex → repoGroups → the tree updates
       await loadRepo(repoRoot.value);
       if (outcome.imported.length > 0) {
-        useParseStore().wake(); // 导入即开跑（用户拍板：新书自动进入调度，无需打开）
+        useParseStore().wake(); // imported books enter the scheduler without being opened
       }
       const report = formatImportOutcome(outcome);
       toast(report.text, report.kind);
@@ -222,10 +208,10 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
 
-  // ---- 仓库条目增删改（用户 2026-09-14）：文件夹是逻辑分组（belong），后端只改索引；
-  //      成功后以后端返回的 RepoTree 就地更新树，无需整仓刷新 ----
+  // ---- repo entry mutations: folders are logical (belong); the returned RepoTree
+  //      updates the tree in place, no full refresh ----
 
-  /** 仓库变更命令统一出口：成功就地更新索引；失败 toast 并返回 false */
+  /** Single mutation entry point: update the index in place on success, else toast + false. */
   async function mutateRepoTree(command: string, args: Record<string, unknown>): Promise<boolean> {
     if (!repoRoot.value) return false;
     try {
@@ -237,7 +223,7 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
 
-  /** 新建文件夹（名由调用方输入；重名/非法名后端拒绝 → toast） */
+  /** Create a folder (backend rejects duplicates/invalid names). */
   function createFolder(name: string): Promise<boolean> {
     if (!repoRoot.value) {
       toast(t("library.noRepo"), "warn");
@@ -246,12 +232,12 @@ export const useLibraryStore = defineStore("library", () => {
     return mutateRepoTree("create_folder", { name });
   }
 
-  /** 删除文件夹：后端级联删除其中 PDF（索引 + 库内文件） */
+  /** Delete a folder: the backend cascades to its PDFs (index + files). */
   function deleteFolder(name: string): Promise<boolean> {
     return mutateRepoTree("delete_folder", { name });
   }
 
-  /** 删除 PDF：后端摘索引 + 删库内 PDF/绑定 JSON；若删的是当前打开的书 → 回空态 */
+  /** Delete a PDF (index + files); if it was open, go to the empty state. */
   async function deletePdf(pdf: PDFStruct): Promise<boolean> {
     const ok = await mutateRepoTree("delete_pdf", { id: pdf.id });
     if (ok) {
@@ -261,16 +247,14 @@ export const useLibraryStore = defineStore("library", () => {
     return ok;
   }
 
-  /** 移动 PDF：belong=目录名移入（不存在自动建组），null 移出到根级 */
+  /** Move a PDF: belong=folder name (created if missing), null = repo root. */
   function movePdf(id: string, belong: string | null): Promise<boolean> {
     return mutateRepoTree("move_pdf", { id, belong });
   }
 
-  /**
-   * 清除解析状态（用户 2026-09-15）：后端重建 1..=N 空骨架（丢弃 OCR 块与译文，
-   * PDF 本体保留）→ 丢掉前端缓存并在当前打开时重读 → 唤醒调度重新 OCR 与翻译。
-   * 页数：当前打开的书用 pdfjs 实测值；其余书传 0，后端沿用 JSON 里已有页数。
-   */
+  /** Clear parse state: backend rebuilds an empty 1..=N skeleton (PDF kept), the frontend
+   *  drops its cache, reloads if open, and wakes the scheduler.
+   *  Page count: pdfjs value for the open book, 0 otherwise (backend reuses the JSON count). */
   async function clearPdfState(pdf: PDFStruct): Promise<boolean> {
     if (!repoRoot.value) return false;
     const total = currentPdfId.value === pdf.id ? useReaderStore().pageCount : 0;
@@ -281,19 +265,19 @@ export const useLibraryStore = defineStore("library", () => {
       return false;
     }
     delete pdfs.value[pdf.id];
-    if (currentPdfId.value === pdf.id) await selectPdf(pdf); // 重读新骨架（译文栏回未解析态）
+    if (currentPdfId.value === pdf.id) await selectPdf(pdf); // reload the new skeleton
     toast(t("library.clearDone", { name: pdf.name }), "info");
-    useParseStore().wake(); // 状态清零 = 新的可处理书目
+    useParseStore().wake(); // reset state = new work available
     return true;
   }
 
-  /** 拉取仓库索引；成功才落地状态并持久化路径，失败保留原状（调用方负责提示） */
+  /** Fetch the repo index; apply + persist the path on success, leave state on failure. */
   async function loadRepo(root: string): Promise<void> {
     const index = await invoke<RepoTree>("gettree_from_config", { root });
     repoRoot.value = root;
-    repoIndex.value = index; // 平铺索引直接落地，不做树转换
-    void useSettingsStore().setRepoPath(root); // 下次启动默认打开（用户 2026-09-14）
-    useParseStore().wake(); // 换仓/刷新 = 新的可处理书目，尝试续链
+    repoIndex.value = index; // flat index stored as-is, no tree conversion
+    void useSettingsStore().setRepoPath(root); // default for the next launch
+    useParseStore().wake(); // repo switch/refresh = new work, try to continue the chain
   }
 
   return {

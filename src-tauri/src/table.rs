@@ -1,35 +1,35 @@
-//! 表格块解析（用户 2026-09-16）：PaddleOCR-VL 的表格标记流 → 网格结构。
+//! Table block parsing: PaddleOCR-VL's table markup stream → grid structure.
 //!
-//! 标记词汇（PP-StructureV3 / PaddleOCR-VL 表格文本流，实测本书 109 张表全部命中）：
-//! - `<fcel>` 新单元格（后跟单元格文本，可能是空）
-//! - `<ecel>` 空单元格
-//! - `<lcel>` 与左侧单元格合并（占一个列位，不产生新格 → 左格 colspan += 1）
-//! - `<ucel>` 与上方单元格合并（v1 渲染成空格子：统计类表格视觉等价且实现简单）
-//! - `<xcel>` 交叉合并（同上）
-//! - `<nl>` 换行：下一个表格行
+//! Markup vocabulary (PP-StructureV3 / PaddleOCR-VL table text stream):
+//! - `<fcel>` new cell (followed by its text, possibly empty)
+//! - `<ecel>` empty cell
+//! - `<lcel>` merge with the left cell (occupies a slot, no new cell → left colspan += 1)
+//! - `<ucel>` merge with the cell above (v1 renders a blank cell: visually equivalent for stats tables)
+//! - `<xcel>` cross merge (same as above)
+//! - `<nl>` newline: next table row
 //!
-//! 列数 = 各行"列位"数的最大值。列位 = 新格标记数 + `<lcel>` 数；实测 52/109 张表有且
-//! 只有**末行**列位偏少（页边界把表格切断），所以短行一律右侧补一个空跨列格，不当失败。
-//! 解析不出形状（无单元格标记、行列数离谱）→ None：该块不送翻、不覆盖，原 PDF 像素直出。
+//! cols = max slot count across rows (slots = new-cell marks + `<lcel>`s). Short rows, usually
+//! just the last one cut at a page boundary, get a blank spanning cell appended rather than
+//! failing. Unshaped markup → None: no translate, no cover, original pixels show.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// 表块类型名（Block.kind）：Rust 侧多处比较用它，避免字面量漂移
+/// Table block type name (Block.kind), shared so the literal can't drift.
 pub const TABLE: &str = "table";
 
-/// 网格上限：超出一律当解析失败（畸形标记不该把 LLM 请求或渲染拖垮）
+/// Grid caps: exceeding any is a parse failure (malformed markup shouldn't break LLM or render).
 const MAX_ROWS: usize = 200;
 const MAX_SLOTS: usize = 64;
 const MAX_CELLS: usize = 4000;
 
-/// 单元格：文本 + 横向跨列数（`<lcel>` 合并的结果）。纵向合并 v1 不表达。
+/// Cell: text + horizontal colspan (from `<lcel>`). Vertical merges are not expressed in v1.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct TableCell {
     pub text: String,
-    /// 跨列数（≥1）；`<lcel>` 每出现一次 +1
+    /// Colspan (≥1); +1 per `<lcel>`.
     pub colspan: u32,
 }
 
@@ -40,7 +40,7 @@ pub struct TableRow {
     pub cells: Vec<TableCell>,
 }
 
-/// 表格网格：`cols` 是列位数（各行真实单元格的 colspan 之和 = cols）
+/// Table grid: `cols` is the slot count (a row's cell colspans sum to cols).
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +70,7 @@ fn mark_at(s: &str) -> Option<(Mark, usize)> {
     MARKS.iter().find(|(pat, _)| s.starts_with(pat)).map(|(pat, kind)| (*kind, pat.len()))
 }
 
-/// 一行标记流 → (真实单元格, 列位数)。无标记 → None（该行整个忽略）
+/// One markup line → (real cells, slot count). No marks → None (the row is ignored).
 fn parse_line(line: &str) -> Option<(Vec<TableCell>, usize)> {
     let mut positions: Vec<(Mark, usize, usize)> = Vec::new();
     let mut cursor = 0;
@@ -105,7 +105,7 @@ fn parse_line(line: &str) -> Option<(Vec<TableCell>, usize)> {
     Some((cells, slots))
 }
 
-/// 解析表格标记流 → 网格；形状不可信 → None
+/// Parse the markup stream → grid; untrustworthy shape → None.
 pub fn parse_markup(content: &str) -> Option<TableGrid> {
     let mut rows: Vec<TableRow> = Vec::new();
     let mut slots: Vec<usize> = Vec::new();
@@ -127,7 +127,7 @@ pub fn parse_markup(content: &str) -> Option<TableGrid> {
     if cols == 0 || cols > MAX_SLOTS || rows.len() > MAX_ROWS || total > MAX_CELLS {
         return None;
     }
-    // 短行（实测只有末行，页边界截断）右侧补一个空跨列格，补齐到 cols
+    // Short rows (page-boundary truncation) get one blank spanning cell padded to cols.
     for (row, n) in rows.iter_mut().zip(slots.iter()) {
         if *n < cols {
             row.cells.push(TableCell { text: String::new(), colspan: (cols - n) as u32 });
@@ -136,12 +136,12 @@ pub fn parse_markup(content: &str) -> Option<TableGrid> {
     Some(TableGrid { cols: cols as u32, rows })
 }
 
-/// 每行真实单元格数（结果形状校验用；含 `<lcel>` 合并后再补齐的格子）
+/// Real cell count per row (for shape validation; includes padded/merged cells).
 pub fn row_lengths(grid: &TableGrid) -> Vec<usize> {
     grid.rows.iter().map(|r| r.cells.len()).collect()
 }
 
-/// 送翻负载：`{"table": [[单元格文本, ...], ...]}`（只含真实单元格，行内顺序即网格顺序）
+/// Translation payload: `{"table": [[cell text, ...], ...]}` (real cells only, in grid order).
 pub fn payload(grid: &TableGrid) -> serde_json::Value {
     let rows: Vec<serde_json::Value> = grid
         .rows
@@ -155,13 +155,13 @@ pub fn payload(grid: &TableGrid) -> serde_json::Value {
     serde_json::json!({ "table": rows })
 }
 
-/// 原文矩阵（翻译禁用路径的落盘值）：二维字符串 JSON，与 `payload` 同形
+/// Source matrix (the disabled-translation persisted value): 2-D string JSON, same shape as `payload`.
 pub fn source_matrix(grid: &TableGrid) -> String {
     payload(grid).to_string()
 }
 
-/// 表块结果校验：形状必须与请求一致（行数 + 每行单元格数），元素是字符串或 null。
-/// 通过 → 归一化后的紧凑 JSON 文本（数字/布尔统一成字符串，便于前端只处理 string|null）
+/// Validate a table result: the shape must match the request (row count + cells per row), with
+/// string or null elements. On success returns compact JSON, numbers/bools normalized to strings.
 pub fn validate_value(value: &serde_json::Value, expected: &[usize]) -> Result<String, String> {
     let rows = match value {
         serde_json::Value::Array(rows) => rows,
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn parses_a_simple_table() {
-        // 真实数据 p23：3 列 4 行，含行内 LaTeX
+        // Real data p23: 3 columns, 4 rows, with inline LaTeX
         let content = "<fcel>参 数<fcel>冬 季<fcel>夏 季<nl>\
                        <fcel>温度(℃)<fcel>18～24<fcel>25～28<nl>\
                        <fcel>风速(m/s)<fcel>\\(\\leq0.2\\)<fcel>\\(\\leq0.3\\)<nl>\
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn merges_left_cells_into_colspan() {
-        // 真实数据 p137 表头：<(2)|河北(10) 跨 5 列>，6 个列位但只有 2 个真实单元格
+        // Real data p137 header: one cell spans 5 columns → 6 slots but only 2 real cells
         let content = "<fcel>(2)<fcel>河北(10)<lcel><lcel><lcel><lcel><nl>\
                        <fcel>塘沽<fcel>石家庄<fcel>唐山<fcel>邢台<fcel>保定<fcel>张家口<nl>";
         let g = parse_markup(content).expect("parses");
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn pads_truncated_tail_row() {
-        // 真实数据 p137 末行：页边界把行截断，只有 3 个列位 → 右侧补一个空跨列格
+        // Real data p137 last row: truncated at a page boundary with 3 slots → one padded cell
         let mut content = String::new();
         for _ in 0..3 {
             content.push_str("<fcel>26.9<fcel>26.8<fcel>26.3<fcel>26.9<fcel>26.6<fcel>22.6<nl>");
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn vertical_merge_becomes_blank_cell() {
-        // 真实数据 p140：<ucel> 与上方合并 → v1 渲染成空格子（仍占一个列位）
+        // Real data p140: <ucel> merges upward → v1 renders a blank cell (still occupies a slot)
         let content = "<fcel>台站信息<fcel>北纬<fcel>36°45'<nl><ucel><fcel>东经<fcel>119°11'<nl>";
         let g = parse_markup(content).expect("parses");
         assert_eq!(g.cols, 3);
@@ -278,10 +278,10 @@ mod tests {
         assert!(parse_markup("").is_none());
         assert!(parse_markup("   <nl><nl>  ").is_none());
         assert!(parse_markup("普通文本，没有表格标记").is_none());
-        // 行数超限
+        // too many rows
         let too_many = "<fcel>a<nl>".repeat(MAX_ROWS + 1);
         assert!(parse_markup(&too_many).is_none());
-        // 列位超限
+        // too many slots
         let too_wide = format!("{}<nl>", "<fcel>x".repeat(MAX_SLOTS + 1));
         assert!(parse_markup(&too_wide).is_none());
     }
@@ -291,7 +291,7 @@ mod tests {
         let expected = vec![2usize, 1];
         let ok = serde_json::json!([["译文", null], [42]]);
         assert_eq!(validate_value(&ok, &expected).unwrap(), "[[\"译文\",null],[\"42\"]]");
-        // {"table": [...]} 包装也接受
+        // the {"table": [...]} wrapper is also accepted
         let wrapped = serde_json::json!({"table": [["a", "b"], ["c"]]});
         assert_eq!(validate_value(&wrapped, &expected).unwrap(), "[[\"a\",\"b\"],[\"c\"]]");
     }
@@ -299,13 +299,13 @@ mod tests {
     #[test]
     fn validate_rejects_broken_shapes() {
         let expected = vec![2usize, 1];
-        // 行数不符
+        // wrong row count
         assert!(validate_value(&serde_json::json!([["a", "b"]]), &expected).is_err());
-        // 行内长度不符
+        // wrong row length
         assert!(validate_value(&serde_json::json!([["a"], ["b"]]), &expected).is_err());
-        // 非数组
+        // not an array
         assert!(validate_value(&serde_json::json!("a|b|c"), &expected).is_err());
-        // 嵌套数组当单元格
+        // nested array as a cell
         assert!(validate_value(&serde_json::json!([[["a"], "b"], ["c"]]), &expected).is_err());
     }
 

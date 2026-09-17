@@ -8,14 +8,15 @@ import { confirmDialog } from "../../composables/confirm";
 const { t } = useI18n();
 const lib = useLibraryStore();
 const collapsed = ref<Set<string>>(new Set());
-/** 打开的 PDF 行操作菜单（id）；点击树任意处关闭 */
+/** Open PDF row's action menu (id); clicking anywhere in the tree closes it */
 const menuFor = ref<string | null>(null);
 
 type FolderRow = { kind: "folder"; name: string; count: number };
 type PdfRow = { kind: "pdf"; pdf: PDFStruct; inFolder: boolean; targets: string[] };
 
-/** 由分组索引派生可见行序列：目录行 + 其 PDF 行（可折叠）+ 根级 PDF 行（belong 为空，与目录平齐）；
- *  每行的删除可用性（count）与移动目标（targets）在派生时一次算好，模板不再逐次过滤索引 */
+/** Visible rows derived once from the group index: folder row + its PDFs (collapsible) +
+ *  root-level PDFs (empty belong, flush with folders). Per-row delete availability (count)
+ *  and move targets (targets) are computed here so the template doesn't filter the index */
 const rows = computed<Array<FolderRow | PdfRow>>(() => {
   const index = lib.repoIndex;
   if (!index) return [];
@@ -45,7 +46,7 @@ function toggleMenu(id: string): void {
   menuFor.value = menuFor.value === id ? null : id;
 }
 
-/** 删除文件夹（自绘确认框，用户 2026-09-14）：非空时明示将连同其中 PDF 一并删除 */
+/** Delete folder (custom confirm dialog): a non-empty folder explicitly warns that its PDFs go too */
 async function onDeleteFolder(row: FolderRow): Promise<void> {
   const message =
     row.count > 0
@@ -71,7 +72,7 @@ async function onMove(pdf: PDFStruct, belong: string | null): Promise<void> {
   await lib.movePdf(pdf.id, belong);
 }
 
-/** 清除解析状态（用户 2026-09-15）：丢弃 OCR 块与译文、重建空骨架后重新解析 */
+/** Clear parse state: drop OCR blocks and translations, rebuild an empty skeleton, re-parse */
 async function onClearState(pdf: PDFStruct): Promise<void> {
   menuFor.value = null;
   const ok = await confirmDialog({
@@ -86,7 +87,7 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
 <template>
   <ul class="tree" @click="menuFor = null">
     <li v-for="row in rows" :key="row.kind === 'folder' ? `f:${row.name}` : row.pdf.id">
-      <!-- 目录行（belong 分组）；悬浮时最右侧出现导入加号与删除 -->
+      <!-- Folder row (belong group); hover reveals import + delete on the right -->
       <div v-if="row.kind === 'folder'" class="tree-row folder" @click="toggle(row.name)">
         <span class="chev" :class="{ open: !collapsed.has(row.name) }" aria-hidden="true">
           <svg viewBox="0 0 8 8" width="10" height="10"><path d="M2 1l4 3-4 3z" fill="currentColor" /></svg>
@@ -107,7 +108,7 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
           </svg>
         </button>
       </div>
-      <!-- PDF 行：组内缩进；bind 为 null（未解析）半透明；悬浮出现移动/删除 -->
+      <!-- PDF row: indented when in a folder; semi-transparent when bind is null (unparsed); hover reveals move/delete -->
       <div
         v-else
         class="tree-row pdf"
@@ -143,7 +144,7 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
             <path d="M2.5 3.5h9M5.5 3.5V2h3v1.5M3.5 3.5l.6 8h5.8l.6-8M6 6v3.5M8 6v3.5" />
           </svg>
         </button>
-        <!-- 移动菜单：目标目录 + 移出到根 -->
+        <!-- Move menu: destination folders + move out to root -->
         <div v-if="menuFor === row.pdf.id" class="row-menu" @click.stop>
           <button v-if="row.inFolder" class="menu-item" @click="onMove(row.pdf, null)">{{ t("repo.moveOut") }}</button>
           <div v-if="row.inFolder && row.targets.length > 0" class="menu-sep" />
@@ -207,7 +208,7 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
   transform: rotate(90deg);
 }
 .row-name {
-  min-width: 0; /* 长名截断而非把右侧按钮挤出行 */
+  min-width: 0; /* truncate long names instead of pushing the right-side buttons out of the row */
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -224,13 +225,13 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
   color: var(--accent);
 }
 .tree-row.unparsed {
-  opacity: 0.55; /* 索引中 bind 为空：尚未解析 */
+  opacity: 0.55; /* bind is null in the index: not parsed yet */
 }
 .tree-row.unparsed:hover {
   opacity: 1;
 }
 .row-btn {
-  margin-left: auto; /* 推到条目最右端 */
+  margin-left: auto; /* push to the right end of the row */
   width: 24px;
   height: 24px;
   flex: none;
@@ -243,7 +244,7 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
-  opacity: 0; /* 默认隐藏，悬浮行时出现 */
+  opacity: 0; /* hidden by default; appears on row hover */
 }
 .row-btn + .row-btn {
   margin-left: 0;
@@ -256,7 +257,8 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
   background: var(--bg-hover);
   color: var(--accent);
 }
-/* 导入/删除进行中或禁用：置灰失能，悬浮也不再高亮（需压过上面的 hover/浮现规则） */
+/* Disabled (import/delete in progress): greyed out, no hover highlight
+   (must override the hover/reveal rules above) */
 .row-btn:disabled,
 .tree-row:hover .row-btn:disabled {
   opacity: 0.45;
@@ -264,7 +266,7 @@ async function onClearState(pdf: PDFStruct): Promise<void> {
   color: var(--text-3);
   cursor: not-allowed;
 }
-/* ---- PDF 行移动菜单 ---- */
+/* ---- PDF row move menu ---- */
 .row-menu {
   position: absolute;
   top: 30px;

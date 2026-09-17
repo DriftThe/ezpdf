@@ -23,53 +23,50 @@ import { useReaderStore } from "./reader";
 import type { PDFStruct } from "../../src-tauri/bindings/PDFStruct";
 import { useSettingsStore, type LlmInvokePayload } from "./settings";
 
-/** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，调度整体静默（同 listen().catch 哲学） */
+/** Non-Tauri (browser pnpm dev): invoke always fails, so the whole scheduler stays silent. */
 
-/** 页级谓词（调度取样共用） */
+/** Page-level predicates shared by scheduler sampling. */
 const needsOcr = (p: PageInfo): boolean => !p.finished;
 const needsTranslation = (p: PageInfo): boolean => p.finished && !p.translated;
 
-/** 送翻类型：空列表 = 内置默认（与 Rust is_translatable 的回落一致） */
+/** Types to translate: empty = built-in default (same fallback as Rust is_translatable). */
 function effectiveTypes(): readonly string[] {
   const types = useSettingsStore().general.translateTypes;
   return types.length > 0 ? types : DEFAULT_TRANSLATED_TYPES;
 }
 
-/**
- * 表格补翻（用户 2026-09-16）：表格支持之前翻过的页面里，表块从未被送翻过
- * （translation=null），而"已翻页不回翻"让它们永远轮不到。
- * 只认**Rust 已补齐网格**（load_pdf 时解析落盘 = 可解析）且译文为空的表格；
- * 解析不出网格的表格不成为目标，其余块类型一律不碰。
- */
+/** Table backfill: pages translated before table support have table blocks with no
+ *  translation and would never be revisited. Only tables whose grid Rust has parsed and
+ *  persisted (parsable) and whose translation is empty qualify; other types are untouched. */
 function needsTableBackfill(p: PageInfo): boolean {
   if (!p.finished || !effectiveTypes().includes("table")) return false;
   return p.blocks.some((b) => b.type === "table" && !b.translation && !!b.grid);
 }
 
-/** 翻译取样总谓词：未翻页 + 已翻页里待补翻的表格 */
+/** Translation sampling predicate: untranslated pages + pages with backfill tables. */
 const needsWork = (p: PageInfo): boolean => needsTranslation(p) || needsTableBackfill(p);
 
 export const useParseStore = defineStore("parse", () => {
-  /** 全局暂停/恢复（阶段4由 Rust 调度器驱动） */
+  /** Global pause/resume. */
   const paused = ref(false);
-  /** pyserver 生命周期状态（ocr://status 事件驱动；未知/断线/失败均显示灰/红） */
+  /** pyserver lifecycle (driven by ocr://status; unknown/disconnected/failed show gray/red). */
   const serviceStatus = ref<ServiceStatus>("unknown");
-  /** 环境分层报告（ocr_env_report 的 bootstrap JSON；null = 未检查） */
+  /** Environment report (bootstrap JSON; null = not checked). */
   const envReport = ref<OcrEnvReport | null>(null);
-  /** 服务/安装日志流（ocr://log；环形截断保尾 200 行） */
+  /** Service/install log stream (ocr://log; ring-capped to the last 200 lines). */
   const envLogs = ref<string[]>([]);
-  /** 翻译链路日志流（llm://log；环形截断保尾 200 行，LLM 设置页底部展示） */
+  /** Translation log stream (llm://log; ring-capped to 200 lines, shown in the LLM pane). */
   const llmLogs = ref<string[]>([]);
 
   const checking = ref(false);
   const installing = ref(false);
-  /** 一键安装服务进度（ocr://install；null = 未在安装） */
+  /** Install progress (ocr://install; null = not installing). */
   const installProgress = ref<InstallProgress | null>(null);
 
   function togglePaused(): void {
     paused.value = !paused.value;
     toast(paused.value ? t("toast.parsePaused") : t("toast.parseResumed"), paused.value ? "warn" : "info");
-    if (!paused.value) wake(); // 恢复 → 续链
+    if (!paused.value) wake(); // resumed → continue the chain
   }
 
   function pushCapped(target: { value: string[] }, line: string): void {
@@ -87,7 +84,7 @@ export const useParseStore = defineStore("parse", () => {
     pushCapped(llmLogs, line);
   }
 
-  // 事件订阅（store 单例创建一次即完成；非 Tauri 环境（纯浏览器 dev）静默失败）
+  // event subscriptions (once per singleton); non-Tauri silently fails
   listen<string>("ocr://log", (e) => pushLog(e.payload)).catch(() => undefined);
   listen<string>("llm://log", (e) => pushLlmLog(e.payload)).catch(() => undefined);
   listen<ServiceStatus>("ocr://status", (e) => {
@@ -97,7 +94,7 @@ export const useParseStore = defineStore("parse", () => {
     installProgress.value = e.payload;
   }).catch(() => undefined);
 
-  /** 检查环境：Rust 跑 bootstrap.py 探测，整份报告入缓存 */
+  /** Check the environment: Rust runs bootstrap.py and caches the full report. */
   async function checkEnv(): Promise<void> {
     checking.value = true;
     try {
@@ -111,10 +108,8 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** 一键安装服务（用户 2026-09-14）：环境+torch 变体（CPU/GPU 选择、镜像开关）
-   *  → 模型下载；全程进度经 ocr://install 推送（按钮旁进度条）。
-   *  已安装（含 CPU ⊂ GPU 子集规则）由后端判定并跳过 → 提示「服务已安装」；
-   *  GPU 模式无 nvidia-smi 时后端直接报错中止（toast 展示原因）。 */
+  /** One-click install: env + torch variant → model download, progress via ocr://install.
+   *  The backend skips already-installed envs (CPU ⊂ GPU) and aborts GPU mode without nvidia-smi. */
   async function installService(mode: "cpu" | "gpu", useMirror: boolean): Promise<void> {
     if (installing.value) return;
     installing.value = true;
@@ -142,7 +137,7 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** 生命周期命令（启动/停止）：失败 toast；状态由 ocr://status 事件回报 */
+  /** Lifecycle commands (start/stop): toast on failure; status comes from ocr://status. */
   async function runServiceCommand(command: string): Promise<void> {
     try {
       await invoke(command);
@@ -154,9 +149,8 @@ export const useParseStore = defineStore("parse", () => {
   const startService = (): Promise<void> => runServiceCommand("ocr_start");
   const stopService = (): Promise<void> => runServiceCommand("ocr_stop");
 
-  /** 在线模式握手：读 /health 拿服务端公布的批大小（用户 2026-09-15）。
-   *  每次 OCR 请求前都会调一次——服务端换负载/换配置后客户端立刻跟上；
-   *  失败即抛错，让这一批按失败计连败（不要拿过期数字继续发） */
+  /** Online handshake: read /health for the server-advertised batch size before every OCR
+   *  request so config changes take effect. Throws on failure (never send with a stale number). */
   async function handshakeOnline(): Promise<ParseServiceHealth> {
     const ocr = useSettingsStore().ocr;
     const health = await invoke<ParseServiceHealth>("ocr_health", {
@@ -167,7 +161,7 @@ export const useParseStore = defineStore("parse", () => {
     return health;
   }
 
-  /** 健康报告 → 本地化文案（toast 用） */
+  /** Health report → localized toast text. */
   function healthDetail(h: ParseServiceHealth): string {
     return t("ocr.healthDetail", {
       pid: h.pid ?? "?",
@@ -176,12 +170,12 @@ export const useParseStore = defineStore("parse", () => {
     });
   }
 
-  /** 健康报告 → 英文一行摘要（日志用；Rust/Python 侧日志同样一律英文） */
+  /** Health report → one-line English log summary (logs are English everywhere). */
   function healthLine(h: ParseServiceHealth): string {
     return `pid ${h.pid ?? "-"} ${h.elapsedMs}ms max_batch_pages=${h.maxBatchPages}`;
   }
 
-  /** 在线模式连接（探活通过才登记为 OCR 目标）；失败抛错，调用方决定 toast 还是日志 */
+  /** Online connect (registered as the OCR target only after a health probe); throws on failure. */
   async function connectOnline(url: string): Promise<ParseServiceHealth> {
     const health = await invoke<ParseServiceHealth>("ocr_start_remote", {
       url,
@@ -191,7 +185,7 @@ export const useParseStore = defineStore("parse", () => {
     return health;
   }
 
-  /** 启动服务（设置页按钮）：本地托管 → 拉起子进程；在线服务 → 探活后登记端点 */
+  /** Start service: local spawns the child; online probes then registers the endpoint. */
   async function startServiceForMode(): Promise<void> {
     if (useSettingsStore().ocr.mode !== "online") {
       await startService();
@@ -205,9 +199,7 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** 在线模式地址探活（设置页地址框右侧「测试」按钮，用户 2026-09-15）：
-   *  只探测健康度，不改连接状态——连不连是「启动服务」的事。
-   *  顺便把服务端公布的批大小显示出来（地址下方 hint） */
+  /** Health-probe only, without changing connection state. */
   async function testRemote(): Promise<void> {
     try {
       const h = await handshakeOnline();
@@ -220,9 +212,8 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** 启动自动唤醒（常规设置 autoLaunch，用户 2026-09-14）：环境/模型全就绪才拉起，
-   *  缺件只记日志不打扰（到 OCR 服务设置页一键安装服务）。
-   *  在线模式（2026-09-15）不查本地环境：基础环境也能连远端服务，探活通过即登记 */
+  /** Auto-wake on start: local needs env + models ready (else log only); online skips the
+   *  local check and just probes + registers. */
   async function autoStartIfEnabled(): Promise<void> {
     const settings = useSettingsStore();
     if (!isTauri || !settings.general.autoLaunch) return;
@@ -246,42 +237,40 @@ export const useParseStore = defineStore("parse", () => {
     await startService();
   }
 
-  // ---- OCR 页级调度回路（阶段4 批3，PLAN-OCR.md §4）：parse_pdf 桥 ----
-  // 前端是调度者：单 tick = 一批（≤4 页、同书）→ Rust parse_pdf 整批推理 + 一次原子写。
-  // 事件驱动链：本批完成 → 链式续跑；一轮扫描无可处理书 → standing 挂起，等事件唤醒。
+  // ---- page-level OCR scheduling loop: parse_pdf bridge ----
+  // The frontend schedules: one tick = one batch (same book) → Rust parse_pdf, one atomic write.
+  // Event-driven: a finished batch continues the chain; an empty sweep goes standing.
 
-  /** 一批在途（幂等门闩：重入 tick 直接返回） */
+  /** A batch in flight (re-entry guard). */
   const parsing = ref(false);
-  /** 挂起标记（无可处理书）；wake 事件（开书/导入/连上/恢复）解除 */
+  /** Standing flag (no work); a wake event clears it. */
   const standing = ref(false);
-  /** 批在途时到达的 wake（翻译链清空/事件）——本批结束后接管，防止丢唤醒 */
+  /** Wake arrived while a batch was in flight, taken over after it finishes. */
   let wakePending = false;
-  /** 上述 pending 是否含外部事件（外部才重置连败预算） */
+  /** Whether the pending wake includes an external event (only those reset strikes). */
   let wakePendingExternal = false;
-  /** 本地托管模式的批大小（用户拍板 2026-09-14：一次 ≤4 页、同书，不足传剩余页）。
-   *  在线模式不用它——批大小由服务端 /health 公布（用户 2026-09-15），见 PROTOCOL.md §4 */
+  /** Local batch size (≤4 pages, same book). Online uses the server's advertised value. */
   const LOCAL_BATCH_SIZE = 4;
-  /** 最近一次在线握手结果（服务端公布的批大小 + pid/耗时，供设置页显示） */
+  /** Last online handshake (advertised batch size + pid/elapsed, shown in settings). */
   const onlineHealth = ref<ParseServiceHealth | null>(null);
-  /** 当前该一批发几页：本地 = 客户端定；在线 = 服务端公布（没握到手时回落 4） */
+  /** Pages per batch: local = constant; online = advertised (fallback 4). */
   function currentBatchSize(): number {
     if (useSettingsStore().ocr.mode !== "online") return LOCAL_BATCH_SIZE;
     return onlineHealth.value?.maxBatchPages ?? LOCAL_BATCH_SIZE;
   }
-  /** 首次 + 重试 2 次 = 3 连败 → 本轮停该类批次 */
+  /** First + 2 retries = 3 strikes → suspend that batch kind. */
   const MAX_ATTEMPTS = 3;
-  /** 书级连败计数（OCR / 翻译分开：翻译持续失败只关翻译支路，OCR 照跑；反之亦然）；wake 时清零 */
+  /** Per-book strike counts, OCR and translation separate; cleared on an external wake. */
   const ocrStrikes = new Map<string, number>();
   const translateStrikes = new Map<string, number>();
 
-  /** OCR 批次的前提：解析服务可用（本地托管已连上 / 在线服务已登记） */
+  /** OCR precondition: parse service connected (local spawned / online registered). */
   function canOcr(): boolean {
     return serviceStatus.value === "connected";
   }
 
-  /** 翻译批次的前提：仅需 LLM 配置——与解析服务无关（用户 2026-09-15 解耦）。
-   *  关掉翻译时 payload 也非空（Rust 走"原文当译文"路径，无需密钥），
-   *  所以基础环境（没装依赖/模型）也能把已 OCR 的页处理完 */
+  /** Translation precondition: only LLM config, independent of the parse service.
+   *  With translation off the payload is still non-null (bypass needs no keys). */
   function canTranslate(): boolean {
     return llmPayload() !== null;
   }
@@ -301,14 +290,13 @@ export const useParseStore = defineStore("parse", () => {
     translateStrikes.clear();
   }
 
-  /** 踢循环：standing=false 时链条自会续跑（重复踢无副作用）；
-   *  服务中途断线杀掉的链条也靠它复活（不要求 standing=true）。
-   *  external=false（翻译链清空的自我续跑）不清连败计数——否则 LLM 坏掉时
-   *  每批次都会白试 3 次翻译；外部事件（开书/导入/连上/恢复）才重置预算 */
+  /** Kick the loop (idempotent: a running chain continues by itself).
+   *  external=false (self-continuation) keeps strike counts, so a broken LLM is not
+   *  retried 3× per batch; real events (open/import/connect/resume) reset them. */
   function wake(external = true): void {
     if (!isTauri || paused.value) return;
     if (parsing.value) {
-      wakePending = true; // 在途：本批结束后的 finally 接管，防止丢唤醒
+      wakePending = true; // in flight: the finally after this batch takes over, no lost wake
       wakePendingExternal = wakePendingExternal || external;
       return;
     }
@@ -317,8 +305,8 @@ export const useParseStore = defineStore("parse", () => {
     queueMicrotask(() => void tick());
   }
 
-  /** 单 tick：选书 → 环形收集一批未完成页 → 离屏渲染 → parse_pdf → 结果落地。
-   *  finally 里链式续跑（queueMicrotask），无可处理 → pickBook 返回 null → standing 挂起 */
+  /** One tick: pick a book → ring-collect a batch → offscreen render → parse_pdf → apply.
+   *  Continues via queueMicrotask unless pickBook returns null (then standing). */
   async function tick(): Promise<void> {
     if (!isRunnable()) {
       if (isTauri) {
@@ -333,7 +321,7 @@ export const useParseStore = defineStore("parse", () => {
     try {
       const book = await pickBook();
       if (!book) {
-        standing.value = true; // 一轮扫完无事可做 → 挂起等事件
+        standing.value = true; // sweep found nothing → wait for an event
         clearStrikes();
         pushLlmLog("[ui] sweep done: no processable pages → standing");
         notifyLlmMissingOnce();
@@ -376,23 +364,19 @@ export const useParseStore = defineStore("parse", () => {
     name: string;
     state: PDF;
     focused: boolean;
-    /** translate = 已 OCR 未翻译页的补翻（优先于新 OCR）；ocr = 未 OCR 页 */
+    /** translate = finished-but-untranslated pages (priority over new OCR); ocr = unfinished pages. */
     kind: "ocr" | "translate";
   }
 
-  /** LLM 三要素齐全才开翻译（否则整条翻译支路关闭，书直接视为无事可做）；
-   *  预设兼容性快照（协议/关思考/请求字段）由 settings store 统一拼装 */
+  /** Translation needs baseUrl/apiKey/model; the settings store assembles the compat snapshot. */
   function llmPayload(): LlmInvokePayload | null {
     return useSettingsStore().llmInvokePayload();
   }
 
-  /** 选书：聚焦书优先，其余按索引序。逐本 load_pdf 直读绑定 JSON 的
-   *  status/finished/translated 标志位（用户拍板：不加进度查询命令）。
-   *  补翻优先（2026-09-14 修复）：finished && !translated 的页可能是上一轮
-   *  OCR 落盘后翻译未落盘（重启丢内存配对）或翻译失败后的孤儿——早先要等
-   *  整本 OCR 完才回头补翻，大书等于永不补；现在同书翻译链空闲就立刻补，
-   *  链在途时不抢（OCR 批次已排好翻译，链路自会接续）。翻译连败达上限只关
-   *  该书翻译支路，OCR 照跑（反之亦然） */
+  /** Pick a book: focused first, then index order; per-book load_pdf reads the JSON flags
+   *  (no extra progress query command). Translation retries outrank new OCR — a finished but
+   *  untranslated page may be an orphan from a restart or a failed translation. A saturated
+   *  translation strike count suspends only that branch; OCR keeps running (and vice versa). */
   async function pickBook(): Promise<PickTarget | null> {
     const lib = useLibraryStore();
     const index = lib.repoIndex;
@@ -414,7 +398,7 @@ export const useParseStore = defineStore("parse", () => {
       ) {
         return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "translate" };
       }
-      // OCR 需要解析服务（在线/本地托管皆可）；服务不可用时跳过，等连上再唤醒
+      // OCR needs the parse service; skip while unavailable and wake once connected
       if (
         canOcr() &&
         (ocrStrikes.get(entry.id) ?? 0) < MAX_ATTEMPTS &&
@@ -426,7 +410,7 @@ export const useParseStore = defineStore("parse", () => {
     return null;
   }
 
-  /** 书状态：聚焦书用 store 缓存（批量写回已就地同步），后台书逐本 load_pdf 直读 */
+  /** Book state: the focused book uses the store cache, background books read via load_pdf. */
   async function bookState(entry: PDFStruct): Promise<PDF | null> {
     const lib = useLibraryStore();
     if (entry.id === lib.currentPdfId && lib.currentPdf) return lib.currentPdf;
@@ -438,7 +422,7 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** 一轮结束仍无书可跑、聚焦书有未翻译页但 LLM 未配置 → 提示一次（防无谓刷屏） */
+  /** If a sweep ends with no work but the focused book needs translation and LLM is unset → notify once. */
   let llmMissingNotified = false;
   function notifyLlmMissingOnce(): void {
     if (llmMissingNotified || llmPayload()) return;
@@ -450,7 +434,7 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** 环形取样起点：聚焦书从当前阅读页开始（用户视线先行），后台书从第 1 页 */
+  /** Ring start: the focused book from the current page, background books from page 1. */
   function startPageFor(book: PickTarget): number {
     const reader = useReaderStore();
     return book.focused
@@ -458,7 +442,7 @@ export const useParseStore = defineStore("parse", () => {
       : 1;
   }
 
-  /** 环形收集 ≤limit 个命中页（pick 返回 null = 跳过该页；limit 默认本地批大小） */
+  /** Ring-collect ≤limit hits (pick null skips a page; limit defaults to the local batch size). */
   function ringCollect<T>(
     book: PickTarget,
     pick: (page: PageInfo) => T | null,
@@ -474,7 +458,7 @@ export const useParseStore = defineStore("parse", () => {
     return out;
   }
 
-  /** 处理一批：翻译重试（translate_pdf）或 OCR（翻译由 queueTranslate 并发跟进） */
+  /** Process a batch: translation retry or OCR (translation queued alongside via queueTranslate). */
   async function processBatch(book: PickTarget): Promise<void> {
     if (book.kind === "translate") {
       await processTranslateBatch(book);
@@ -483,7 +467,7 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** 翻译重试批次：finished && !translated 的页（环形，聚焦书从当前页起） */
+  /** Translation retry batch: finished but untranslated pages (ring, focused book from current). */
   async function processTranslateBatch(book: PickTarget): Promise<void> {
     const lib = useLibraryStore();
     const llm = llmPayload();
@@ -491,26 +475,25 @@ export const useParseStore = defineStore("parse", () => {
     const root = lib.repoRoot;
     if (!root) throw new Error("no repository open");
     const pages = ringCollect(book, (page) => (needsWork(page) ? page.index : null));
-    if (pages.length === 0) return; // 竞态：已全部翻译
+    if (pages.length === 0) return; // race: all translated already
     pushLlmLog(`[ui] translation retry batch p${pages.join(",")} (${book.name})`);
     const outcome = await invokeTranslate(root, book.id, pages, llm);
     if (outcome.updatedPages.length === 0) {
-      throw new Error("translation made no progress"); // 计入 strike，防止坏页空转
+      throw new Error("translation made no progress"); // count a strike, avoid spinning on a bad page
     }
   }
 
-  /** OCR 批次：环形取 ≤批大小 未完成页 → 离屏渲染 → parse_pdf → 排翻译链。
-   *  在线模式先握手 /health 拿服务端公布的批大小（用户 2026-09-15：批大小由服务端定，
-   *  每次请求前重新协商；握手失败按批次失败计连败），本地托管沿用客户端自己的 4 页 */
+  /** OCR batch: ring-collect unfinished pages → offscreen render → parse_pdf → queue translation.
+   *  Online renegotiates via /health first (a failed handshake counts as a batch failure). */
   async function processOcrBatch(book: PickTarget): Promise<void> {
     const lib = useLibraryStore();
     if (useSettingsStore().ocr.mode === "online") await handshakeOnline();
     const limit = currentBatchSize();
     const take = ringCollect(book, (page) => (needsOcr(page) ? page : null), limit);
-    if (take.length === 0) return; // 竞态：已全部完成
+    if (take.length === 0) return; // race: all finished already
     pushLlmLog(`[ui] OCR batch p${take.map((p) => p.index).join(",")} (${book.name})`);
 
-    // 离屏渲染：一律用 Rust 解析过的路径（load_pdf 已做仓库内校验），不自己拼 name-id
+    // offscreen render uses the Rust-resolved path (load_pdf validates it); never build name-id
     const pdfPath = book.state.pdfPath;
     const doc = await loadPdfDoc(book.id, pdfPath);
     const pages: ParsePageInput[] = [];
@@ -527,22 +510,22 @@ export const useParseStore = defineStore("parse", () => {
       pages,
     });
     applyOutcome(book.id, outcome);
-    // 翻译与 pipeline 解耦（用户拍板 2026-09-14）：OCR 批一返回就把翻译排入
-    // 本书翻译链，调度链立刻去下一批 OCR；同书翻译串行（Rust 内隔页并发），
-    // 避免跨批上下文互踩
+    // translation is decoupled from the OCR pipeline: queue it as soon as the batch returns,
+    // then move to the next OCR batch. Same-book translation is serial (Rust makes interior
+    // pages concurrent) so contexts don't collide across batches.
     queueTranslate(book.id, take.map((p) => p.index));
   }
 
-  /** 书级翻译链：同书排队串行、失败不阻塞后续批次；在途时 pickBook 不再选该书翻译 */
+  /** Per-book translation chain: serial, failures don't block later batches, in-flight books are skipped. */
   const translateChains = new Map<string, Promise<boolean>>();
 
   function queueTranslate(bookId: string, pages: number[]): void {
-    if (paused.value) return; // 暂停：不排新翻译任务（未翻页留给恢复后的重试支路）
+    if (paused.value) return; // paused: leave untranslated pages to the retry branch
     const llm = llmPayload();
     if (!llm || pages.length === 0) return;
-    // 返回 true = 整批无进展（全失败/暂停跳过）——链清空后需要唤醒重试支路
+    // true = no progress (all failed / paused) — wake the retry branch after the chain drains
     const run = async (): Promise<boolean> => {
-      if (paused.value) return true; // 暂停：跳过本批，恢复时由 wake 续跑
+      if (paused.value) return true; // paused: skip, wake resumes it
       const root = useLibraryStore().repoRoot;
       if (!root) return false;
       const outcome = await invokeTranslate(root, bookId, pages, llm);
@@ -560,15 +543,15 @@ export const useParseStore = defineStore("parse", () => {
     void next.then((noProgress) => {
       if (translateChains.get(bookId) !== next) return;
       translateChains.delete(bookId);
-      // 仍有未翻译页（失败/漏批）→ 唤醒补翻支路（translateStrikes 防打转）；
-      // 后台书无缓存，用 noProgress（整批无进展）兜底。自我续跑用 wake(false)：
-      // 不重置连败预算，避免 LLM 坏掉时每批白试
+      // untranslated pages left (failure/missed) → wake the retry branch; background books
+      // have no cache, so fall back to noProgress. wake(false) keeps strike counts so a
+      // broken LLM is not retried every batch.
       const cached = useLibraryStore().pdfs[bookId];
       if (noProgress || cached?.pages.some(needsWork)) wake(false);
     });
   }
 
-  /** 调一次 translate_pdf 并把结果并回 store（翻译重试支路与翻译链共用同一份 invoke 参数） */
+  /** Call translate_pdf once and merge results into the store (shared by retry branch and chain). */
   async function invokeTranslate(
     root: string,
     bookId: string,
@@ -580,8 +563,8 @@ export const useParseStore = defineStore("parse", () => {
     return outcome;
   }
 
-  /** 批量结果落地：聚焦书（有缓存）就地 patch（译文栏响应式刷新）；后台书无缓存，
-   *  磁盘 JSON 已由 Rust 原子写回，下轮 pickBook 直读即见 */
+  /** Apply results: patch the cached focused book in place; background books are already
+   *  written atomically by Rust and read fresh next round. */
   function applyOutcome(id: string, outcome: ParseOutcome): void {
     const lib = useLibraryStore();
     const cached = lib.pdfs[id];
@@ -591,8 +574,8 @@ export const useParseStore = defineStore("parse", () => {
     cached.pages = cached.pages.map((p) => updated.get(p.index) ?? p);
   }
 
-  // ---- 打开书补骨架（用户拍板）：lopdf 解析失败的书 pages 为空，
-  //      pdfjs 几何就绪后以实测页数回填，再唤醒调度 ----
+  // ---- skeleton backfill on open: books lopdf could not read have empty pages;
+  //      fill the measured count once pdfjs geometry is ready, then wake the scheduler ----
   watch(
     () => {
       const lib = useLibraryStore();
@@ -608,15 +591,15 @@ export const useParseStore = defineStore("parse", () => {
     if (!lib.repoRoot) return;
     try {
       await invoke("prefill_pages", { root: lib.repoRoot, id, total: numPages });
-      if (lib.currentPdfId !== id) return; // 已切书：JSON 已补，store 无需动
+      if (lib.currentPdfId !== id) return; // switched books: JSON filled, store untouched
       await lib.loadPdf(id);
-      wake(); // 骨架就位 → 立即开跑
+      wake(); // skeleton ready → run now
     } catch (e) {
       toast(String(e), "error");
     }
   }
 
-  // 服务连上（含断线重连/手动启动成功）→ 唤醒调度链
+  // service connected (reconnect or manual start) → wake the chain
   watch(serviceStatus, (s) => {
     if (s === "connected") wake();
   });

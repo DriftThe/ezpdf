@@ -1,13 +1,13 @@
-"""镜像冒烟测试用的最小推理：合成一页图 → 跑一次真实 OCR → 断言拿到内容块。
+"""Minimal inference for image smoke tests: draw a page -> run real OCR -> assert regions.
 
-CI（.github/workflows/pyserver-images.yml）把它挂进容器执行，也就是「镜像能不能真的推理」
-这件事的判据 —— 只探 /health 只能证明服务起来了。**从 pyserver 目录运行**（容器里的 cwd 就是
-/app，脚本目录本身不在 sys.path 上，所以下面显式补上 cwd）：
+CI (.github/workflows/pyserver-images.yml) runs this inside the container to prove the image
+can actually infer, since /health only proves the service started. Run from the pyserver
+directory (cwd is /app in the container and the script dir is not on sys.path, so add cwd):
 
     cd pyserver && ./.venv/Scripts/python.exe ../scripts/smoke-inference.py
     docker run --rm -v "$PWD/scripts/smoke-inference.py:/smoke.py:ro" ezpdf-pyserver:cpu python /smoke.py
 
-退出码 0 = 通过；失败打印原因并返回 1。
+Exit code 0 = pass; failures print a reason and return 1.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import os
 import sys
 import time
 
-# 按路径执行脚本时 sys.path[0] 是脚本所在目录（scripts/），容器里则是 /，都要 cwd 才能 import app
+# sys.path[0] is the script dir (scripts/) or / in the container; add cwd so app imports work
 sys.path.insert(0, os.getcwd())
 
 

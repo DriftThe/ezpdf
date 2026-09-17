@@ -33,41 +33,26 @@ import {
 } from "../lib/i18n";
 import type { AppLocale } from "../locales";
 
-/** 非 Tauri 环境（纯浏览器 pnpm dev）：invoke 必败，持久化整体静默 */
+/** Non-Tauri (browser pnpm dev): invoke always fails, so persistence is silent. */
 
 interface LlmSettings {
-  /**
-   * 是否启用翻译（用户 2026-09-15，设置→LLM 首项）：关闭时 OCR 出的文本直接以
-   * content 作为译文落盘并标记完成（不请求 LLM，也不留 null），避免以后重新打开
-   * 翻译时把老内容回翻。默认开。
-   */
+  /** Off: OCR text is stored as its own translation and marked done (no LLM, no null). Default on. */
   translateEnabled: boolean;
-  /**
-   * 供应商预设（用户 2026-09-15 整合 pi-ai）：pi-ai 目录的供应商 id，或 "custom"。
-   * 预设只负责「识别 + 填端点 + 协议/关思考参数适配」，网络请求仍是 Rust 客户端
-   * （三种线协议，见 lib/piModels.ts 与 docs/protocols.md）。
-   */
+  /** pi-ai catalog provider id or "custom"; presets only supply endpoint + protocol/thinking compat. */
   provider: string;
-  /**
-   * 兼容性快照：预设模型由目录派生（选供应商/模型时重算）；自定义端点由用户选协议
-   * （preset.api），其余字段留空 → 关思考靠验证按钮探测。
-   */
+  /** Compat snapshot: derived from the catalog for presets; for custom, only api is user-picked. */
   preset: LlmPresetCompat;
   baseUrl: string;
-  apiKey: string; // 明文存在 config.json（README「数据存放位置」有说明）
+  apiKey: string; // plain text in config.json
   model: string;
   targetLang: string;
-  /** 智能上下文翻译：跨页截断文本经 agent loop 请求上下文联合翻译（默认开） */
+  /** Smart context: agent loop asks for neighbouring-page context on truncated text. Default on. */
   smartContext: boolean;
-  /**
-   * 关思考请求参数策略（用户 2026-09-14）："auto" 按预设/端点推断；
-   * "reasoning" | "enable_thinking" | "thinking_type" 显式；"none" 不加参数。
-   * 由「验证」按钮探测成功后回写；预设已给出关思考形态时无需探测。
-   */
+  /** Thinking-off strategy: "auto" | "reasoning" | "enable_thinking" | "thinking_type" | "none". */
   thinkingOff: string;
 }
 
-/** invoke 传给 Rust 的扁平 LLM 配置（translate.rs LlmConfig，serde camelCase） */
+/** Flat LLM config sent to Rust (translate.rs LlmConfig, serde camelCase). */
 export interface LlmInvokePayload {
   baseUrl: string;
   apiKey: string;
@@ -81,21 +66,17 @@ export interface LlmInvokePayload {
   maxTokensField: string;
   modelReasoning: boolean | null;
   extraHeaders: Record<string, string>;
-  /** 送翻块类型（Rust LlmConfig.translateTypes；空数组 = 用后端内置默认） */
+  /** Block types to translate (Rust translateTypes; empty = backend default). */
   translateTypes: string[];
-  /** 是否启用翻译（Rust LlmConfig.translateEnabled；false = 原文当译文落盘） */
+  /** Rust translateEnabled; false = source stored as its own translation. */
   translateEnabled: boolean;
 }
 
 /**
- * 常规开关（用户 2026-09-14：解析页删除，两个启动开关都归常规）：
- * - autoLaunch：启动时自动唤醒 OCR 服务（环境+模型全就绪才拉起）
- * - resumeOnStart：启动时自动续跑未完成的解析；关闭则启动后为暂停态
- *   （工具栏显示「启动翻译」）；两者都开才会自动进入运行态
- * 两者默认关闭（用户 2026-09-15 核对：首启即暂停、不主动拉起服务，与 README
- * 「出于省电考虑，启动后为暂停状态」一致）——
- * 已存在的配置照旧生效，改默认值只影响首次启动（无 config.json）。
- * - theme：界面主题（浅色/深色/跟随系统；标题栏右侧切换）
+ * - autoLaunch: wake the OCR service on start (only when env + models are ready).
+ * - resumeOnStart: resume unfinished parsing on start; both must be on to auto-run.
+ * - theme: system/light/dark.
+ * Both startup toggles default off (startup is paused).
  */
 export type ThemeMode = "system" | "light" | "dark";
 
@@ -103,48 +84,40 @@ interface GeneralSettings {
   autoLaunch: boolean;
   resumeOnStart: boolean;
   theme: ThemeMode;
-  /** 界面语言（用户 2026-09-15）：简中 / 繁中 / English；首启按系统语言定初值 */
+  /** UI locale; first launch derives it from the system language. */
   lang: AppLocale;
   /**
-   * 参与翻译的块类型（用户 2026-09-15 可配，见 lib/blocks.ts BLOCK_TYPE_OPTIONS）。
-   * 影响面：只决定「送翻 + 覆盖渲染」的类型集合，未勾选类型原 PDF 像素直出；
-   * 已翻译的页面不会重翻（要重来请用仓库行的「清除解析状态」）。
+   * Checked block types (lib/blocks.ts BLOCK_TYPE_OPTIONS): sent to the LLM and cover-rendered.
+   * Unchecked types keep original pixels; already-translated pages are not retried.
    */
   translateTypes: string[];
 }
 
 /**
- * OCR 解析服务来源（用户 2026-09-15）：
- * - local：应用托管的 pyserver（spawn + 就绪握手 + stdin EOF 收尾，需装依赖/模型）；
- * - online：远端解析服务（同款 HTTP 协议，见 pyserver/PROTOCOL.md），只需一个可达
- *   的 URL——基础环境（没装 torch/模型）也能用；翻译不依赖它（Rust 直连 LLM）。
+ * local: app-managed pyserver (spawn + ready handshake + stdin-EOF exit; needs deps + models).
+ * online: remote service over the same HTTP protocol (pyserver/PROTOCOL.md); needs only a URL.
  */
 type OcrMode = "local" | "online";
 
-/** OCR 服务设置：安装镜像源 + 服务来源（本地托管 / 在线服务） */
+/** OCR settings: install mirror + service source. */
 interface OcrSettings {
   installMirror: boolean;
   mode: OcrMode;
-  /** 在线模式的解析服务地址（如 http://127.0.0.1:9055）；local 模式忽略 */
+  /** Remote parse URL (e.g. http://127.0.0.1:9055); ignored in local mode. */
   url: string;
-  /** 在线模式的服务令牌（部署方 token.txt 里那串）；服务端没开鉴权就留空 */
+  /** Remote token (token.txt); empty when the server has no auth. */
   token: string;
 }
 
 /**
- * 设置页左侧导航子项。
- * 新增设置块三步：① 此处扩展 union（如 "theme"）
- * ② 新建 src/components/settings/sections/ThemeSection.vue（抄现有 section 当模板，
- *    根元素 class="set-pane"；表单状态在本 store 加 ref）
- * ③ 在 SettingsPage.vue 的 SECTIONS 注册表加一行 —— union 扩了不注册会编译报错
+ * Settings nav section. Adding one: extend this union, add a section component
+ * (root class "set-pane"), then register it in SettingsPage.vue SECTIONS.
+ * Extending the union without registering is a build error.
  */
 export type SettingsSection = "llm" | "ocr" | "common";
 
-/**
- * auth.cfg 临时读取（用户拍板 2026-09-14）：LLM 四配置放项目根 auth.cfg（gitignored），
- * 此处解析后填充 settings.llm。仅 dev 生效——避免 `pnpm tauri build` 把密钥烤进 bundle；
- * 文件缺失/格式异常一律静默（fresh clone 不能因此挂）。正式方案 = settings.json + keyring。
- */
+/** Dev-only: parse LLM config from the gitignored root auth.cfg so it never enters a bundle.
+ *  Missing or malformed file is silent. */
 function parseAuthCfg(text: string): Partial<LlmSettings> {
   const out: Partial<LlmSettings> = {};
   for (const line of text.split(/\r?\n/)) {
@@ -155,7 +128,7 @@ function parseAuthCfg(text: string): Partial<LlmSettings> {
 }
 
 async function fillLlmFromAuthCfg(llm: { value: LlmSettings }): Promise<void> {
-  if (!import.meta.env.DEV) return; // 生产构建死代码消除：auth.cfg 不会进 bundle
+  if (!import.meta.env.DEV) return; // dead-code eliminated in production builds
   const files = import.meta.glob("../../auth.cfg", { query: "?raw", import: "default" }) as Record<
     string,
     () => Promise<string>
@@ -166,20 +139,20 @@ async function fillLlmFromAuthCfg(llm: { value: LlmSettings }): Promise<void> {
     const parsed = parseAuthCfg(await loader());
     llm.value = { ...llm.value, ...parsed };
   } catch {
-    /* auth.cfg 缺失/不可读：保持空配置（翻译整体跳过） */
+    /* missing/unreadable auth.cfg: keep empty config (translation skipped) */
   }
 }
 
-/** config.json 磁盘结构（save_settings 整份写、load_settings 整份读） */
+/** config.json shape (save_settings writes the whole file, load_settings reads it whole). */
 interface PersistedConfig {
   llm?: Partial<LlmSettings>;
   general?: Partial<GeneralSettings>;
   ocr?: Partial<OcrSettings>;
-  /** 上次打开的仓库根目录（启动时自动打开；空 = 未选择） */
+  /** Last repo root (auto-opened on start; null = none). */
   repo?: string | null;
 }
 
-/** 逐段浅合并（未知字段/类型不符一律忽略，坏配置不能把设置页打挂） */
+/** Shallow-merge section by section; unknown fields or type mismatches are ignored. */
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
@@ -191,7 +164,7 @@ function mergeSection<T extends object>(target: T, patch: unknown): void {
   }
 }
 
-/** preset 是嵌套对象（浅合并会整份替换），逐字段校验后再落地 */
+/** preset is nested (shallow merge would replace it whole), so validate field by field. */
 function mergePreset(target: LlmPresetCompat, patch: unknown): void {
   if (!isRecord(patch)) return;
   for (const key of Object.keys(target) as Array<keyof LlmPresetCompat>) {
@@ -204,7 +177,7 @@ function mergePreset(target: LlmPresetCompat, patch: unknown): void {
       }
       continue;
     }
-    // 可空字段默认值是 null，不能用 typeof 比对（typeof null === "object"），按实际类型校验
+    // nullable fields default to null; typeof null === "object" so compare against the real type
     if (key === "thinkingOffValue") {
       if (v === null || typeof v === "string") target.thinkingOffValue = v;
       continue;
@@ -218,9 +191,9 @@ function mergePreset(target: LlmPresetCompat, patch: unknown): void {
 }
 
 export const useSettingsStore = defineStore("settings", () => {
-  /** 设置整页是否打开（覆盖 sidebar + reader 视窗，保留顶部工具栏；不卸载原视窗） */
+  /** Whole settings page open (overlays sidebar + reader; toolbar stays; nothing unmounts). */
   const pageOpen = ref(false);
-  /** 当前选中的设置子项 */
+  /** Selected settings section. */
   const section = ref<SettingsSection>("llm");
 
   const llm = ref<LlmSettings>({
@@ -235,10 +208,10 @@ export const useSettingsStore = defineStore("settings", () => {
     translateEnabled: true,
   });
 
-  /** pi-ai 目录（懒加载；null = 未加载——纯浏览器模式不加载） */
+  /** pi-ai catalog (lazy; null = not loaded; browser-only mode never loads it). */
   const catalog = ref<PiProvider[] | null>(null);
 
-  /** 目录加载（幂等；非 Tauri/加载失败都静默：预设不可用时手填 Base URL 仍能跑） */
+  /** Lazy idempotent catalog load; failures are silent (manual Base URL still works). */
   let catalogPromise: Promise<PiProvider[] | null> | null = null;
   function ensureCatalog(): Promise<PiProvider[] | null> {
     catalogPromise ??= loadCatalog()
@@ -253,26 +226,26 @@ export const useSettingsStore = defineStore("settings", () => {
     return catalogPromise;
   }
 
-  /** 可用（OpenAI 兼容）预设供应商：有至少一个模型能走当前客户端 */
+  /** Usable presets: providers with at least one model the client supports. */
   const usableProviders = computed<PiProvider[]>(() =>
     sortProviders((catalog.value ?? []).filter((p) => usableModels(p).length > 0)),
   );
-  /** 协议暂不支持（仅可识别）的预设供应商 */
+  /** Presets whose protocol is unsupported (recognized only). */
   const otherProviders = computed<PiProvider[]>(() =>
     sortProviders((catalog.value ?? []).filter((p) => usableModels(p).length === 0)),
   );
-  /** 当前预设供应商（自定义 = null） */
+  /** Current preset provider (custom = null). */
   const presetProvider = computed<PiProvider | null>(() =>
     findProvider(catalog.value ?? [], llm.value.provider),
   );
 
-  /** LLM 验证/模型拉取进行中（按钮防重入 + 文案） */
+  /** Verify/model-fetch in flight (button re-entry guard + label). */
   const verifying = ref(false);
   const modelsFetching = ref(false);
-  /** /models 拉取结果（模型输入框 datalist 补全） */
+  /** /models result (datalist for the model input). */
   const modelOptions = ref<string[]>([]);
 
-  /** 当前应用版本 + 更新检查状态（常规设置页展示；启动静默检查一次） */
+  /** App version + update-check state (shown in the Common pane; silent check once at launch). */
   const appVersion = ref("");
   const updateBusy = ref(false);
   const updateText = ref(t("update.notChecked"));
@@ -292,23 +265,17 @@ export const useSettingsStore = defineStore("settings", () => {
     token: "",
   });
 
-  /** 上次选择的仓库根目录（config.json 持久化；library 启动时据此自动打开） */
+  /** Last repo root persisted to config.json; library auto-opens it. */
   const repoPath = ref<string | null>(null);
 
-  /**
-   * 读取持久化设置（config.json；dev = 仓库根、生产 = 应用目录）：
-   * auth.cfg（dev）先落地，持久化配置覆盖其上——应用内改过的值优先于开发默认。
-   * 单次幂等（共享 promise），App 启动与设置页打开都安全。
-   */
+  /** Load persisted config once (idempotent promise): auth.cfg first, then config overrides it.
+   *  dev = repo root, prod = app dir. */
   let loadPromise: Promise<void> | null = null;
-  /**
-   * 成功读过盘才允许写回（否则用户的 config.json 会被内存里的默认值覆盖）。
-   * 场景：设置页返回键/主题/语言/仓库路径都是"整份写"，加载失败时写盘 = 清空用户配置。
-   */
+  /** Writes are gated on a successful load; otherwise default values would wipe the user's config. */
   let loaded = false;
-  /** 读盘落地后的界面语言（写盘前用它兜住"被默认值顶掉"的语言，见 doSave） */
+  /** Locale as loaded from disk; doSave keeps it from being clobbered by defaults. */
   let loadedLang: AppLocale | null = null;
-  /** 用户在设置里显式改过界面语言（只有这种情况允许把新语言写进配置） */
+  /** User explicitly changed the locale; only then may it be written back. */
   let langTouched = false;
   function ensureLoaded(): Promise<void> {
     loadPromise ??= (async () => {
@@ -316,14 +283,14 @@ export const useSettingsStore = defineStore("settings", () => {
       try {
         appVersion.value = await getVersion();
       } catch {
-        /* 版本号拿不到不致命（更新检查时仍会回填） */
+        /* a missing version is not fatal (the update check fills it in later) */
       }
       try {
         const text = await invoke<string | null>("load_settings");
-        // 无配置文件（首次启动）：不能在这里 return——下面的语言/目标语言默认值还要补
+        // no config file (first launch): don't return yet — locale/target defaults still apply below
         if (text) {
           const cfg = JSON.parse(text) as PersistedConfig;
-          // preset 是嵌套对象：浅合并会整份替换，单独逐字段校验
+          // preset is nested: validate it separately instead of shallow-merging whole
           const patch: Record<string, unknown> = isRecord(cfg.llm) ? { ...cfg.llm } : {};
           delete patch.preset;
           mergeSection(llm.value, patch);
@@ -334,32 +301,32 @@ export const useSettingsStore = defineStore("settings", () => {
         }
       } catch (e) {
         console.warn("[settings] config.json 读取失败，使用默认值:", e);
-        return; // 读失败：保持 loaded=false，本次会话拒绝写盘（不覆盖用户配置）
+        return; // load failed: keep loaded=false so this session never writes
       }
       loaded = true;
-      // 界面语言：配置值非法（手改坏/旧字段）回落系统检测；配置优先于 localStorage 镜像
+      // invalid config locale falls back to system detection; config wins over the localStorage mirror
       if (!isAppLocale(general.value.lang)) general.value.lang = detectLocale();
       setLocale(general.value.lang);
       loadedLang = general.value.lang;
-      // 目标语言初值（用户 2026-09-15：跟随系统语言；仅从未设置过时填，auth.cfg/旧配置优先）
+      // target language default follows the system language; only filled when never set
       if (!llm.value.targetLang.trim()) llm.value.targetLang = defaultTargetLang(general.value.lang);
-      // 送翻类型：过滤非法/过时标签；空集合视为未设置 → 回落内置默认（Rust 侧同样语义）
+      // filter invalid/stale type tags; empty set = unset → built-in default (same in Rust)
       const picked = Array.isArray(general.value.translateTypes) ? general.value.translateTypes : [];
       const valid = picked.filter((t) => typeof t === "string" && BLOCK_TYPE_OPTIONS.includes(t));
       general.value.translateTypes = valid.length ? valid : [...DEFAULT_TRANSLATED_TYPES];
-      // 供应商预设迁移/补全（旧配置只有 baseUrl+model）：反查目录 → 重算兼容快照
+      // migrate old configs (baseUrl+model only): reverse-lookup provider, recompute the snapshot
       await ensureCatalog();
       if (
         llm.value.provider !== CUSTOM_PROVIDER &&
         !findProvider(catalog.value ?? [], llm.value.provider)
       ) {
-        llm.value.provider = CUSTOM_PROVIDER; // 目录升级后供应商已不存在
+        llm.value.provider = CUSTOM_PROVIDER; // provider vanished after a catalog upgrade
       }
       if (llm.value.provider === CUSTOM_PROVIDER && llm.value.baseUrl.trim()) {
         llm.value.provider = detectProviderId(catalog.value ?? [], llm.value.baseUrl);
       }
       syncPreset();
-      autosaveArmed = true; // 到这一步内存里的值都来自磁盘，自动保存可以开始了
+      autosaveArmed = true; // in-memory values now come from disk; autosave may start
     })();
     return loadPromise;
   }
@@ -371,9 +338,8 @@ export const useSettingsStore = defineStore("settings", () => {
   void fillDefaults();
 
   /**
-   * 由当前「供应商 + 模型」重算兼容快照（目录未加载/模型不在目录 → 空快照）。
-   * 自定义端点保留用户手选的协议——否则每次改模型名都会把协议清成空（= 退回 Chat
-   * Completions），用户明明选着 Messages 却发出 chat 请求。
+   * Recompute the compat snapshot from provider + model (empty when not in the catalog).
+   * Custom keeps the user's picked protocol; otherwise editing the model name would reset it.
    */
   function syncPreset(): void {
     const preset = presetCompat(
@@ -385,23 +351,23 @@ export const useSettingsStore = defineStore("settings", () => {
     llm.value.preset = preset;
   }
 
-  /** 手填模型后重算快照（设置页输入框 change 事件） */
+  /** Recompute the snapshot after typing a model (input change). */
   function applyModelInput(): void {
     syncPreset();
   }
 
-  /** 当前生效协议：预设来自目录、自定义来自用户选择；空 = Chat Completions */
+  /** Effective protocol: from the catalog for presets, user-picked for custom; empty = Chat. */
   const protocol = computed<string>(() =>
     isSupportedApi(llm.value.preset.api) ? llm.value.preset.api : DEFAULT_API,
   );
 
-  /** 手选协议（用户 2026-09-16）：只有自定义端点能改，预设的协议由目录决定 */
+  /** Pick protocol: custom endpoints only; presets get theirs from the catalog. */
   function applyProtocol(api: string): void {
     if (llm.value.provider !== CUSTOM_PROVIDER || !isSupportedApi(api)) return;
     llm.value.preset = { ...llm.value.preset, api };
   }
 
-  /** 选预设供应商：填端点；模型若不属于该供应商则自动取第一个可用模型 */
+  /** Select a provider: fill the endpoint; switch to its first usable model if needed. */
   function applyProvider(id: string): void {
     llm.value.provider = id;
     if (id === CUSTOM_PROVIDER) {
@@ -419,11 +385,11 @@ export const useSettingsStore = defineStore("settings", () => {
     syncPreset();
   }
 
-  /** invoke 用的扁平配置（parse.ts 调度 + verify_llm 共用）；三要素缺失 = null（翻译整体跳过） */
+  /** Flat config for invoke (scheduler + verify_llm); null when baseUrl/apiKey/model are missing. */
   function llmInvokePayload(): LlmInvokePayload | null {
     const s = llm.value;
-    // 关掉翻译时也要下发：Rust 收到的 translateEnabled=false 会把原文复制成译文
-    // 并标记完成（不走网络），端点/密钥可以为空——基础环境照样能"处理完" OCR 文本
+    // send even with translation off: Rust copies source into translation and marks the
+    // page done (no network), so endpoint/key may be empty and a bare install still finishes OCR text
     if (s.translateEnabled && (!s.baseUrl.trim() || !s.apiKey.trim() || !s.model.trim())) {
       return null;
     }
@@ -447,16 +413,12 @@ export const useSettingsStore = defineStore("settings", () => {
 
   function openPage(): void {
     pageOpen.value = true;
-    // sidebar 收起时工具栏满宽，会盖住设置页左列顶部的返回键——打开设置先复位展开
+    // a collapsed sidebar makes the toolbar full-width and cover the back button; expand first
     useLibraryStore().sidebarOpen = true;
   }
 
-  /**
-   * 改动即自动落盘（用户 2026-09-17）：任何设置改动 **2 秒**后写一次 config.json，
-   * 不必等退出设置页——写盘本来就是整份写，所以只是把时机提前（返回键仍会立即写一次）。
-   * 两个前提：非 Tauri 环境不写；读盘成功前不写（否则内存里的默认值会覆盖用户配置，
-   * 与 `loaded` 那道闸同一个理由）。
-   */
+  /** Debounced autosave: any change writes config.json 2 s later (whole-file write).
+   *  Skipped outside Tauri and before a successful load. */
   const AUTOSAVE_DEBOUNCE_MS = 2000;
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   let autosaveArmed = false;
@@ -477,21 +439,20 @@ export const useSettingsStore = defineStore("settings", () => {
         try {
           await doSave();
         } catch (e) {
-          console.warn("[settings] 自动保存失败:", e); // 不打扰：下一次改动/退出时还会写
+          console.warn("[settings] 自动保存失败:", e); // quiet: the next change or exit writes again
         }
       })();
     }, AUTOSAVE_DEBOUNCE_MS);
   }
 
-  // 同步 flush：读盘期间的赋值（auth.cfg 填充、默认值补全、预设迁移）不能触发写盘
+  // sync flush: assignments during load (auth.cfg, defaults, preset migration) must not write
   watch([llm, general, ocr, repoPath], scheduleAutosave, { deep: true, flush: "sync" });
 
-  /** 整份写盘（自动保存 / 返回键 / 即时持久化共用） */
+  /** Whole-file write (autosave / back button / immediate persistence). */
   async function doSave(): Promise<void> {
-    cancelAutosave(); // 这次写入取代等待中的自动保存
-    // 界面语言只允许由 setLang 改动：写盘前若发现它偏离读盘值（且用户没动过设置），
-    // 说明被某个默认值流程顶掉了——按读盘值写回，避免把系统语言覆盖进用户配置
-    // （2026-09-15 真的发生过：一次启动把 en 写成 zh-CN，来源未复现）。
+    cancelAutosave(); // this write supersedes a pending autosave
+    // locale may only change via setLang: a drift from the loaded value (with no user
+    // action) means some default flow clobbered it, so revert before writing.
     if (!langTouched && loadedLang !== null && general.value.lang !== loadedLang) {
       console.warn(`[settings] lang reverted to ${general.value.lang}, keeping ${loadedLang}`);
       general.value.lang = loadedLang;
@@ -509,14 +470,14 @@ export const useSettingsStore = defineStore("settings", () => {
     await invoke("save_settings", { json: JSON.stringify(payload, null, 2) });
   }
 
-  /** 保存并退出（设置页返回键）：失败留在设置页报错；成功不再 toast（用户 2026-09-14） */
+  /** Save and close (back button): errors stay on the page; success is silent. */
   async function save(): Promise<void> {
     if (!isTauri) {
       pageOpen.value = false;
       return;
     }
     if (!loaded) {
-      // 读盘都没成功：写回只会清空用户配置，留在设置页并说明原因
+      // load never succeeded: writing would wipe the config, so stay on the page
       toast(t("settings.saveNotLoaded"), "error");
       return;
     }
@@ -528,7 +489,7 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
-  /** 立即生效的设置的即时持久化：不弹 toast，失败只控制台告警（不阻塞当前操作） */
+  /** Immediate persistence for instant-effect settings: no toast, console warn on failure. */
   async function persistNow(what: string): Promise<void> {
     if (!isTauri) return;
     try {
@@ -538,19 +499,19 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
-  /** 仓库选择变化即时持久化（失败不阻塞打开仓库） */
+  /** Persist repo choice immediately (failure doesn't block opening the repo). */
   async function setRepoPath(path: string | null): Promise<void> {
     repoPath.value = path;
     await persistNow("仓库路径");
   }
 
-  /** 主题切换即时持久化（用户 2026-09-14）：无需等设置页退出保存；localStorage 镜像由 theme.ts 维护 */
+  /** Persist theme immediately; theme.ts maintains the localStorage mirror. */
   async function setTheme(mode: ThemeMode): Promise<void> {
     general.value.theme = mode;
     await persistNow("主题");
   }
 
-  /** 界面语言切换（用户 2026-09-15）：即时生效 + 即时持久化（localStorage 镜像由 i18n.ts 维护） */
+  /** Switch locale: immediate effect + persistence; i18n.ts keeps the localStorage mirror. */
   async function setLang(locale: AppLocale): Promise<void> {
     general.value.lang = locale;
     langTouched = true;
@@ -558,7 +519,7 @@ export const useSettingsStore = defineStore("settings", () => {
     await persistNow("界面语言");
   }
 
-  /** 验证 LLM（用户 2026-09-14）：连通性 + 关思考策略探测；策略回写 thinkingOff */
+  /** Verify LLM: connectivity + thinking-off probe; writes the strategy back to thinkingOff. */
   async function verifyLlm(): Promise<void> {
     if (verifying.value) return;
     const payload = llmInvokePayload();
@@ -570,8 +531,8 @@ export const useSettingsStore = defineStore("settings", () => {
     try {
       const report = await invoke<LlmVerifyReport>("verify_llm", { llm: payload });
       llm.value.thinkingOff = report.strategy;
-      // 探测到的响应里仍带思考内容才警告（strategy "none" 也可能是"这个端点不需要参数"）；
-      // 预设标记为非思考模型则不警告（用户 2026-09-15）
+      // warn only if thinking content came back; "none" may just mean no params needed.
+      // no warning for presets marked as non-reasoning.
       const warn = report.thinkingOn && !report.presetNoThinking;
       toast(report.message, warn ? "warn" : "info");
     } catch (e) {
@@ -581,7 +542,7 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
-  /** 拉取 /models 列表（失败 toast 兜底；成功不打扰） */
+  /** Fetch /models: toast on failure, silent on success. */
   async function fetchModels(): Promise<void> {
     if (modelsFetching.value) return;
     const { baseUrl, apiKey } = llm.value;
@@ -604,8 +565,7 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
-  /** 检查更新（用户 2026-09-14）：GitHub Releases 最新版 vs 当前版；
-   *  manual=false（启动）失败静默，manual=true（按钮）失败 toast */
+  /** Check GitHub Releases vs current; manual=false (launch) is silent, manual=true toasts. */
   async function checkUpdate(manual = false): Promise<void> {
     if (!isTauri || updateBusy.value) return;
     updateBusy.value = true;

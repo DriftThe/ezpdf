@@ -1,19 +1,16 @@
 import { ref } from "vue";
 import { t } from "../lib/i18n";
 
-/**
- * 自绘确认框（用户 2026-09-14）：替代 plugin-dialog 的系统 ask——系统弹窗
- * 与整体设计不一致，且无法带灰色蒙版。用法与 toast 同构（模块级单例状态 +
- * 渲染器组件），调用方 `await confirmDialog({...})` 拿布尔结果。
- * 单实例：新请求会先取消旧请求（旧 Promise 以 false 结束）。
- */
+/** Self-drawn confirm dialog replacing plugin-dialog's system ask.
+ *  Module-level singleton state + renderer component; `await confirmDialog({...})` returns a bool.
+ *  Single instance: a new request cancels the old one (its promise resolves false). */
 interface ConfirmOptions {
   title: string;
   message: string;
-  /** 确认按钮文案（默认「删除」，destructive 场景主导） */
+  /** Confirm button label (defaults to Delete, the dominant destructive case). */
   confirmText?: string;
   cancelText?: string;
-  /** 危险操作：确认按钮红色实心 */
+  /** Destructive: solid red confirm button. */
   danger?: boolean;
 }
 
@@ -26,11 +23,11 @@ interface PendingConfirm {
   resolve: (ok: boolean) => void;
 }
 
-/** 当前待确认项（null = 无弹窗）；渲染器 ConfirmDialog.vue 读取并渲染 */
+/** Pending confirm (null = none); ConfirmDialog.vue renders it. */
 export const pendingConfirm = ref<PendingConfirm | null>(null);
 
 export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
-  settleConfirm(false); // 单实例：先取消未决请求
+  settleConfirm(false); // single instance: cancel any pending request
   return new Promise<boolean>((resolve) => {
     pendingConfirm.value = {
       confirmText: t("common.delete"),
@@ -42,7 +39,7 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
   });
 }
 
-/** 结算当前请求（Esc/蒙版/取消 → false；确认 → true）；无待确认时无副作用 */
+/** Settle the request (Esc/backdrop/cancel → false, confirm → true); no-op when none. */
 export function settleConfirm(ok: boolean): void {
   const c = pendingConfirm.value;
   if (!c) return;

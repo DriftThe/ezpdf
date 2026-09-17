@@ -2,27 +2,25 @@
 import type { TableGrid } from "./TableGrid";
 
 /**
- * 版面块：OCR 检出的一个区域及其原文/译文。
- * kind 为 PP-DocLayoutV3 标签（text/title/list/figure/figure_caption/table/formula/header/footer），
- * 保留 string 通道以兼容后续新增标签，故不用 enum。
+ * Layout block: one OCR-detected region and its source/translated text.
+ * kind is a PP-DocLayoutV3 label; kept as a string (not an enum) so new labels pass through.
  */
 export type Block = { type: string, 
 /**
- * 原文内容：正文纯文本 / 公式 $$..$$ / 表格 markdown；figure 块为空串
+ * Source content: plain text, $$..$$ formulas, or table markdown; empty for figures.
  */
 content: string, 
 /**
- * [x1, y1, x2, y2] 左上→右下角点，单位 PDF 点
+ * [x1, y1, x2, y2] top-left → bottom-right, in PDF points.
  */
 loc: [number, number, number, number], 
 /**
- * 译文；figure/formula 块为 None（formula 原样渲染），未译为 None。
- * 表块（type == "table"）存的是译文矩阵的 JSON 文本（二维 string|null 数组，
- * 见 table.rs），与常规块"译文即字符串"的区别只在渲染侧解释。
+ * Translation; None for figures/formulas (formulas render as-is) or when untranslated.
+ * Table blocks hold the translated matrix as JSON text (2-D string|null, see table.rs).
  */
 translation: string | null, 
 /**
- * 表格网格（仅 type == "table"）：Rust 首次处理该块时解析 content 并落盘，
- * 前端只渲染、不再解析标记。解析失败（或老 JSON 未处理过）为 None → 不覆盖
+ * Table grid (only for type == "table"): Rust parses content and persists it; the frontend
+ * only renders. None when unparsable or not yet backfilled → no cover.
  */
 grid?: TableGrid | null, };

@@ -1,9 +1,9 @@
-# ezpdf 解析服务：两个变体共用一份配置，用 profile 选一个起
+# ezpdf parse service: one config for both variants; pick one with a profile
 #
-#   docker compose --profile cpu up -d      # CPU 镜像（镜像小、任何机器可跑）
-#   docker compose --profile gpu up -d      # GPU 镜像（宿主需 nvidia-container-toolkit）
+#   docker compose --profile cpu up -d      # CPU image (small, runs anywhere)
+#   docker compose --profile gpu up -d      # GPU image (host needs nvidia-container-toolkit)
 #
-# 起好后看日志里的 auth token，粘到 应用 → 设置 → OCR 服务 → 服务令牌：
+# After start, read the auth token from the logs and paste it into App → Settings → OCR Service → Service Token:
 #   docker compose logs -f ezpdf-pyserver-cpu
 services:
   ezpdf-pyserver-cpu:
@@ -11,19 +11,19 @@ services:
       context: .
       args:
         VARIANT: cpu
-        # 四处置空 = 官方源；慢/被墙时在 .env 或环境变量里覆盖（见 README「用 Docker 部署」）
+        # All four empty = official sources; override in .env or the environment when slow/blocked (see README "Deploy with Docker")
         BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
         APT_MIRROR: ${APT_MIRROR:-}
         PIP_INDEX: ${PIP_INDEX:-}
         TORCH_INDEX: ${TORCH_INDEX:-}
     image: ezpdf-pyserver:cpu
     profiles: ["cpu"]
-    # 默认只绑本机；要给内网/公网用就改成 "9055:9055"（并注意这是明文 HTTP，
-    # 公网请自行套 HTTPS 反向代理）
+    # Binds localhost by default; change to "9055:9055" for LAN/public use (plain HTTP —
+    # put your own HTTPS reverse proxy in front for public access)
     ports:
       - "127.0.0.1:9055:9055"
     volumes:
-      # 模型已在镜像内，这里只持久化 token.txt（重建容器不换令牌）
+      # Models are baked into the image; this only persists token.txt (container rebuilds keep the token)
       - ./data:/data
 
   ezpdf-pyserver-gpu:
@@ -34,7 +34,7 @@ services:
         BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
         APT_MIRROR: ${APT_MIRROR:-}
         PIP_INDEX: ${PIP_INDEX:-}
-        # GPU 变体请用 .../pytorch-wheels/cu132
+        # For the GPU variant use .../pytorch-wheels/cu132
         TORCH_INDEX: ${TORCH_INDEX:-}
     image: ezpdf-pyserver:gpu
     profiles: ["gpu"]

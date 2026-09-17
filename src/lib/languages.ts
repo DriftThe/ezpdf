@@ -1,16 +1,11 @@
-/**
- * 目标语言预设（用户 2026-09-15）：下拉里给常见目标语言，避免手输；仍保留"自定义"
- * 以覆盖预设之外的说法（如 Cantonese / English (US)）。
- *
- * value = 直接写进提示词的语言名（英文，模型识别最稳）；label = 母语名 + 英文名，
- * 各界面语言下都能认（故不进 i18n 目录）。
- */
+/** Target-language presets for the dropdown, plus a custom escape hatch.
+ *  value = English name written into the prompt; label = native + English (so no i18n key). */
 interface TargetLangOption {
   value: string;
   label: string;
 }
 
-/** 选中即用输入框的自由写法（不写死语言名） */
+/** Selecting this keeps the free-text input (no hardcoded language name). */
 export const CUSTOM_TARGET_LANG = "__custom__";
 
 export const TARGET_LANG_OPTIONS: readonly TargetLangOption[] = [
@@ -41,7 +36,7 @@ export const TARGET_LANG_OPTIONS: readonly TargetLangOption[] = [
   { value: "Malay", label: "Bahasa Melayu (Malay)" },
 ];
 
-/** 当前值是否命中预设（否则下拉显示"自定义"并展开输入框） */
+/** Whether the value matches a preset (else the dropdown shows custom and expands). */
 export function isPresetTargetLang(value: string): boolean {
   return TARGET_LANG_OPTIONS.some((o) => o.value === value);
 }

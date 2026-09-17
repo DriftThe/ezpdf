@@ -1,13 +1,13 @@
-"""服务入口：uvicorn --port 0 + READY 协议 + token 中间件 + stdin-EOF 防孤儿。
+"""Managed service entry: uvicorn on port 0 + READY protocol + token middleware + stdin-EOF orphan guard.
 
-Rust 侧（唯一正常调用方）：
-    spawn .venv 的 python -m app.main（cwd = pyserver 根，EZPDF_TOKEN 必传），
-    逐行读 stdout 直到 `EZPDF_READY {...}` 行，从 JSON 取实际端口。
+Rust side (the only normal caller):
+    spawns .venv's python -m app.main (cwd = pyserver root, EZPDF_TOKEN always passed),
+    reads stdout line by line until the `EZPDF_READY {...}` line, and takes the real port from it.
 
-就绪协议：绑定 ephemeral 端口后、开始 serve 前向 stdout 打一行
+Ready protocol: after binding an ephemeral port and before serving, print one stdout line
     EZPDF_READY {"port": ..., "pid": ...}
 
-手动调试：python -m app.main（无 token 时不校验；Ctrl+C 退出）。
+Manual debug: python -m app.main (no token = no auth; Ctrl+C to exit).
 """
 
 from __future__ import annotations
@@ -28,14 +28,14 @@ from .routers import health, ocr
 
 logger = logging.getLogger("ezpdf.pyserver")
 
-# 单请求体上限（同书一批 ≤4 页，32 页是硬上限，留足余量）
+# Per-request body cap (a batch is ≤4 pages, 32 is the hard cap; leaves plenty of headroom)
 MAX_BODY_BYTES = 64 * 1024 * 1024
 
 
 def create_app(token: str | None = None) -> FastAPI:
-    """token=None 取环境变量（Rust 托管形态）；显式传入者优先（server_docker.py）。
+    """token=None reads the environment (Rust-managed form); an explicit token wins (server_docker.py).
 
-    校验覆盖所有路由（含 /health）：客户端若配了令牌，健康探测也要带 `x-ezpdf-token`。
+    Auth covers every route including /health: a client with a token must send `x-ezpdf-token` to health-probe too.
     """
     expected = TOKEN if token is None else token
     app = FastAPI(title="ezpdf-pyserver")
@@ -45,7 +45,7 @@ def create_app(token: str | None = None) -> FastAPI:
     if expected:
         @app.middleware("http")
         async def _token_guard(request, call_next):
-            # 常量时间比较（非常量时间比较可被本机进程按响应时间逐字节爆破）
+            # Constant-time compare (a local process could otherwise byte-probe via response timing)
             supplied = (request.headers.get("x-ezpdf-token") or "").encode("utf-8", "ignore")
             if not hmac.compare_digest(supplied, expected.encode()):
                 return JSONResponse(status_code=403, content={"detail": "forbidden"})
@@ -53,8 +53,8 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def _body_limit(request, call_next):
-        # 32 页 × base64 PNG 远小于此值；Pydantic 的 max_length 要等体读进内存才生效，
-        # 超大 body 能先把进程撑爆，所以在读体之前按 Content-Length 拦掉
+        # 32 pages of base64 PNG sit far below this; Pydantic's max_length only applies after the body is
+        # read into memory, so reject on Content-Length before reading — an oversized body can OOM first
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
             logger.warning("request body too large: %s bytes", declared)
@@ -65,10 +65,10 @@ def create_app(token: str | None = None) -> FastAPI:
 
 
 def _watch_stdin(server: uvicorn.Server) -> None:
-    """父进程（Rust）退出 → stdin EOF → 优雅退出，5s 兜底硬退（防孤儿）。
+    """Parent (Rust) exit → stdin EOF → graceful exit, with a 5s hard-exit fallback against orphans.
 
-    用 os.read 裸读 fd 0 而非 sys.stdin：buffered reader 的锁会在解释器
-    收尾时与仍阻塞在读上的守护线程相撞（Fatal Python error）。
+    Reads fd 0 with os.read rather than sys.stdin: the buffered reader's lock collides with the
+    still-blocked daemon thread during interpreter shutdown (Fatal Python error).
     """
     try:
         while os.read(0, 4096):

@@ -3,13 +3,12 @@ import { nextTick, ref, watch } from "vue";
 import { pendingConfirm, settleConfirm } from "../../composables/confirm";
 
 /**
- * 自绘确认框渲染器（全局单例，AppShell 挂载一次）：
- * 灰色蒙版 + 居中卡片，与设计体系一致（用户 2026-09-14 替换系统 ask）。
- * z-index 500：高于设置整页(10)/工具栏(20)/行菜单(30)/悬浮卡(100)，低于 toast(1000)。
+ * Custom confirm dialog renderer (global singleton, mounted once in AppShell).
+ * z-index 500: above settings page(10)/toolbar(20)/row menu(30)/hover card(100), below toast(1000).
  */
 const confirmBtn = ref<HTMLButtonElement | null>(null);
 
-// 打开即聚焦确认键：Enter/Esc 键盘操作可见
+// Focus the confirm button on open so Enter/Esc keyboard use is visible
 watch(pendingConfirm, (c) => {
   if (c) void nextTick(() => confirmBtn.value?.focus());
 });
@@ -47,7 +46,7 @@ function onKeydown(e: KeyboardEvent): void {
   position: fixed;
   inset: 0;
   z-index: 500;
-  background: rgba(0, 0, 0, 0.35); /* 灰色蒙版：突出弹窗、屏蔽底层交互 */
+  background: rgba(0, 0, 0, 0.35); /* dimmed mask: highlights dialog, blocks interaction below */
   display: flex;
   align-items: center;
   justify-content: center;

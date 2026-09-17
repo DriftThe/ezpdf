@@ -1,2 +1,2 @@
-# 模型下载专用依赖（ocr_download_models 按需安装；基础环境不需要）
+# Model-download only (installed on demand by ocr_download_models, not needed at runtime)
 huggingface_hub>=0.30,<2.0
