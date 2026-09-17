@@ -623,6 +623,7 @@ export const useParseStore = defineStore("parse", () => {
 
   return {
     paused,
+    parsing,
     serviceStatus,
     togglePaused,
     envReport,

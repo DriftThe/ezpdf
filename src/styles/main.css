@@ -228,6 +228,11 @@ textarea {
 .svc.info .svc-dot {
   background: var(--accent);
 }
+/* 处理中：服务在线且一批在途（区别于启动中的琥珀色，用强调色脉动表示"在干活"） */
+.svc.busy .svc-dot {
+  background: var(--accent);
+  animation: ez-pulse 1.2s ease-in-out infinite;
+}
 .svc.err .svc-dot,
 .svc.failed .svc-dot {
   background: var(--err);

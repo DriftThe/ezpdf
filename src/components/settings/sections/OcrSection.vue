@@ -39,7 +39,7 @@ async function onTest(): Promise<void> {
 
 /** 状态位 → 文案 / 状态灯修饰类（"" = 灰色未就绪态） */
 type EnvState = "notready" | "cpu" | "gpu";
-type SvcState = "stopped" | "starting" | "idle" | "failed";
+type SvcState = "stopped" | "starting" | "busy" | "idle" | "failed";
 
 const pythonReady = computed(() => !!parse.envReport?.python);
 const cudaReady = computed(() => !!parse.envReport?.gpu);
@@ -57,14 +57,18 @@ const svcState = computed<SvcState>(() => {
     case "starting":
       return "starting";
     case "connected":
-      return "idle";
+      // 服务在线：一批在途 = 处理中（用户 2026-09-17 反馈：本地服务跑着批却一直显示空闲中）
+      return parse.parsing ? "busy" : "idle";
     case "failed":
       return "failed";
     default:
       return "stopped";
   }
 });
-const serviceBusy = computed(() => svcState.value === "starting" || svcState.value === "idle");
+/** 服务「占着」的形态：启动中/在线（含处理中）→ 按钮显示「停止服务」 */
+const serviceBusy = computed(
+  () => svcState.value === "starting" || svcState.value === "busy" || svcState.value === "idle",
+);
 
 /** 灯 tooltip 明细（悬停可查具体版本/驱动/缺失项） */
 const pythonTip = computed(() => parse.envReport?.pythonPath ?? "");
@@ -99,10 +103,18 @@ const ENV_CLASS: Record<EnvState, string> = { notready: "", cpu: "info", gpu: "o
 const SVC_LABEL = computed<Record<SvcState, string>>(() => ({
   stopped: t("ocr.svcStopped"),
   starting: t("ocr.svcStarting"),
+  busy: t("ocr.svcBusy"),
   idle: t("ocr.svcIdle"),
   failed: t("ocr.svcFailed"),
 }));
-const SVC_CLASS: Record<SvcState, string> = { stopped: "", starting: "starting", idle: "ok", failed: "err" };
+const SVC_CLASS: Record<SvcState, string> = {
+  stopped: "",
+  starting: "starting",
+  busy: "busy",
+  idle: "ok",
+  failed: "err",
+};
+const svcTip = computed(() => (svcState.value === "busy" ? t("ocr.svcBusyTip") : t("ocr.pyserverTip")));
 
 /** 五灯（Python/CUDA/环境/模型/服务）：就绪判定在脚本里做，模板只遍历 */
 const lights = computed(() => [
@@ -129,7 +141,7 @@ const lights = computed(() => [
     key: "service",
     label: `${t("ocr.lightService")} ${SVC_LABEL.value[svcState.value]}`,
     cls: SVC_CLASS[svcState.value],
-    tip: t("ocr.pyserverTip"),
+    tip: svcTip.value,
   },
 ]);
 </script>
