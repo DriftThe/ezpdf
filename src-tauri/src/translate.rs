@@ -1,24 +1,12 @@
 //! LLM translation: single-page packing + smart-context agent loop + external cross-page binding.
+//! Prompts (runtime `system_prompt/`; EZPDF_SYSTEM_PROMPT_DIR overrides): smart_context ⇒
+//! intelli_context.md (protocols below, result key `A`), else standard_translate.md (key `content`).
 //!
-//! Two system prompts (read at runtime from system_prompt/; EZPDF_SYSTEM_PROMPT_DIR overrides the dir):
-//! - smart_context=true → `intelli_context.md`: protocols A–D (below), result key `A`
-//! - smart_context=false → `standard_translate.md`: no context protocol, result key `content`
-//! Parsing accepts either key and treats a missing need_context as None; non-smart mode ignores context requests.
+//! Smart protocols: A `{requests:[{index,Q}]}` → B `{result:[{index,A}],need_context:false}` or a
+//! context request `need_context:"before"|"after"` → C `{type,requests:[{index,C}]}` → D `{result,external_index,external}`.
+//! Exactly ONE context request is allowed; `external` binds onto the neighbour's candidate block (later skipped there).
 //!
-//! Smart-mode protocols:
-//! - input A: `{requests: [{index, Q}]}`
-//! - normal output B: `{result: [{index, A}], need_context: false}`
-//! - context request: `{result: [], need_context: "before"|"after"}`
-//! - context C: `{type: "before"|"after"|null, requests: [{index, C}]}`
-//! - combined output D: `{result, external_index, external}`
-//!
-//! The agent loop allows exactly ONE context request; `external` writes into the matched
-//! candidate block of the neighbouring page (that page later skips it because translation != null).
-//! Falling back to format B / no candidate match → leave every context box untouched.
-//!
-//! Single-page flow: collect blocks (translate type, non-empty content, translation == null) → format A →
-//! one or two rounds (the second with C) → result validated 1:1 against requests (A=null valid) → persist;
-//! bad JSON / missing index appends a correction message and retries (round cap: MAX_ROUNDS).
+//! Bad JSON / missing index appends a correction and retries (MAX_ROUNDS); results are validated 1:1 against requests (A=null valid).
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -32,9 +20,7 @@ use ts_rs::TS;
 use crate::parse::truncate;
 use crate::{BindDoc, PageInfo};
 
-/// LLM config passed by invoke (frontend settings store; in dev filled from root auth.cfg).
-/// The pi-ai preset fields (api/thinkingOffKind/…/extraHeaders) are computed by the frontend
-/// from the catalog and sent per invoke; Rust applies the data without embedding the catalog.
+/// Config from invoke (dev fills from root auth.cfg); the pi-ai preset fields are frontend-computed, so Rust embeds no catalog.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmConfig {
@@ -45,14 +31,10 @@ pub struct LlmConfig {
     /// Smart-context translation toggle (on by default, see LlmSection).
     #[serde(default)]
     pub smart_context: bool,
-    /// Thinking-off request strategy: "auto" (default, inferred from preset/endpoint) |
-    /// "reasoning" | "enable_thinking" | "thinking_type" | "none".
-    /// Written by the settings Verify button; an explicit value outranks the preset shape.
+    /// Thinking-off strategy ("auto" | "reasoning" | "enable_thinking" | "thinking_type" | "none") from Verify; explicit outranks preset.
     #[serde(default)]
     pub thinking_off: String,
-    /// Preset protocol (pi-ai api field): "openai-completions" (default) | "anthropic-messages" |
-    /// "openai-responses"; "" = unspecified → OpenAI Chat Completions.
-    /// Other values are a hard error (see Protocol::from_api); the frontend hides such presets.
+    /// Protocol ("openai-completions" default | "anthropic-messages" | "openai-responses"); "" = Chat, others hard-error.
     #[serde(default)]
     pub api: String,
     /// Preset-derived thinking-off shape ("" = unknown → fall back to endpoint URL rules).
@@ -70,13 +52,10 @@ pub struct LlmConfig {
     /// Model-specific request headers (a few catalog models have them).
     #[serde(default)]
     pub extra_headers: std::collections::BTreeMap<String, String>,
-    /// Block types to translate (configurable in Settings → General):
-    /// empty Vec = built-in default (TRANSLATABLE_TYPES); otherwise only the listed types.
-    /// Affects only pages not yet translated.
+    /// Block types to translate (Settings → General); empty = built-in default, else only the listed; affects untranslated pages only.
     #[serde(default)]
     pub translate_types: Vec<String>,
-    /// Translation enabled (Settings → LLM). false = no LLM request: copy each translatable block's
-    /// content into translation and mark the page done (see apply_bypass). Missing key = true.
+    /// false = no LLM request: source content becomes the translation and the page is marked done (apply_bypass); missing key = true.
     #[serde(default = "translate_enabled_default")]
     pub translate_enabled: bool,
 }
@@ -86,8 +65,7 @@ fn translate_enabled_default() -> bool {
     true
 }
 
-/// Hand-written Default (not derive): derive would set translate_enabled=false, the opposite
-/// of serde's default true, and `..Default::default()` in tests would silently take bypass.
+/// Hand-written Default: derive would set translate_enabled=false, opposite of serde's default true (tests would bypass).
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
@@ -115,9 +93,7 @@ fn is_opencode(url: &str) -> bool {
 }
 
 // ---- Wire protocols: Chat Completions / Anthropic Messages / OpenAI Responses ----
-//
-// The three differ only in request-body shape, auth header and response field. The translation
-// chain (packing, context protocol, correction retry, thinking-off) is shared, so only adapt here.
+// The three differ only in body/auth/response field; the translation chain is shared.
 
 /// OpenAI-compatible Chat Completions (default; also used when `api` is empty).
 const API_CHAT: &str = "openai-completions";
@@ -136,7 +112,6 @@ enum Protocol {
 }
 
 impl Protocol {
-    /// Map the `api` field to a protocol; unsupported values error out with the reason.
     fn from_api(api: &str, model: &str) -> Result<Self, String> {
         match api.trim() {
             "" | API_CHAT => Ok(Protocol::Chat),
@@ -148,15 +123,13 @@ impl Protocol {
         }
     }
 
-    /// Anthropic baseURLs carry no version segment (the SDK appends `/v1`); tolerate a pasted
-    /// `.../v1` or a full `.../v1/messages` too.
+    /// Anthropic base URLs carry no version segment; tolerate a pasted `/v1` or `/v1/messages` too.
     fn anthropic_base(base_url: &str) -> &str {
         let base = base_url.trim().trim_end_matches('/');
         let base = base.strip_suffix("/messages").unwrap_or(base);
         base.strip_suffix("/v1").unwrap_or(base)
     }
 
-    /// Chat URL: chat → `/chat/completions`, messages → `/v1/messages`, responses → `/responses`.
     fn chat_url(self, base_url: &str) -> String {
         let base = base_url.trim().trim_end_matches('/');
         match self {
@@ -203,8 +176,7 @@ pub fn log(msg: impl AsRef<str>) {
     }
 }
 
-/// Default translatable types (kept in sync with src/lib/blocks.ts BLOCK_TYPE_OPTIONS;
-/// unknown tags are not sent). A non-empty LlmConfig.translate_types overrides this.
+/// Default translatable types, kept in sync with src/lib/blocks.ts BLOCK_TYPE_OPTIONS; non-empty translate_types overrides.
 const TRANSLATABLE_TYPES: &[&str] = &[
     "text",
     "paragraph_title",
@@ -218,16 +190,13 @@ const TRANSLATABLE_TYPES: &[&str] = &[
     "content",
 ];
 
-/// Max context candidates from a neighbouring page (≤N boundary blocks).
 const CONTEXT_CANDIDATES: usize = 3;
 /// Max LLM rounds per page: initial + context + two correction retries.
 const MAX_ROUNDS: usize = 4;
 const MAX_TOKENS: u32 = 8192;
 const REQUEST_TIMEOUT_SECS: u64 = 180;
 
-/// Prompt directory resolved once in the setup hook (EZPDF_SYSTEM_PROMPT_DIR > production
-/// resource dir > dev repo root). Production's system_prompt/ lives in bundle.resources and is
-/// reachable only via resource_dir(), not the build-time CARGO_MANIFEST_DIR.
+/// Prompt dir resolved once in setup (EZPDF_SYSTEM_PROMPT_DIR > production resource_dir > dev repo root); prod's bundle.resources isn't reachable via CARGO_MANIFEST_DIR.
 static PROMPT_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// Setup hook: resolve the prompt directory into a global (same pattern as pyenv's PyPaths).
@@ -237,7 +206,6 @@ pub fn init_prompt_dir(app: &AppHandle) {
     let _ = PROMPT_DIR.set(dir);
 }
 
-/// Pure for unit testing. Priority: non-blank env > resource dir > dev repo root.
 fn pick_prompt_dir(env: Option<&str>, resource: Option<&std::path::Path>, dev: &std::path::Path) -> PathBuf {
     if let Some(dir) = env {
         if !dir.trim().is_empty() {
@@ -276,7 +244,6 @@ fn resolve_prompt_dir(app: &AppHandle) -> PathBuf {
     }
 }
 
-/// Prompt file path for the given mode.
 fn prompt_path(smart: bool) -> PathBuf {
     let file = if smart {
         "intelli_context.md"
@@ -302,8 +269,7 @@ pub fn load_system_prompt(cfg: &LlmConfig) -> Result<String, String> {
         cfg.target_lang.trim()
     };
     let text = text.replace("{{target_language}}", lang);
-    // Fallback: if the placeholder is gone and the target language is absent from an edited
-    // prompt, append it so the language always reaches the model
+    // Fallback: if an edited prompt lost the placeholder, append the target language so it always reaches the model.
     Ok(if text.contains(lang) {
         text
     } else {
@@ -311,7 +277,6 @@ pub fn load_system_prompt(cfg: &LlmConfig) -> Result<String, String> {
     })
 }
 
-/// Whether a block is translated: type is allowed and content is non-empty.
 fn is_translatable(cfg: &LlmConfig, kind: &str, content: &str) -> bool {
     let allowed = if cfg.translate_types.is_empty() {
         TRANSLATABLE_TYPES.contains(&kind)
@@ -321,8 +286,7 @@ fn is_translatable(cfg: &LlmConfig, kind: &str, content: &str) -> bool {
     allowed && !content.trim().is_empty()
 }
 
-/// A pending request: protocol index string + block position + content to translate.
-/// q is JSON: a string for normal blocks, a `{"table": [[...]]}` object for tables (see table.rs).
+/// Pending request; q is a string for normal blocks or `{"table":[[...]]}` for tables (see table.rs).
 #[derive(Clone)]
 struct RequestItem {
     index: String,
@@ -332,8 +296,7 @@ struct RequestItem {
     table: Option<crate::table::TableGrid>,
 }
 
-/// Table grid: use the grid already in the bound JSON, else parse content now; on parse failure
-/// → None (block is not sent and not covered).
+/// Grid from the bound JSON or parsed now; None on failure (block not sent/covered).
 fn grid_for(block: &crate::Block) -> Option<crate::table::TableGrid> {
     if block.kind != crate::table::TABLE {
         return None;
@@ -351,16 +314,14 @@ fn has_pending_tables(cfg: &LlmConfig, page: &PageInfo) -> bool {
     })
 }
 
-/// Collect the page's translatable blocks: allowed type, non-empty content, translation == null
-/// (blocks already bound by a neighbour's external are skipped).
+/// Collect translatable blocks (allowed type, non-empty, translation == null); externally-bound blocks are skipped.
 fn collect_requests(cfg: &LlmConfig, page: &PageInfo, only_tables: bool) -> Vec<RequestItem> {
     let mut items: Vec<RequestItem> = Vec::new();
     for (pos, b) in page.blocks.iter().enumerate() {
         if !is_translatable(cfg, &b.kind, &b.content) || b.translation.is_some() {
             continue;
         }
-        // Backfill batches on a translated page handle only tables; other types are never
-        // resent even with translation == null (that would re-translate same-language blocks forever).
+        // On a translated page only tables are resent; other types with translation == null would re-translate same-language blocks forever.
         if only_tables && b.kind != crate::table::TABLE {
             continue;
         }
@@ -381,7 +342,6 @@ fn collect_requests(cfg: &LlmConfig, page: &PageInfo, only_tables: bool) -> Vec<
     items
 }
 
-/// A context candidate: index string + C text + block position.
 #[derive(Clone)]
 struct ContextItem {
     index: String,
@@ -398,8 +358,7 @@ fn neighbor_index(page_index: u32, direction: &str) -> Option<u32> {
     }
 }
 
-/// Neighbour boundary candidates: before takes the last ≤N, after the first ≤N translatable
-/// blocks (translated ones included as reference; external binding may overwrite their value).
+/// Neighbour candidates: before = last ≤N, after = first ≤N translatable blocks (translated included as reference).
 fn context_candidates(cfg: &LlmConfig, doc: &BindDoc, neighbor: u32, direction: &str) -> Vec<ContextItem> {
     let Some(page) = doc.pages.iter().find(|p| p.index == neighbor) else {
         return Vec::new();
@@ -437,7 +396,6 @@ fn context_candidates(cfg: &LlmConfig, doc: &BindDoc, neighbor: u32, direction: 
         .collect()
 }
 
-/// Parsed LLM reply.
 #[derive(Debug, Default)]
 struct Reply {
     result: Vec<(String, Option<String>)>,
@@ -500,9 +458,7 @@ fn parse_reply(raw: &str) -> Option<Reply> {
     Some(r)
 }
 
-/// result matches requests strictly (count and every index); A=null is valid (same language).
-/// Tables additionally validate shape (row count and per-row cell counts must match, see table.rs);
-/// any bad table fails the whole page, which the per-book strike budget then backs off.
+/// result must match requests strictly (count + every index); A=null valid (same language). A bad table shape fails the whole page.
 fn validate_result(
     requests: &[RequestItem],
     reply: &Reply,
@@ -536,10 +492,7 @@ fn validate_result(
     Ok(out)
 }
 
-/// Write translations back (A=None unchanged → stays null and renders source content).
-/// Tables also persist their grid (older JSONs become self-describing; the frontend renders only).
-/// Table A=None stores the SOURCE MATRIX as the translation (terminal); leaving null would keep
-/// selecting the block for backfill since same-language blocks are indistinguishable from untranslated.
+/// Write translations back (A=None stays null = render source). Tables also persist the grid; table A=None stores the SOURCE MATRIX as translation (terminal, else backfill keeps selecting it).
 fn apply_result(page: &mut PageInfo, requests: &[RequestItem], values: &[Option<String>]) {
     for (req, val) in requests.iter().zip(values) {
         let Some(block) = page.blocks.get_mut(req.block_pos) else { continue };
@@ -556,8 +509,7 @@ fn apply_result(page: &mut PageInfo, requests: &[RequestItem], values: &[Option<
     }
 }
 
-/// Resolve external against this round's C candidates → (block pos, translation); no match or
-/// incomplete → None (leave every context box untouched).
+/// Resolve external against this round's C candidates → (block pos, translation); no match → None (context boxes untouched).
 fn resolve_external(candidates: &[ContextItem], reply: &Reply) -> Option<(usize, String)> {
     let idx = reply.external_index.as_ref()?;
     let ext = reply.external.as_ref()?;
@@ -572,14 +524,10 @@ pub fn llm_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("failed to create LLM HTTP client: {e}"))
 }
 
-/// opencode zen requires a session-routing header (any non-empty value); other
-/// OpenAI-compatible endpoints ignore it. Sent only when base_url contains opencode.ai.
+/// opencode zen needs this session-routing header (any non-empty value); others ignore it. Sent only for opencode.ai.
 const OPENCODE_SESSION: &str = "ezpdf";
 
-/// Thinking-off params (Chat Completions), in precedence order: explicit strategy (from the
-/// Verify probe) > measured endpoint rules (opencode zen / SiliconFlow, hard-coded) > pi-ai preset
-/// shape (thinking.type / enable_thinking / reasoning.effort; "none" = write nothing).
-/// Returns whether a thinking-off param was actually written (used for temperature compatibility).
+/// Thinking-off precedence: explicit Verify strategy > hard-coded endpoint rules (zen/SiliconFlow) > pi-ai preset shape; returns whether a param was written.
 fn apply_thinking_off_chat(body: &mut Value, url: &str, cfg: &LlmConfig) -> bool {
     match cfg.thinking_off.trim() {
         "reasoning" => {
@@ -602,9 +550,7 @@ fn apply_thinking_off_chat(body: &mut Value, url: &str, cfg: &LlmConfig) -> bool
     if cfg.model_reasoning == Some(false) {
         return false;
     }
-    // auto: measured endpoint rules first
     if is_opencode(&url) {
-        // opencode zen (OpenRouter family)
         body["reasoning"] = json!({"enabled": false});
         body["reasoning_effort"] = json!("none");
         return true;
@@ -615,7 +561,6 @@ fn apply_thinking_off_chat(body: &mut Value, url: &str, cfg: &LlmConfig) -> bool
         body["thinking"] = json!({"type": "disabled"});
         return true;
     }
-    // auto: pi-ai preset shape
     match cfg.thinking_off_kind.trim() {
         "thinking_type" => {
             body["thinking"] = json!({"type": "disabled"});
@@ -638,9 +583,7 @@ fn apply_thinking_off_chat(body: &mut Value, url: &str, cfg: &LlmConfig) -> bool
     }
 }
 
-/// Thinking-off (Anthropic Messages): only `thinking.type=disabled` (same as pi-ai). Thinking is
-/// opt-in, so non-reasoning models and explicit "none" write nothing (some Anthropic-compatible
-/// endpoints reject the field, and the Verify button then lands on "none").
+/// Messages: only `thinking.type=disabled`; thinking is opt-in, so non-reasoning models and "none" write nothing.
 fn apply_thinking_off_messages(body: &mut Value, cfg: &LlmConfig) -> bool {
     if cfg.thinking_off.trim() == "none" || cfg.model_reasoning == Some(false) {
         return false;
@@ -649,9 +592,7 @@ fn apply_thinking_off_messages(body: &mut Value, cfg: &LlmConfig) -> bool {
     true
 }
 
-/// Thinking-off (OpenAI Responses): `reasoning.effort` (nested, unlike Chat's top-level
-/// reasoning_effort). Use the catalog off value if present, else an explicit strategy writes
-/// "none" (GPT-5.1+); older models with `off: null` cannot be disabled → write nothing.
+/// Responses: nested `reasoning.effort` (unlike Chat's top-level); catalog off value wins, else explicit writes "none"; older `off: null` models write nothing.
 fn apply_thinking_off_responses(body: &mut Value, cfg: &LlmConfig) -> bool {
     if cfg.thinking_off.trim() == "none" || cfg.model_reasoning == Some(false) {
         return false;
@@ -670,15 +611,12 @@ fn apply_thinking_off_responses(body: &mut Value, cfg: &LlmConfig) -> bool {
     }
 }
 
-/// Whether the model may still be reasoning (preset says yes and no thinking-off param was
-/// written). Under Messages/Responses temperature conflicts with thinking (Anthropic 400s,
-/// OpenAI reasoning models reject it), so omit temperature; unknown models get it as usual.
+/// Still-reasoning (preset yes, no off param): under Messages/Responses temperature conflicts with thinking, so omit it.
 fn may_still_think(cfg: &LlmConfig, off_applied: bool) -> bool {
     cfg.model_reasoning == Some(true) && !off_applied
 }
 
-/// Split out the system prompt (Anthropic: top-level system; Responses: instructions; neither is
-/// in messages); normalize other messages to {role, content: text}, which both accept.
+/// Pull the system prompt out (Messages: top-level system; Responses: instructions) and normalize the rest to {role, content}.
 fn split_system(messages: &[Value]) -> (Option<String>, Vec<Value>) {
     let mut system: Option<String> = None;
     let mut rest = Vec::new();
@@ -697,8 +635,7 @@ fn split_system(messages: &[Value]) -> (Option<String>, Vec<Value>) {
     (system, rest)
 }
 
-/// Responses input items: user uses input_text, assistant output_text (same as pi-ai).
-/// The system prompt already went to instructions, so it is skipped here.
+/// Responses input items: user = input_text, assistant = output_text; the system prompt is skipped (already in instructions).
 fn responses_input(messages: &[Value]) -> Vec<Value> {
     let mut input = Vec::new();
     for msg in messages {
@@ -714,9 +651,7 @@ fn responses_input(messages: &[Value]) -> Vec<Value> {
     input
 }
 
-/// Build the request body per protocol; returns whether a thinking-off param was written.
-/// max tokens: Chat uses the preset-derived field, Messages max_tokens (required), Responses
-/// max_output_tokens.
+/// Build the body per protocol, returning whether a thinking-off param was written; max tokens: Chat preset field, Messages max_tokens, Responses max_output_tokens.
 fn build_body(
     protocol: Protocol,
     cfg: &LlmConfig,
@@ -780,8 +715,7 @@ fn build_body(
     }
 }
 
-/// One chat request (protocol validation + body + auth + zen routing + model-specific headers),
-/// shared by translation and verification.
+/// One chat request (protocol validation + body + auth + zen routing + extra headers), shared by translation and verification.
 fn chat_request(
     client: &reqwest::Client,
     cfg: &LlmConfig,
@@ -817,7 +751,6 @@ struct Completion {
     thinks: bool,
 }
 
-/// Extract text and the thinking marker from a non-streaming response per protocol.
 fn completion_of(protocol: Protocol, body: &Value, raw: &str) -> Result<Completion, String> {
     match protocol {
         Protocol::Chat => {
@@ -873,7 +806,6 @@ fn completion_of(protocol: Protocol, body: &Value, raw: &str) -> Result<Completi
     }
 }
 
-/// Send one chat request, returning the protocol-agnostic reply view.
 async fn chat_raw(
     client: &reqwest::Client,
     cfg: &LlmConfig,
@@ -907,8 +839,7 @@ async fn chat(client: &reqwest::Client, cfg: &LlmConfig, messages: &[Value]) -> 
 
 // ---- Settings Verify button: connectivity check + thinking-off strategy probe ----
 
-/// Probe request: a short Q/A with a deliberately small max_tokens so a thinking model
-/// exhausts it on reasoning and returns empty content.
+/// Probe Q/A with a small max_tokens so a thinking model exhausts it on reasoning and returns empty content.
 const PROBE_PROMPT: &str = "不要思考，直接回答：2+2 等于几？只输出数字。";
 const PROBE_MAX_TOKENS: u32 = 64;
 
@@ -917,14 +848,12 @@ const PROBE_MAX_TOKENS: u32 = 64;
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmVerifyReport {
-    /// Effective strategy; "none" = write no thinking-off param (either unneeded or impossible;
-    /// distinguished by [`Self::thinking_on`]).
+    /// Effective strategy; "none" = write nothing (unneeded or impossible, see thinking_on).
     pub strategy: String,
     /// Preset marks a non-reasoning model (thinking_on is always false then).
     pub preset_no_thinking: bool,
     /// The probe still produced reasoning: cannot be disabled (frontend toasts a warning).
     pub thinking_on: bool,
-    /// Display message (elapsed time + strategy explanation).
     pub message: String,
 }
 
@@ -947,10 +876,7 @@ fn message_thinks(msg: &Value) -> bool {
         .unwrap_or(true)
 }
 
-/// Verify the LLM: connectivity + thinking-off strategy.
-/// Candidates are per protocol; the first that both connects and stops reasoning wins by order.
-/// All requests failing = connectivity failure; all connecting but still reasoning → "none".
-/// A non-reasoning preset probes connectivity only, no strategy search.
+/// Verify connectivity + thinking-off strategy (first candidate that connects and stops reasoning wins); a non-reasoning preset probes connectivity only.
 pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
     if !cfg.usable() {
         return Err("please fill in Base URL / API Key / model first".into());
@@ -961,7 +887,6 @@ pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
     let started = std::time::Instant::now();
     let preset_no_thinking = cfg.model_reasoning == Some(false);
 
-    // Copy the refs so each async move closure captures its own cfg
     let ref_client = &client;
     let ref_messages = &messages;
     let probe = |strategy: &str| {
@@ -983,16 +908,14 @@ pub async fn verify_llm(cfg: &LlmConfig) -> Result<LlmVerifyReport, String> {
         });
     }
 
-    // Candidate strategies: Chat has four field shapes; Messages only thinking.type=disabled or
-    // nothing; Responses additionally probes explicit effort=none (GPT-5.1+) beyond the catalog value.
+    // Candidates: Chat four field shapes; Messages thinking.type=disabled or nothing; Responses also explicit effort=none.
     let candidates: &[&str] = match protocol {
         Protocol::Chat => &["auto", "reasoning", "enable_thinking", "thinking_type"],
         Protocol::Messages => &["auto", "none"],
         Protocol::Responses => &["auto", "reasoning", "none"],
     };
 
-    // Chat's four candidates run concurrently (serial probing was too slow); the other protocols
-    // have ≤3 candidates and usually succeed on the first, so serial short-circuiting saves requests.
+    // Chat's four candidates run concurrently (serial was too slow); others serial short-circuit.
     let results: Vec<(&str, Result<Completion, String>)> = match protocol {
         Protocol::Chat => {
             let (auto, reasoning, enable_thinking, thinking_type) = tokio::join!(
@@ -1109,8 +1032,7 @@ const CORRECTION: &str = "上一轮输出无法解析或与 requests 不匹配�
 const NO_MORE_CONTEXT: &str =
     "已提供过上下文；请立即输出最终译文（格式 B 或 D），不要再申请上下文。";
 
-/// Single-page translation snapshot: concurrent tasks read only their own snapshot, never
-/// &mut BindDoc. Both before/after context candidates are taken up front; the reply picks one.
+/// Single-page snapshot (concurrent tasks never touch &mut BindDoc); both before/after candidates are taken up front.
 pub struct PageTask {
     page_index: u32,
     requests: Vec<RequestItem>,
@@ -1133,9 +1055,7 @@ pub fn build_task(cfg: &LlmConfig, doc: &BindDoc, page_index: u32) -> Option<Pag
     if !page.finished {
         return None;
     }
-    // Translated page: before table support, table blocks were never sent (translation=null).
-    // Allow TABLE-ONLY backfill there; other types stay untouched, so "never re-translate" holds.
-    // Only tables with a parsable grid; unparsable ones are left alone.
+    // A translated page allows table-only backfill (other types untouched, so never re-translate holds); only parsable grids.
     let only_tables = page.translated;
     if only_tables && !has_pending_tables(cfg, page) {
         return None;
@@ -1150,15 +1070,7 @@ pub fn build_task(cfg: &LlmConfig, doc: &BindDoc, page_index: u32) -> Option<Pag
     })
 }
 
-/// Bypass persistence (called under the lock): copy each translatable block's content into
-/// translation and mark the page translated; returns whether anything changed.
-///
-/// Deliberately NOT null: null means "to translate" and would be re-translated when translation
-/// is re-enabled; this is the terminal "OCR done, content is the translation" state.
-/// The block set matches the network path (is_translatable + translation empty); non-translatable
-/// types (image etc.) stay null — they have no cover box.
-/// Tables store the SOURCE MATRIX JSON (not the markup) plus the grid, so the translation pane
-/// still shows them; unparsable tables stay uncovered.
+/// Bypass persistence (under the lock): copy translatable content into translation and mark done. Deliberately not null (null = "to translate" would re-run); tables store the SOURCE MATRIX + grid.
 pub fn apply_bypass(doc: &mut BindDoc, page_index: u32, cfg: &LlmConfig) -> bool {
     let Some(page) = doc.pages.iter_mut().find(|p| p.index == page_index) else {
         return false;
@@ -1184,8 +1096,7 @@ pub fn apply_bypass(doc: &mut BindDoc, page_index: u32, cfg: &LlmConfig) -> bool
     true
 }
 
-/// Persist results under the lock: page translations + translated flag + external neighbour
-/// block; touched collects actually-changed pages (incl. external neighbours) for updatedPages.
+/// Persist under the lock: page translations + flag + external neighbour; touched collects changed pages for updatedPages.
 pub fn apply_done(doc: &mut BindDoc, done: PageDone, touched: &mut Vec<u32>) {
     let PageDone { page_index, requests, values, external } = done;
     if let Some(page) = doc.pages.iter_mut().find(|p| p.index == page_index) {
@@ -1203,8 +1114,7 @@ pub fn apply_done(doc: &mut BindDoc, done: PageDone, touched: &mut Vec<u32>) {
     }
 }
 
-/// Build the context reply (format C, smart mode only): candidates only if the requested
-/// direction has a neighbour, else `type: null`; returns (C message, neighbour ctx for external).
+/// Build the format-C context reply (candidates only if the direction has a neighbour, else type null); returns (message, neighbour ctx).
 fn context_reply(
     page_index: u32,
     round: usize,
@@ -1244,8 +1154,7 @@ fn context_reply(
     (c, neighbor.map(|n| (n, candidates)))
 }
 
-/// Translate one page (no document dependency): Ok carries external bindings, Err fails.
-/// Empty requests (empty text / already external-bound) → return empty so the caller marks translated.
+/// Translate one page (no doc dependency); empty requests → return empty so the caller marks it translated.
 pub async fn translate_task(
     cfg: &LlmConfig,
     prompt: &str,

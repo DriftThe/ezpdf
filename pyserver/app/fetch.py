@@ -1,11 +1,6 @@
-"""Model downloader (python -m app.fetch): huggingface_hub snapshot download, defaulting to the hf-mirror mirror.
-
-Called by Rust's ocr_download_models; stdout/stderr lines → ocr://log; exit code 0 = success.
-
-- Target dir: EZPDF_MODELS_DIR (config.py, default <pyserver>/models)
-- Completeness rule is shared with the probe (bootstrap.py): see app/model_contract.py
-- Complete repos are skipped; incomplete ones resume through huggingface_hub
-- HF_ENDPOINT / HF_HUB_DISABLE_PROGRESS_BARS can be overridden from the environment
+"""Model downloader (`python -m app.fetch`): huggingface_hub snapshot into EZPDF_MODELS_DIR, hf-mirror by default.
+Rust's ocr_download_models calls this (stdout/stderr → ocr://log; exit 0 = success); completeness comes
+from app/model_contract.py, complete repos are skipped and incomplete ones resume.
 """
 
 from __future__ import annotations

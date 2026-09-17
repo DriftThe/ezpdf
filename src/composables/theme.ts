@@ -1,10 +1,7 @@
 import { watch } from "vue";
 import { useSettingsStore, type ThemeMode } from "../stores/settings";
 
-/** Theme application: system/light/dark, source of truth = general.theme.
- *  localStorage only mirrors it for index.html's pre-first-paint script.
- *  All theming goes through :root[data-theme] vars (main.css); no media queries in components.
- *  .theme-switching adds a 0.3 s color transition only during a switch. */
+/** general.theme is the source of truth; localStorage only feeds index.html's pre-paint script. */
 
 const media = typeof window !== "undefined" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 
@@ -18,7 +15,6 @@ function resolve(mode: ThemeMode): Resolved {
   return media?.matches ? "dark" : "light";
 }
 
-/** Apply the theme; animate plays a one-shot color transition (true on manual switch). */
 function applyTheme(mode: ThemeMode, animate = false): void {
   const resolved = resolve(mode);
   if (resolved === applied) return;
@@ -30,10 +26,9 @@ function applyTheme(mode: ThemeMode, animate = false): void {
     animTimer = window.setTimeout(() => root.classList.remove("theme-switching"), 380);
   }
   root.dataset.theme = resolved;
-  root.style.colorScheme = resolved; // native controls (select popups, scrollbars) follow
+  root.style.colorScheme = resolved;
 }
 
-/** Init: apply the persisted value, watch switches (animated) and system preference changes. */
 export function initTheme(): void {
   const settings = useSettingsStore();
   applyTheme(settings.general.theme);
@@ -43,7 +38,6 @@ export function initTheme(): void {
       try {
         localStorage.setItem("ezpdf-theme", mode);
       } catch {
-        /* private mode etc.: ignore, no functional impact */
       }
       applyTheme(mode, true);
     },

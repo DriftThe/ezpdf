@@ -1,17 +1,11 @@
-"""Container/server deployment entry: fixed host:port + token-file auth, for Docker and bare-metal.
+"""Container/server entry: fixed host:port + always-on token-file auth, for Docker and bare-metal.
+Unlike app.main (Rust-managed): binds EZPDF_HOST:EZPDF_PORT (default 0.0.0.0:9055) instead of an
+ephemeral port, takes no stdin EOF (a container's stdin is /dev/null, so app.main's watchdog would
+kill it at once), prints no EZPDF_READY (no Rust parent), and resolves its own token
+(EZPDF_TOKEN > EZPDF_TOKEN_FILE > generate+persist, auth always on), printing it on every start
+so it can be copied into the client's Service Token field.
 
-Differences from app.main (Rust-managed form):
-    - Binds EZPDF_HOST:EZPDF_PORT (default 0.0.0.0:9055); does not take an EOF on stdin
-      (a container's stdin is /dev/null, so app.main's watchdog would kill itself at once)
-      and does not print EZPDF_READY (that is the readiness line read by the Rust parent;
-      there is no parent here).
-    - Resolves its own token: EZPDF_TOKEN env var > EZPDF_TOKEN_FILE (default
-      <pyserver>/token.txt) > generate a random token and persist it. **Auth is always on.**
-    - Prints the token on every start so it can be copied into the client's Service Token field.
-
-Usage:
-    python -m app.server_docker
-    EZPDF_PORT=9055 EZPDF_TOKEN_FILE=/data/token.txt python -m app.server_docker
+    python -m app.server_docker   # EZPDF_PORT / EZPDF_TOKEN_FILE override the defaults
 """
 
 from __future__ import annotations

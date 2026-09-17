@@ -6,7 +6,6 @@ import { useReaderStore } from "../../stores/reader";
 
 const { t } = useI18n();
 
-/** Per-page status dots: total comes from pdfjs' measured page count, done state is looked up by 1-based index in the bound JSON */
 const lib = useLibraryStore();
 const reader = useReaderStore();
 

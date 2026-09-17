@@ -1,12 +1,8 @@
 import katex from "katex";
 
 /**
- * Rich-text rendering for cover boxes: LaTeX segments go to KaTeX, everything else is
- * HTML-escaped (v-html safety: only KaTeX output is trusted).
- * Supports $$…$$ / \[…\] (display) and $…$ / \(…\) (inline); inline $ must be adjacent
- * to non-space so "$5 … $" is not mistaken for math.
- * Newlines become <br> (models insert \n in structured blocks; HTML collapses them).
- * Not white-space: pre-line, which would also split KaTeX's own internal newlines.
+ * v-html safety: KaTeX output is trusted, everything else escaped. Newlines become <br>
+ * (not pre-line, which would split KaTeX internals); inline $ must touch non-space.
  */
 
 const ESCAPES: Record<string, string> = {
@@ -28,7 +24,6 @@ function textToHtml(text: string): string {
   return escapeHtml(text).replace(/\n/g, "<br>");
 }
 
-/** Text → safe-for-v-html HTML (KaTeX math, escaped body, newlines as <br>). */
 export function renderRichText(raw: string): string {
   let html = "";
   let cursor = 0;

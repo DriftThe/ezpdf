@@ -15,8 +15,7 @@ use tauri::Manager; // only the production branch needs resource_dir()/home_dir(
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Install sources, switched by the "use mirror" checkbox:
-/// mirror = TUNA pypi + SJTU pytorch-wheels (all cu132 wheels); official = pypi.org / download.pytorch.org.
+/// Install sources for the mirror checkbox: TUNA pypi + SJTU pytorch-wheels/cu132 vs pypi.org / download.pytorch.org.
 const PYPI_MIRROR: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
 const PYPI_OFFICIAL: &str = "https://pypi.org/simple";
 const TORCH_MIRROR_BASE: &str = "https://mirror.sjtu.edu.cn/pytorch-wheels";
@@ -31,9 +30,7 @@ fn py_exe_name() -> &'static str {
     }
 }
 
-/// Bundled interpreter path under `resources/python`: Windows = python.exe,
-/// Linux/macOS = bin/python3 (python-build-standalone install_only layout).
-/// dev skips this branch, hence the explicit dead_code allow.
+/// Bundled interpreter under resources/python (Windows python.exe, else bin/python3, python-build-standalone layout).
 #[cfg_attr(dev, allow(dead_code))]
 fn bundled_py_rel() -> &'static str {
     if cfg!(windows) {
@@ -43,18 +40,14 @@ fn bundled_py_rel() -> &'static str {
     }
 }
 
-/// All derived pyserver paths, resolved once in setup and stored as global state;
-/// commands read it via `tauri::State<PyPaths>` and never re-resolve.
+/// Derived pyserver paths, resolved once in setup as global state (commands never re-resolve).
 #[derive(Debug, Clone)]
 pub struct PyPaths {
     /// Service code root: dev = repo pyserver/, prod = install resources/pyserver.
     pub root: PathBuf,
     /// stdlib-only env probe script (runs under either the bundled interpreter or a venv).
     pub bootstrap: PathBuf,
-    /// Service interpreter (what actually runs pyserver; deps install into it):
-    /// Windows prod = bundled relocatable Python (install dir is writable);
-    /// Linux prod = user-level venv (install dir is read-only, see venv_dir);
-    /// dev = repo pyserver/.venv (created with system python if missing).
+    /// Interpreter that runs pyserver: Windows prod = bundled Python; Linux prod = user venv (read-only install dir); dev = pyserver/.venv.
     pub python: PathBuf,
     /// Bundled base interpreter (read-only): Linux prod creates the venv with it; Windows prod equals python; dev = None.
     pub base_python: Option<PathBuf>,
@@ -86,10 +79,8 @@ impl PyPaths {
         let bundled_py = bundled.then(|| bundled_python(app)).transpose()?;
         let venv_dir = venv_root(app, &root, bundled);
         let python = if let (true, Some(venv)) = (needs_own_venv(bundled), venv_dir.as_ref()) {
-            // User-level venv required (Linux prod): the service interpreter lives in it, created on first install.
             venv_join(venv)
         } else {
-            // Windows prod = bundled interpreter; dev = repo pyserver/.venv.
             bundled_py
                 .clone()
                 .unwrap_or_else(|| venv_join(&root.join(".venv")))
@@ -105,9 +96,7 @@ impl PyPaths {
     }
 }
 
-/// Only platforms with a read-only install dir (Linux/macOS) need a user-level venv:
-/// deb/rpm resources live under root-owned /usr/lib and AppImage mounts read-only, so pip
-/// can't write into the bundled interpreter (Windows NSIS is per-user and writable).
+/// Read-only install dirs (Linux/macOS: root-owned /usr/lib, read-only AppImage) need a user venv since pip can't write the bundled interpreter.
 fn needs_own_venv(bundled: bool) -> bool {
     bundled && !cfg!(windows)
 }
@@ -121,8 +110,7 @@ fn venv_join(venv_dir: &Path) -> PathBuf {
     }
 }
 
-/// User-level venv root: prod non-Windows = ~/.ezpdf/venv (beside models, survives upgrades);
-/// Windows prod = None (writable install dir, uses the bundled interpreter); dev = pyserver/.venv.
+/// User venv root: prod non-Windows = ~/.ezpdf/venv (beside models); Windows prod = None (writable install dir); dev = pyserver/.venv.
 fn venv_root(app: &AppHandle, root: &Path, bundled: bool) -> Option<PathBuf> {
     if !bundled || cfg!(windows) {
         let _ = app;
@@ -161,9 +149,7 @@ fn bundled_python(app: &AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// Service code root: dev = repo pyserver/ (compile-time CARGO_MANIFEST_DIR); prod = install
-/// resources (Tauri bundle.resources, two-location probe). dev/prod uses tauri-build's
-/// `cfg(dev)`; EZPDF_TOOLKIT_ROOT overrides at runtime.
+/// Service code root: dev = repo pyserver/, prod = install resources (two-location probe); EZPDF_TOOLKIT_ROOT overrides.
 fn server_root(app: &AppHandle) -> Result<(PathBuf, bool), String> {
     if let Ok(root) = std::env::var("EZPDF_TOOLKIT_ROOT") {
         if !root.trim().is_empty() {
@@ -178,9 +164,7 @@ fn server_root(app: &AppHandle) -> Result<(PathBuf, bool), String> {
     #[cfg(not(dev))]
     {
         let res = app.path().resource_dir().map_err(|e| e.to_string())?;
-        // bundle.resources maps "resources/pyserver" → "pyserver", landing at
-        // <resource root>/pyserver (Linux deb = /usr/lib/ezpdf/pyserver); also accept a
-        // nested resources/ dir for custom layouts.
+        // bundle.resources lands at <resource root>/pyserver; also accept a nested resources/ for custom layouts.
         let direct = res.join("pyserver");
         if direct.join("bootstrap.py").is_file() {
             return Ok((direct, true));
@@ -189,8 +173,7 @@ fn server_root(app: &AppHandle) -> Result<(PathBuf, bool), String> {
     }
 }
 
-/// Models dir: EZPDF_MODELS_DIR overrides at runtime; prod always ~/.ezpdf/models (the 1.9 GB
-/// download stays out of the install dir and survives upgrades); dev = pyserver/models.
+/// Models dir: EZPDF_MODELS_DIR overrides; prod ~/.ezpdf/models (1.9 GB survives upgrades); dev = pyserver/models.
 fn models_dir(app: &AppHandle, root: &Path) -> PathBuf {
     if let Ok(dir) = std::env::var("EZPDF_MODELS_DIR") {
         if !dir.trim().is_empty() {
@@ -297,8 +280,7 @@ fn compose(raw: BootstrapRaw) -> OcrEnvReport {
     }
 }
 
-/// Empty report when probing yields nothing: error is either "no interpreter" or the script's
-/// real failure, which must be surfaced instead of a misleading "no Python found".
+/// Empty report when probing fails; the error distinguishes "no interpreter" from the script's real failure.
 fn failed_report(error: String) -> OcrEnvReport {
     OcrEnvReport {
         python: None,
@@ -312,11 +294,9 @@ fn failed_report(error: String) -> OcrEnvReport {
     }
 }
 
-/// Run bootstrap.py once (service interpreter first, falling back to system python in dev).
-/// A probe failure is data, not an error: it rides the report's error field for the frontend.
+/// Run bootstrap.py once (service interpreter first, system python in dev); a probe failure is data on the report's error field, not an Err.
 fn probe_blocking(paths: &PyPaths) -> OcrEnvReport {
-    // Prefer the service interpreter (Linux prod = user-level venv), then the bundled base
-    // one: the report must describe the interpreter we'll actually use, not system python.
+    // Prefer the service interpreter, then the bundled base: the report must describe the one we'll actually use.
     let python = std::iter::once(&paths.python)
         .chain(paths.base_python.iter())
         .find(|p| p.is_file())
@@ -361,8 +341,7 @@ fn run_bootstrap(python: &Path, script: &Path, models: &Path) -> Result<Bootstra
     Err("cannot parse bootstrap stdout".into())
 }
 
-/// System interpreter discovery: Windows = py -3 → PATH python; Unix = python3 → python
-/// (Debian/Ubuntu has no bare `python`).
+/// System interpreter discovery: Windows `py -3` → `python`; Unix `python3` → `python` (Debian has no bare `python`).
 fn find_system_python() -> Option<PathBuf> {
     if cfg!(windows) {
         try_python("py", &["-3"]).or_else(|| try_python("python", &[]))
@@ -441,8 +420,7 @@ async fn emit_progress(app: &AppHandle, phase: &str, percent: u32) {
     );
 }
 
-/// Forward child output line by line (both streams): every 3 lines, interpolate progress
-/// across the phase range (pip's bar is off, so percent is an estimate). The counter is shared.
+/// Forward child output (both streams); every 3 lines interpolate progress across the phase range (pip's bar is off, so it's an estimate).
 pub(crate) async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(
     r: &mut R,
     app: &AppHandle,
@@ -563,9 +541,7 @@ async fn pip_install(
         let extra = if use_mirror { PYPI_MIRROR } else { PYPI_OFFICIAL };
         args.extend(svec(&["--index-url", &index, "--extra-index-url", extra]));
     } else if req_file.contains("torch-cpu") && !cfg!(windows) {
-        // PyPI's Linux torch silently bundles CUDA (nvidia-* + triton, ~3.4 GB) and its version
-        // has no +cu tag, so version checks miss it; the CPU variant must use the /cpu wheel
-        // index to get the +cpu wheel (~250 MB). Windows PyPI torch is already CPU-only.
+        // PyPI's Linux torch silently bundles CUDA (no +cu tag, so version checks miss it); the CPU variant must use the /cpu index. Windows PyPI torch is already CPU-only.
         let index = if use_mirror {
             format!("{TORCH_MIRROR_BASE}/cpu")
         } else {
@@ -580,8 +556,7 @@ async fn pip_install(
     run_streamed(app, &paths.python, &args, &paths.root, &paths.models, &[], progress).await
 }
 
-/// Installed check: a CPU env is a subset of a GPU env — a "cuda" torch build satisfies a
-/// CPU request (no downgrade reinstall), but not vice versa.
+/// A CPU env is a subset of a GPU env: a "cuda" build satisfies a CPU request, not vice versa.
 fn env_satisfies(report: &OcrEnvReport, mode: InstallMode) -> bool {
     if report.python.is_none() || !report.missing.is_empty() {
         return false;
@@ -593,9 +568,7 @@ fn env_satisfies(report: &OcrEnvReport, mode: InstallMode) -> bool {
     }
 }
 
-/// Service install: interpreter (dev creates a venv with system python if missing) → GPU
-/// precheck → base deps → torch variant (selected build, skipped if already present) → done.
-/// Progress goes over ocr://install; returns true when nothing needed installing.
+/// Install: interpreter (dev creates a venv if missing) → GPU precheck → base deps → torch variant; returns true when nothing needed installing.
 pub async fn install_env(
     app: &AppHandle,
     paths: &PyPaths,
@@ -627,8 +600,7 @@ pub async fn install_env(
     .await;
     emit_progress(app, "preparing", 2).await;
     if !paths.python.is_file() {
-        // Service interpreter missing: Linux prod creates a user-level venv under ~/.ezpdf
-        // with the bundled interpreter (install dir read-only); dev uses system python in pyserver/.
+        // Interpreter missing: Linux prod makes a venv with the bundled Python; dev uses system python.
         let base = std::iter::once(paths.base_python.clone())
             .chain(std::iter::once(find_system_python()))
             .flatten()
@@ -697,9 +669,7 @@ pub async fn install_env(
     Ok(false)
 }
 
-/// Model download: huggingface_hub (installed on demand, a no-op if present) →
-/// python -m app.fetch (snapshot into the models dir, resumable by the hub library).
-/// Mirror switch: on = hf-mirror.com, off = huggingface.co.
+/// Model download: install huggingface_hub on demand → `python -m app.fetch` (snapshot, resumable). Mirror: hf-mirror.com vs huggingface.co.
 pub async fn download_models(
     app: &AppHandle,
     paths: &PyPaths,

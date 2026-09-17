@@ -1,13 +1,8 @@
-"""Managed service entry: uvicorn on port 0 + READY protocol + token middleware + stdin-EOF orphan guard.
+"""Managed service entry: uvicorn on port 0 + EZPDF_READY handshake + token middleware + stdin-EOF watchdog.
 
-Rust side (the only normal caller):
-    spawns .venv's python -m app.main (cwd = pyserver root, EZPDF_TOKEN always passed),
-    reads stdout line by line until the `EZPDF_READY {...}` line, and takes the real port from it.
-
-Ready protocol: after binding an ephemeral port and before serving, print one stdout line
+Rust spawns `python -m app.main` and reads the single stdout line
     EZPDF_READY {"port": ..., "pid": ...}
-
-Manual debug: python -m app.main (no token = no auth; Ctrl+C to exit).
+Manual debug: `python -m app.main` (no token = no auth; Ctrl+C to exit).
 """
 
 from __future__ import annotations
@@ -33,10 +28,8 @@ MAX_BODY_BYTES = 64 * 1024 * 1024
 
 
 def create_app(token: str | None = None) -> FastAPI:
-    """token=None reads the environment (Rust-managed form); an explicit token wins (server_docker.py).
-
-    Auth covers every route including /health: a client with a token must send `x-ezpdf-token` to health-probe too.
-    """
+    """token=None reads the environment (Rust-managed); an explicit token wins (server_docker.py).
+    Auth covers every route including /health, so a token client must send `x-ezpdf-token` to probe it too."""
     expected = TOKEN if token is None else token
     app = FastAPI(title="ezpdf-pyserver")
     app.include_router(health.router)
@@ -45,7 +38,7 @@ def create_app(token: str | None = None) -> FastAPI:
     if expected:
         @app.middleware("http")
         async def _token_guard(request, call_next):
-            # Constant-time compare (a local process could otherwise byte-probe via response timing)
+            # Constant-time compare: a local process could otherwise byte-probe via response timing
             supplied = (request.headers.get("x-ezpdf-token") or "").encode("utf-8", "ignore")
             if not hmac.compare_digest(supplied, expected.encode()):
                 return JSONResponse(status_code=403, content={"detail": "forbidden"})
@@ -53,8 +46,8 @@ def create_app(token: str | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def _body_limit(request, call_next):
-        # 32 pages of base64 PNG sit far below this; Pydantic's max_length only applies after the body is
-        # read into memory, so reject on Content-Length before reading — an oversized body can OOM first
+        # Reject on Content-Length before reading: Pydantic's max_length only applies after the
+        # body is already in memory, so an oversized one can OOM first
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
             logger.warning("request body too large: %s bytes", declared)
@@ -66,10 +59,8 @@ def create_app(token: str | None = None) -> FastAPI:
 
 def _watch_stdin(server: uvicorn.Server) -> None:
     """Parent (Rust) exit → stdin EOF → graceful exit, with a 5s hard-exit fallback against orphans.
-
-    Reads fd 0 with os.read rather than sys.stdin: the buffered reader's lock collides with the
-    still-blocked daemon thread during interpreter shutdown (Fatal Python error).
-    """
+    Reads fd 0 with os.read, not sys.stdin: the buffered reader's lock collides with the still-blocked
+    daemon thread at shutdown (Fatal Python error)."""
     try:
         while os.read(0, 4096):
             pass

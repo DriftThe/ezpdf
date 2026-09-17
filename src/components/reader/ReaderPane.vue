@@ -7,11 +7,7 @@ import { useReaderStore } from "../../stores/reader";
 import type { Block } from "../../types/domain";
 import PageCard from "./PageCard.vue";
 
-/**
- * One reader pane: scroll container + page column.
- * Page-list truth = pdfjs' measured count (reader.pageCount); the bound JSON only supplies OCR blocks.
- * Virtualization is self-managed by PdfPageCanvas (IntersectionObserver); this component's scroll/sync protocol is unchanged.
- */
+/** One reader pane: scroll container + page column; page-list truth is reader.pageCount (pdfjs), virtualized by PdfPageCanvas. */
 const props = defineProps<{
   kind: "original" | "translation";
   doc: PDFDocumentProxy | null;
@@ -26,12 +22,10 @@ const lib = useLibraryStore();
 const reader = useReaderStore();
 const { t } = useI18n();
 
-/** Rendered page list: 1..numPages (Pending books still get all page cards, with empty overlays) */
 const pageNumbers = computed(() =>
   Array.from({ length: reader.pageCount }, (_, i) => i + 1),
 );
 
-/** Bound JSON's OCR blocks looked up by 1-based page number; miss (unparsed) → empty overlay */
 const blocksByIndex = computed(() => {
   const map = new Map<number, Block[]>();
   for (const p of lib.currentPdf?.pages ?? []) map.set(p.index, p.blocks);
@@ -42,9 +36,7 @@ const EMPTY_BLOCKS: Block[] = [];
 const scrollEl = ref<HTMLElement | null>(null);
 let raf = 0;
 
-// Report pane width to the store (fit-width zoom recomputes live; window resize/layout switch/sidebar toggle).
-// Use clientWidth (excludes scrollbar) not contentRect, and pane width comes from the flex layout,
-// independent of page content, avoiding a feedback loop.
+// Report clientWidth (excludes scrollbar); pane width comes from the flex layout, so no content feedback loop.
 let ro: ResizeObserver | null = null;
 onMounted(() => {
   if (!scrollEl.value) return;
@@ -63,17 +55,14 @@ function onScroll(e: Event): void {
   cancelAnimationFrame(raf);
   raf = requestAnimationFrame(() => {
     emit("pageVisible", visiblePage(el));
-    if (restoring) return; // programmatic scroll of anchor restore: don't report ratio, avoiding panes pushing each other
+    if (restoring) return; // anchor restore is programmatic: don't report ratio (panes would push each other)
     const max = el.scrollHeight - el.clientHeight;
     emit("scrollRatio", max > 0 ? el.scrollTop / max : 0);
   });
 }
 
-// ---- Zoom/geometry anchor: zoom resizes all page cards, and native browser scroll anchoring
-// expires on width/height changes → scrollTop stays while the content above scales, so the
-// viewport drifts (worse with more pages; same for background per-page geometry backfill). This
-// component records "anchor page in viewport + in-page fraction" itself and restores the same
-// content position after reflow. Page-jump navigation (jumpTarget) must not fight the scroll. ----
+// ---- Zoom/geometry anchor: native anchoring expires on width/height changes (scrollTop stays while content
+// above scales → viewport drifts), so record "anchor page + in-page fraction" and restore after reflow ----
 let anchor: { page: number; frac: number } | null = null;
 let restoring = false;
 let restoreFrames = 0;
@@ -142,7 +131,6 @@ watch(
   { flush: "pre" },
 );
 
-/** The page at the scroll container's vertical midpoint is the visible page */
 function visiblePage(el: HTMLElement): number {
   const center = el.scrollTop + el.clientHeight / 2;
   const nodes = el.querySelectorAll<HTMLElement>("[data-page-index]");
@@ -202,9 +190,7 @@ defineExpose({ scrollToRatio, scrollToPage });
 
 <style scoped>
 .pane {
-  /* Remaining width is split evenly between the two panes (one pane takes all alone); width
-     comes only from the layout, not from page content — otherwise fit-width and content size
-     would form a shrink loop */
+  /* Width comes only from the layout, not page content — otherwise fit-width and content size form a shrink loop */
   flex: 1 1 0;
   display: flex;
   flex-direction: column;
@@ -233,9 +219,9 @@ defineExpose({ scrollToRatio, scrollToPage });
 }
 .pane-scroll {
   flex: 1;
-  overflow: auto; /* no horizontal overflow at fit width; manual zoom-in allows horizontal scroll */
+  overflow: auto;
   background: var(--bg-workspace);
-  overflow-anchor: none; /* anchoring is self-managed (zoom anchor); native anchoring off to avoid fighting */
+  overflow-anchor: none; /* native anchoring off: would fight the self-managed zoom anchor */
 }
 .page-col {
   position: relative; /* positioning base for page-card offsetTop */
@@ -247,8 +233,7 @@ defineExpose({ scrollToRatio, scrollToPage });
   flex-direction: column;
   align-items: center;
 }
-/* Vertically center when total content height is less than the container; when it overflows,
-   auto margins collapse to 0 and don't eat the scrollable area */
+/* auto margins center when content is short; when it overflows they collapse to 0 and don't eat the scroll area */
 .page-col > :first-child {
   margin-top: auto;
 }

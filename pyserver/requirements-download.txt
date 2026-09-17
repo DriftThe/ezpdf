@@ -1,2 +1,1 @@
-# Model-download only (installed on demand by ocr_download_models, not needed at runtime)
 huggingface_hub>=0.30,<2.0

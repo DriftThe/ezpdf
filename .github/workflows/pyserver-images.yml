@@ -1,13 +1,10 @@
 name: Pyserver images
 
 # Pyserver image snapshots: build self-contained CPU/GPU images (models baked in, offline-ready),
-# smoke test them (/health auth + real inference), docker save, split under 2 GiB, upload to a
-# `pyserver-<app tag>` Release kept separate from the app release (6.5 GB of assets would bloat it).
-#
-# Manual dispatch because one run needs models (1.9 GB) and torch wheels (CPU ~0.3 GB / GPU ~5 GB)
-# and takes 20-30 min per variant. Model downloads happen here to bake them into the image.
-# Parts because a GitHub Release asset is capped at 2 GiB while the tar is 2.1GB (CPU) / 4.5GB (GPU);
-# downloaders merge and docker load. Draft first; publish with `gh release edit --draft=false`.
+# smoke test them, docker save, split under 2 GiB, upload to a `pyserver-<app tag>` Release kept
+# separate from the app release (6.5 GB of assets would bloat it). Manual dispatch because a run
+# downloads models (1.9 GB) + torch wheels and takes 20-30 min per variant; parts because a Release
+# asset is capped at 2 GiB while the tar is 2.1GB (CPU) / 4.5GB (GPU). Draft first, publish manually.
 on:
   workflow_dispatch:
     inputs:
@@ -57,10 +54,8 @@ jobs:
           echo "building from $(git rev-parse --short HEAD)"
           df -h / | tail -1
 
-      # Separate pyserver-<tag> release, created as a draft and published manually
-      # (gh release edit pyserver-<tag> --draft=false); the app release carries no image assets.
-      # The body is the bilingual text below (not from a repo file). --verify-tag is deliberately
-      # omitted so a dispatch does not need the release tag to exist yet.
+      # Separate pyserver-<tag> draft release, published manually; --verify-tag is omitted so a
+      # dispatch does not need the release tag to exist yet. The body is the bilingual text below.
       - name: Ensure pyserver draft release
         run: |
           set -euo pipefail
@@ -101,8 +96,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The Dockerfile COPYs models into the image (self-contained), so fetch them into the
-      # build context here, via the same code path as the app's install service (python -m app.fetch).
+      # The Dockerfile COPYs models in, so fetch them into the build context here via the app's own install path
       - name: Download models into the build context
         working-directory: pyserver
         env:
@@ -120,8 +114,7 @@ jobs:
           docker build -t ezpdf-pyserver:cpu -t "ezpdf-pyserver:${{ steps.vars.outputs.tag }}-cpu" \
             --build-arg VARIANT=cpu pyserver
 
-      # /health alone is not enough: the image is usable only if it can infer, so run it for real.
-      # No token must return 403, with token 200 (server-side auth is on by default).
+      # /health alone is not enough: run real inference. No token must 403, with token 200.
       - name: Smoke test CPU image
         if: contains(inputs.variants, 'cpu')
         run: |
@@ -142,8 +135,7 @@ jobs:
             docker logs smoke
             exit 1
           fi
-          # Read the token inside the container: the server writes /data/token.txt as root with
-          # mode 0600, so the host-mounted copy is unreadable by the non-root runner user.
+          # Read the token inside the container: /data/token.txt is root-owned mode 0600, unreadable by the runner
           docker exec smoke sh -c 'test -s /data/token.txt'
           TOKEN=$(docker exec smoke cat /data/token.txt)
           [ -n "$TOKEN" ] || {
@@ -172,10 +164,9 @@ jobs:
           docker build -t ezpdf-pyserver:gpu -t "ezpdf-pyserver:${{ steps.vars.outputs.tag }}-gpu" \
             --build-arg VARIANT=gpu pyserver
 
-      # The runner has no GPU. Confirm CUDA torch and triton import and run inference in CPU
-      # mode (the cu132 build falls back to CPU) to cover dependency completeness.
-      # NOTE: triton JIT only runs on the CUDA path, so this cannot prove gcc is needed —
-      # removing build-essential from the Dockerfile breaks GPU inference only at runtime.
+      # Runner has no GPU: confirm CUDA torch + triton import and run inference in CPU fallback.
+      # NOTE: triton JIT only runs on the CUDA path, so this cannot prove build-essential is needed —
+      # dropping it from the Dockerfile breaks GPU inference at runtime only.
       - name: Smoke test GPU image
         if: contains(inputs.variants, 'gpu')
         run: |

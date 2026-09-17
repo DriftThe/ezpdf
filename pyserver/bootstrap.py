@@ -1,21 +1,11 @@
-"""EZPDF pyserver environment probe.
+"""EZPDF pyserver environment probe (stdlib only; runs inside or outside a venv).
 
-Zero third-party deps (pure stdlib); runs inside or outside a venv:
-    python bootstrap.py          # one-line JSON on stdout (parsed by Rust)
-    python bootstrap.py | python -m json.tool   # human-readable
+    python bootstrap.py        # one-line JSON on stdout, parsed by Rust's ocr_env_report
+Models come from EZPDF_MODELS_DIR (production ~/.ezpdf/models), default <script dir>/models.
 
-Models come from EZPDF_MODELS_DIR (production = ~/.ezpdf/models), defaulting to <script dir>/models.
-
-Output contract (Rust's ocr_env_report turns it into frontend status-light data):
-    {
-      "python": "3.12.10", "python_path": "...",
-      "deps": {"fastapi": "0.139.2", ...},     # version string, null when missing
-      "missing": ["torch"],
-      "torch_build": "cuda" | "cpu" | null,    # from the +cu suffix; never imports torch
-      "gpu": {"present": true, "name": "...", "driver": "...", "cuda": "13.2"} | null,
-      "models": {"layout": true, "vl": false},
-      "error": null                            # fallback info when the probe itself fails
-    }
+Output contract:
+    {"python", "python_path", "deps", "missing", "torch_build" ("cuda"|"cpu"|null, from the +cu
+     suffix — torch is never imported), "gpu", "models" ("layout"/"vl" bools), "error"}
 """
 
 from __future__ import annotations
@@ -31,8 +21,7 @@ from pathlib import Path
 
 from app import model_contract
 
-# (distribution name, import name); versions come from the distribution. torch is listed too —
-# bootstrap only reads version metadata, it never imports torch
+# (distribution name, import name); versions come from the distribution metadata, torch is never imported
 DEPS: list[tuple[str, str]] = [
     ("fastapi", "fastapi"),
     ("uvicorn", "uvicorn"),
@@ -43,8 +32,7 @@ DEPS: list[tuple[str, str]] = [
     ("torch", "torch"),
 ]
 
-# Model dir convention: EZPDF_MODELS_DIR overrides (production = ~/.ezpdf/models), default <pyserver>/models;
-# dir names and completeness come from app/model_contract.py (the same stdlib module used by fetch.py)
+# Dir names and completeness come from app/model_contract.py (shared with fetch.py)
 MODEL_ROOT = Path(os.environ.get("EZPDF_MODELS_DIR") or (Path(__file__).resolve().parent / "models"))
 MODEL_DIRS: dict[str, str] = {
     "layout": model_contract.LAYOUT_MODEL_DIR_NAME,
@@ -71,8 +59,7 @@ def _dep_report() -> tuple[dict[str, str | None], list[str]]:
 
 
 def _has_bundled_cuda() -> bool:
-    """PyPI's Linux torch wheel bundles CUDA but carries no `+cu` local version tag
-    (2.13.0 reports torch.version.cuda=13.2 while its metadata looks cpu-only), so the
+    """PyPI's Linux torch wheel bundles CUDA without the `+cu` tag (metadata looks cpu-only), so the
     installed nvidia-* / triton distributions are the only usable signal."""
     try:
         for dist in importlib.metadata.distributions():
@@ -142,7 +129,7 @@ def main() -> int:
     try:
         report = probe()
     except Exception as exc:  # a crashed probe still emits JSON and exits 0 (the report is the data)
-        # Keep the report complete: a missing field breaks Rust deserialization and the real reason never reaches the UI
+        # The report must stay complete: a missing field breaks Rust deserialization and hides the real reason
         report = {
             "python": None,
             "python_path": None,

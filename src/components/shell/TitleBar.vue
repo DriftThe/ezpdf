@@ -5,11 +5,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "../../lib/env";
 import ThemeToggle from "./ThemeToggle.vue";
 
-/**
- * Self-drawn title bar (system decorations off in tauri.conf).
- * Drag: the whole bar carries `data-tauri-drag-region` (buttons don't, see capabilities);
- * double-click toggles maximize. Inert in the browser (no Tauri).
- */
+/** Self-drawn title bar (decorations off): drag via `data-tauri-drag-region` (buttons excluded),
+ *  double-click maximizes. Inert in the browser. */
 const { t } = useI18n();
 const win = isTauri ? getCurrentWindow() : null;
 const maximized = ref(false);
@@ -84,12 +81,10 @@ function close(): void {
   letter-spacing: 0.4px;
   color: var(--text-2);
 }
-/* Blank drag area: fills the middle */
 .bar-drag {
   flex: 1;
   align-self: stretch;
 }
-/* Windows-style window controls: full height, square, close turns red on hover */
 .win-btn {
   width: 44px;
   height: 100%;

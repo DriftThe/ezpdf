@@ -1,6 +1,4 @@
-# CPU variant: the +cpu build from the CPU wheel index (~250MB)
-# Rust passes index-url explicitly per mirror switch + platform (pyenv.rs):
-#   Linux must use the /cpu index (PyPI's Linux torch wheel bundles CUDA, ~5GB installed);
-#   Windows PyPI torch is already CPU, so TUNA/PyPI is fine.
+# CPU variant; Rust passes index-url per platform (pyenv.rs): Linux needs the /cpu index because
+# PyPI's Linux torch bundles CUDA (~5GB), while Windows PyPI torch is already CPU-only.
 torch==2.13.0
 torchvision==0.28.0

@@ -5,8 +5,7 @@
  */
 export type LlmVerifyReport = { 
 /**
- * Effective strategy; "none" = write no thinking-off param (either unneeded or impossible;
- * distinguished by [`Self::thinking_on`]).
+ * Effective strategy; "none" = write nothing (unneeded or impossible, see thinking_on).
  */
 strategy: string, 
 /**
@@ -16,8 +15,4 @@ presetNoThinking: boolean,
 /**
  * The probe still produced reasoning: cannot be disabled (frontend toasts a warning).
  */
-thinkingOn: boolean, 
-/**
- * Display message (elapsed time + strategy explanation).
- */
-message: string, };
+thinkingOn: boolean, message: string, };

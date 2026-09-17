@@ -1,5 +1,3 @@
-# pyserver base deps (no torch; GPU detection picks the cuda/cpu variant, see requirements-torch-*.txt)
-# Versions match the frozen Wise-Paddle known-good set (Python 3.12)
 fastapi==0.139.2
 uvicorn==0.51.0
 transformers==5.14.1

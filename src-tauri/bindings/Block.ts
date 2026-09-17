@@ -2,8 +2,7 @@
 import type { TableGrid } from "./TableGrid";
 
 /**
- * Layout block: one OCR-detected region and its source/translated text.
- * kind is a PP-DocLayoutV3 label; kept as a string (not an enum) so new labels pass through.
+ * One OCR-detected region; kind is a PP-DocLayoutV3 label kept as a string so new labels pass through.
  */
 export type Block = { type: string, 
 /**
@@ -15,12 +14,10 @@ content: string,
  */
 loc: [number, number, number, number], 
 /**
- * Translation; None for figures/formulas (formulas render as-is) or when untranslated.
- * Table blocks hold the translated matrix as JSON text (2-D string|null, see table.rs).
+ * Translation; None = render content as-is. Table blocks hold the translated matrix as 2-D JSON (see table.rs).
  */
 translation: string | null, 
 /**
- * Table grid (only for type == "table"): Rust parses content and persists it; the frontend
- * only renders. None when unparsable or not yet backfilled → no cover.
+ * Table grid (type == "table"; Rust parses+persists, frontend renders): None = unparsable/not backfilled → no cover.
  */
 grid?: TableGrid | null, };

@@ -1,8 +1,6 @@
-"""Liveness: Rust uses it to decide the service is up (stopping goes through stdin EOF, not HTTP).
-
-The response carries `max_batch_pages`: the client handshakes before every OCR batch to pick the batch
-size (in online mode the server dictates it; see PROTOCOL.md §4). Keep this a pure in-memory reply —
-never do heavy work in /health.
+"""Liveness; Rust uses it to gate startup (stopping goes through stdin EOF, not HTTP).
+`max_batch_pages` is the batch size the client handshakes before every OCR batch (PROTOCOL.md §4);
+keep this a pure in-memory reply and never do heavy work in /health.
 """
 
 from __future__ import annotations

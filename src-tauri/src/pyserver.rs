@@ -1,6 +1,5 @@
-//! pyserver lifecycle state machine (sole owner): unknown → starting → connected / failed
-//! (60 s cold-start timeout, 3 consecutive crashes = terminal); crashes auto-restart with
-//! exponential backoff; stop/exit closes stdin so Python's stdin-EOF watchdog exits (no orphans).
+//! pyserver lifecycle state machine (sole owner): unknown → starting → connected/failed (60 s cold
+//! start, 3 crashes = terminal, exponential backoff); stop closes stdin so Python's EOF watchdog exits.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,15 +17,12 @@ use crate::pyenv::PyPaths;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Ready-line prefix: `EZPDF_READY {"port":...,"pid":...}` (single-line JSON on stdout).
+/// Ready-line protocol: `EZPDF_READY {"port":...,"pid":...}` on stdout.
 const READY_PREFIX: &str = "EZPDF_READY ";
-/// Cold-start cap (wait for the READY line).
 const START_TIMEOUT: Duration = Duration::from_secs(60);
-/// Consecutive-crash threshold for the terminal state.
 const MAX_CRASHES: u32 = 3;
 /// Grace period for Python to self-exit after a stop; force-killed on timeout.
 const STOP_GRACE: Duration = Duration::from_secs(8);
-/// Backoff cap for auto-restart.
 const BACKOFF_CAP: Duration = Duration::from_secs(15);
 
 /// Service lifecycle status (frontend "service" light source); serde serializes it as camelCase.
@@ -47,14 +43,12 @@ struct PyServiceInner {
     stopping: AtomicBool,
     /// Holding the child's stdin open prevents orphans; stop() drops it to trigger Python's EOF exit.
     stdin: Mutex<Option<tokio::process::ChildStdin>>,
-    /// Last successful handshake's base URL and token (used for OCR calls).
     endpoint: Mutex<Option<String>>,
     token: Mutex<String>,
     stop_tx: watch::Sender<bool>,
     stop_rx: watch::Receiver<bool>,
 }
 
-/// Shared state handle (Clone just copies the inner Arc).
 #[derive(Clone)]
 pub struct PyService(Arc<PyServiceInner>);
 
@@ -93,10 +87,7 @@ impl PyService {
         Some((base, token))
     }
 
-    /// Remote mode: register a remote parse service as the OCR target.
-    /// The caller must have probed already; this only stores the endpoint + token and sets
-    /// Connected. The server decides whether a token is required (see server_docker.py's
-    /// token.txt for Docker/bare-metal); locally hosted mode injects a random one.
+    /// Register a remote service as the OCR target (caller must have probed); this only stores endpoint+token and sets Connected.
     pub fn set_remote(&self, app: &AppHandle, base: String, token: String) {
         self.set_endpoint(base, token);
         self.set_status(app, ServiceStatus::Connected);
@@ -114,8 +105,7 @@ impl PyService {
         self.0.stdin.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
-    /// Stop (sync): set the flag, notify the supervisor, close stdin (Python exits gracefully).
-    /// Shared by RunEvent::Exit and the ocr_stop command.
+    /// Stop (sync): set the flag, notify the supervisor, close stdin so Python exits gracefully.
     pub fn stop(&self) {
         self.0.stopping.store(true, Ordering::SeqCst);
         let _ = self.0.stop_tx.send(true);
@@ -133,8 +123,7 @@ impl PyService {
     }
 }
 
-/// Random session token (not cryptographic; only guards accidental local connections).
-/// RandomState draws its key from OS entropy (sys::hashmap_random_keys), stronger than time+pid.
+/// Random session token (not cryptographic; only guards accidental local connections) seeded from OS entropy.
 fn fresh_token() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash, Hasher};
@@ -149,8 +138,7 @@ fn fresh_token() -> String {
     format!("{:016x}{:016x}", seed.finish(), extra)
 }
 
-/// Supervisor loop: spawn → READY → /health → connected → wait for exit; a non-intentional exit
-/// counts a crash and restarts with backoff; 3 consecutive crashes → failed terminal state.
+/// Supervisor loop: spawn → READY → /health → connected → wait; an unintentional exit counts a crash and restarts with backoff.
 pub async fn supervise(app: AppHandle, paths: PyPaths, svc: PyService) {
     let mut backoff = Duration::from_secs(1);
     let mut crashes: u32 = 0;
@@ -165,7 +153,7 @@ pub async fn supervise(app: AppHandle, paths: PyPaths, svc: PyService) {
                 svc.set_status(&app, ServiceStatus::Connected);
                 backoff = Duration::from_secs(1); // one success resets the backoff
                 let mut stop_rx = svc.0.stop_rx.clone();
-                stop_rx.borrow_and_update(); // mark the current value read so changed() waits for the next
+                stop_rx.borrow_and_update();
                 let _exit = tokio::select! {
                     st = child.wait() => st,
                     _ = stop_rx.changed() => {
@@ -196,8 +184,7 @@ pub async fn supervise(app: AppHandle, paths: PyPaths, svc: PyService) {
     }
 }
 
-/// Shared cleanup after a failed start/abnormal exit: bump the crash count, then go terminal
-/// or wait out the backoff. Returns true when terminal (the caller breaks).
+/// After a failed start/abnormal exit: bump the crash count, then go terminal or wait out the backoff; true = terminal.
 async fn handle_failure(
     app: &AppHandle,
     svc: &PyService,
@@ -244,7 +231,6 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
         *svc.0.stdin.lock().unwrap_or_else(|e| e.into_inner()) = Some(stdin);
     }
 
-    // stderr → ocr://log (uvicorn / engine logs).
     if let Some(mut stderr) = child.stderr.take() {
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -252,7 +238,6 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
         });
     }
 
-    // Read stdout line by line: the READY line reports the port via oneshot, the rest go to the log.
     let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Option<u16>>();
     let app3 = app.clone();
@@ -323,17 +308,12 @@ async fn start_once(app: &AppHandle, paths: &PyPaths, svc: &PyService) -> Result
     Err("health check failed".into())
 }
 
-// ---- Remote mode: probe/register a remote parse service ----
-//
-// Unlike the local managed service there is no child and no session token (the deployer decides
-// on auth; see pyserver/PROTOCOL.md); connecting is a single /health probe. For local dev use
-// `pyserver/server_test.py` (default 127.0.0.1:9055) as a fake remote.
+// ---- Remote mode: no child/session token (deployer decides auth, see PROTOCOL.md); connect = one /health probe; server_test.py fakes one on 9055 ----
 
 /// Probe timeout: /health is in-memory, so exceeding this means a wrong address/network.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Normalize a user-supplied URL: trim whitespace/trailing slash, default a missing scheme to
-/// http (common in local dev). An empty string errors rather than counting as connected.
+/// Normalize a user URL: trim, default a missing scheme to http; empty errors rather than counting as connected.
 pub fn normalize_base(url: &str) -> Result<String, String> {
     let trimmed = url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -363,25 +343,21 @@ fn is_loopback(base: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
 }
 
-/// Remote parse-service handshake result (the "Test" button and per-request batch negotiation).
-/// `max_batch_pages` comes from the server (PROTOCOL.md §4), clamped to 1..=32.
+/// Remote handshake result; `max_batch_pages` comes from the server (PROTOCOL.md §4), clamped to 1..=32.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ParseServiceHealth {
     /// u32 not u64: ts-rs maps u64 to bigint, and the frontend only displays this.
     pub pid: Option<u32>,
-    /// Server-allowed max pages per batch.
     pub max_batch_pages: u32,
-    /// This probe's elapsed time (ms).
     pub elapsed_ms: u32,
 }
 
 /// Batch size when the server doesn't advertise a usable value (matches local hosting's size).
 const FALLBACK_BATCH_PAGES: u32 = 4;
 
-/// Probe a parse service: GET {base}/health → (pid, elapsed ms, advertised batch size).
-/// Readable failures; shared by the "Test" button, pre-connect confirmation and per-request negotiation.
+/// GET {base}/health → (pid, elapsed, batch size); shared by Test, pre-connect confirmation and per-request negotiation.
 pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth, String> {
     let base = normalize_base(base)?;
     let url = format!("{base}/health");
@@ -415,8 +391,7 @@ pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth,
     })
 }
 
-/// Advertised batch size → usable client value: missing/invalid falls back to 4, out-of-range
-/// clamps to 1..=32. The upper clamp is required since Rust rejects batches over 32.
+/// Advertised batch size → usable value: missing/invalid → 4, out-of-range clamps to 1..=32 (Rust rejects over 32).
 fn advertised_batch_pages(body: &serde_json::Value) -> u32 {
     match body["max_batch_pages"].as_u64() {
         Some(n) if n >= 1 => (n.min(crate::parse::MAX_BATCH_PAGES as u64)) as u32,
@@ -439,7 +414,6 @@ mod tests {
         assert!(normalize_base("file:///etc/passwd").is_err());
     }
 
-    /// Batch-size negotiation: missing/invalid falls back to 4, out-of-range clamps to 1..=32.
     #[test]
     fn advertised_batch_pages_is_clamped() {
         assert_eq!(advertised_batch_pages(&serde_json::json!({"max_batch_pages": 6})), 6);

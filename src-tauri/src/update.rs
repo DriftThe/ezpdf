@@ -1,6 +1,5 @@
-//! Update check: fetch the latest GitHub Release and compare it with the running version.
-//! Notify only (toast + settings text); no download or install.
-//! Network/404 failure → Err; the caller decides whether to surface it (silent at launch, toast on manual check).
+//! Update check: compare the latest GitHub Release with the running version; notify only, no download/install.
+//! Network/404 failure → Err (caller decides silent vs toast).
 
 use std::time::Duration;
 
@@ -8,10 +7,8 @@ use serde::Serialize;
 use serde_json::Value;
 use ts_rs::TS;
 
-/// Upstream repo checked for releases.
 const UPDATE_REPO: &str = "DriftThe/ezpdf";
 
-/// Update-check result (rendered by the frontend).
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -20,12 +17,10 @@ pub struct UpdateInfo {
     pub current: String,
     /// Latest release tag without the `v` prefix; a missing release is an Err, not None.
     pub latest: Option<String>,
-    /// Whether a newer version is available (numeric comparison).
     pub newer: bool,
 }
 
-/// Numeric-segment compare: `v1.2.3` and `1.2.3` both parse, missing segments count as 0,
-/// non-numeric suffixes (-beta) are ignored. a > b → true.
+/// Numeric-segment compare (`v1.2.3`/`1.2.3` both parse, missing segments = 0, `-beta` ignored); a > b.
 fn version_gt(a: &str, b: &str) -> bool {
     let parts = |s: &str| -> Vec<u64> {
         s.trim()

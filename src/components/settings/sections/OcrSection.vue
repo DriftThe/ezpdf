@@ -9,7 +9,7 @@ const parse = useParseStore();
 const settings = useSettingsStore();
 const { t } = useI18n();
 
-/** Install mode: follows the hardware by default (a detected GPU preselects GPU) */
+/** Defaults to the hardware: a detected GPU preselects GPU */
 const installMode = ref<"cpu" | "gpu">("cpu");
 watch(
   () => parse.envReport?.gpu,
@@ -19,13 +19,11 @@ watch(
   { immediate: true },
 );
 
-// Refresh the report when the OCR settings page opens (lights and button availability follow the latest probe)
-// Online mode doesn't probe the local environment (that's the service's job), only the URL
+// Refresh the report on open; online mode probes only the URL (the local env is the service's job)
 onMounted(() => {
   if (!online.value && parse.envReport === null) void parse.checkEnv();
 });
 
-/** Online mode: hides the local environment/install area, shows URL + test instead */
 const online = computed(() => settings.ocr.mode === "online");
 const probing = ref(false);
 async function onTest(): Promise<void> {
@@ -37,7 +35,6 @@ async function onTest(): Promise<void> {
   }
 }
 
-/** State → label / status-light modifier class ("" = grey not-ready state) */
 type EnvState = "notready" | "cpu" | "gpu";
 type SvcState = "stopped" | "starting" | "busy" | "idle" | "failed";
 
@@ -57,7 +54,7 @@ const svcState = computed<SvcState>(() => {
     case "starting":
       return "starting";
     case "connected":
-      // Service online: an in-flight batch = busy (reported: the local service was running a batch but kept showing idle)
+      // an in-flight batch = busy (otherwise the light stayed "idle" while OCR ran)
       return parse.parsing ? "busy" : "idle";
     case "failed":
       return "failed";
@@ -65,12 +62,11 @@ const svcState = computed<SvcState>(() => {
       return "stopped";
   }
 });
-/** Shapes in which the service is "held": starting/online (including busy) → button shows "stop service" */
+/** Held states (starting/online incl. busy) → button shows "stop service" */
 const serviceBusy = computed(
   () => svcState.value === "starting" || svcState.value === "busy" || svcState.value === "idle",
 );
 
-/** Light tooltip details (hover for version/driver/missing items) */
 const pythonTip = computed(() => parse.envReport?.pythonPath ?? "");
 const cudaTip = computed(() => {
   const g = parse.envReport?.gpu;
@@ -116,7 +112,7 @@ const SVC_CLASS: Record<SvcState, string> = {
 };
 const svcTip = computed(() => (svcState.value === "busy" ? t("ocr.svcBusyTip") : t("ocr.pyserverTip")));
 
-/** Five lights (Python/CUDA/env/models/service): readiness is computed here, the template only iterates */
+/** Five lights (Python/CUDA/env/models/service); the template only iterates */
 const lights = computed(() => [
   {
     key: "python",
@@ -150,9 +146,8 @@ const lights = computed(() => [
   <div class="set-pane">
     <h2 class="set-title">{{ t("ocr.title") }}</h2>
 
-    <!-- Service source: local = bundled pyserver; online = a remote HTTP service of the same kind.
-         Online mode only needs a reachable URL, so a bare base environment (no deps/models) works;
-         translation is unrelated to it -->
+    <!-- Service source: local bundled pyserver vs. a remote compatible service (needs only a URL;
+         translation is unrelated) -->
     <div class="set-field">
       <span>{{ t("ocr.mode") }}</span>
       <span class="set-select-wrap">
@@ -164,7 +159,7 @@ const lights = computed(() => [
       </span>
     </div>
 
-    <!-- Online mode: URL field + "test" on the right (probes only, doesn't change the connection state) + start service to register -->
+    <!-- "Test" only probes (start service registers the connection) -->
     <template v-if="online">
       <div class="set-field">
         <span>{{ t("ocr.url") }}</span>
@@ -175,22 +170,21 @@ const lights = computed(() => [
           </button>
         </div>
       </div>
-      <!-- Service token (only for the deployed server form, see pyserver/app/server_docker.py): the server
-           prints the token to the terminal on every start, paste it here; leave empty if the server has no auth -->
+      <!-- Deployed-server token: printed to its terminal on every start; empty if the server has no auth -->
       <div class="set-field">
         <span>{{ t("ocr.token") }}</span>
         <div class="set-field-row url-row">
           <input v-model="settings.ocr.token" class="url-input" :placeholder="t('ocr.tokenPlaceholder')" />
         </div>
       </div>
-      <!-- Batch page count advertised by the server (appears after test/connect; re-handshaked before every OCR request) -->
+      <!-- Server-advertised batch size (re-handshaked before every OCR request) -->
       <p v-if="parse.onlineHealth" class="set-hint batch-hint">
         {{ t("ocr.batchHint", { batch: parse.onlineHealth.maxBatchPages }) }}
       </p>
     </template>
 
     <template v-else>
-      <!-- Note: rows containing a button must not be wrapped in a label (a label forwards clicks on the whole row to the button) -->
+      <!-- Don't wrap button rows in a label: a label forwards whole-row clicks to the button -->
       <div class="set-field">
         <span>{{ t("ocr.envCheck") }}</span>
         <button class="set-button" :disabled="parse.checking" @click="parse.checkEnv()">
@@ -205,7 +199,7 @@ const lights = computed(() => [
           </span>
         </div>
       </div>
-      <!-- One-click install service: install-mode dropdown (custom-styled) + mirror switch + progress -->
+      <!-- One-click install: install-mode dropdown + mirror switch + progress -->
       <div class="set-field">
         <span>{{ t("ocr.installService") }}</span>
         <div class="set-field-row install-row">
@@ -244,7 +238,7 @@ const lights = computed(() => [
         <button v-if="serviceBusy" class="set-button" @click="parse.stopService()">{{ t("ocr.stopService") }}</button>
       </div>
     </div>
-    <!-- Logs only in local-hosted mode: an online service keeps its own logs server-side -->
+    <!-- Logs only for the local service; a remote one keeps its own -->
     <div v-if="!online" class="set-field">
       <span>{{ t("settings.log") }}</span>
       <pre class="log-box">{{ parse.envLogs.join("\n") || t("settings.noLogs") }}</pre>
@@ -253,11 +247,9 @@ const lights = computed(() => [
 </template>
 
 <style scoped>
-/* Batch-size hint: same visual layer as the URL field, de-emphasized (server-advertised value) */
 .batch-hint {
   color: var(--accent);
 }
-/* URL field fills the remaining width, "test" button stays on the right */
 .url-row {
   gap: 12px;
   align-items: center;

@@ -9,33 +9,24 @@ import CommonSection from "./sections/CommonSection.vue";
 const settings = useSettingsStore();
 const { t } = useI18n();
 
-/**
- * Section registry (adding a section takes 3 steps; see the SettingsSection comment in stores/settings.ts):
- * the Record keys must cover the SettingsSection union — extending the union without registering here is a compile error.
- */
+/** Section registry: the Record keys must cover the SettingsSection union (registering is a compile error else) */
 type SectionDef = { label: string; comp: Component };
 const SECTIONS: Record<SettingsSection, SectionDef> = {
   llm: { label: "settings.section.llm", comp: LlmSection },
   ocr: { label: "settings.section.ocr", comp: OcrSection },
   common: { label: "settings.section.common", comp: CommonSection },
 };
-/** Object.entries keys are string; narrow back to SettingsSection for the nav binding */
 const navList = Object.entries(SECTIONS) as Array<[SettingsSection, SectionDef]>;
 
 const activeComp = computed(() => SECTIONS[settings.section].comp);
 </script>
 
 <template>
-  <!--
-    Full-page settings: absolutely positioned over the sidebar + reader (app-shell is the positioning base);
-    the toolbar has a higher z-index and stays visible/clickable. The component persists via v-show, so the
-    window underneath never unmounts. Switching sections renders only the current section component
-    (form state lives in the store, so switching loses nothing).
-  -->
+  <!-- Overlay over sidebar + reader; toolbar keeps a higher z-index. v-show keeps the window mounted;
+       only the active section renders (form state lives in the store). -->
   <section v-show="settings.pageOpen" class="settings-page">
-    <!-- Left column: back + section nav (reuses the sidebar item look) -->
     <aside class="sp-nav">
-      <!-- Back saves: the back button triggers save directly -->
+      <!-- Back triggers save directly (no separate save button) -->
       <button class="btn ghost back-btn" :title="t('settings.backTitle')" @click="settings.save">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
           <path d="M10 3L5 8l5 5" />
@@ -56,7 +47,6 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
       </nav>
     </aside>
 
-    <!-- Right content area (clears the top toolbar height), renders the current section dynamically -->
     <div class="sp-content">
       <div class="sp-scroll">
         <component :is="activeComp" />
@@ -74,7 +64,6 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
   background: var(--bg-app);
 }
 
-/* ---- Left nav (matches the sidebar: same width, background and item spec) ---- */
 .sp-nav {
   width: var(--sidebar-w);
   flex: none;
@@ -126,7 +115,6 @@ const activeComp = computed(() => SECTIONS[settings.section].comp);
   font-weight: 600;
 }
 
-/* ---- Right content ---- */
 .sp-content {
   flex: 1;
   min-width: 0;

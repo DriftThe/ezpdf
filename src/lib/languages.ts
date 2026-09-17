@@ -1,11 +1,9 @@
-/** Target-language presets for the dropdown, plus a custom escape hatch.
- *  value = English name written into the prompt; label = native + English (so no i18n key). */
+/** value = English name written into the prompt; label = native + English (needs no i18n key). */
 interface TargetLangOption {
   value: string;
   label: string;
 }
 
-/** Selecting this keeps the free-text input (no hardcoded language name). */
 export const CUSTOM_TARGET_LANG = "__custom__";
 
 export const TARGET_LANG_OPTIONS: readonly TargetLangOption[] = [
@@ -36,7 +34,6 @@ export const TARGET_LANG_OPTIONS: readonly TargetLangOption[] = [
   { value: "Malay", label: "Bahasa Melayu (Malay)" },
 ];
 
-/** Whether the value matches a preset (else the dropdown shows custom and expands). */
 export function isPresetTargetLang(value: string): boolean {
   return TARGET_LANG_OPTIONS.some((o) => o.value === value);
 }

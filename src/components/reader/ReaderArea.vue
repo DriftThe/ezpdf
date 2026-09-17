@@ -8,10 +8,7 @@ import { loadPdfDoc, destroyPdfDoc } from "../../composables/usePdfDoc";
 import ReaderPane from "./ReaderPane.vue";
 import EmptyState from "../common/EmptyState.vue";
 
-/**
- * Reader area: arranges 1–2 ReaderPanes for the 4 layout modes and handles scroll sync.
- * Sync strategy: ratio mapping (1:1 when both panes have identical page geometry).
- */
+/** Reader area: arranges 1–2 ReaderPanes per layout mode; scroll sync by ratio mapping. */
 type PaneKind = "original" | "translation";
 type Side = "left" | "right";
 
@@ -62,7 +59,7 @@ function isTranslationPending(kind: PaneKind): boolean {
   return kind === "translation" && (lib.currentPdf?.bind === null || lib.currentPdf?.status === "Pending");
 }
 
-// ---- pdfjs document lifecycle: this component is the sole owner, both panes share one doc ----
+// ---- pdfjs document lifecycle: sole owner, both panes share one doc ----
 const pdfDoc = shallowRef<PDFDocumentProxy | null>(null);
 const docState = ref<"idle" | "loading" | "ready" | "error">("idle");
 const docError = ref("");
@@ -74,8 +71,8 @@ watch(
   },
 );
 
-/** Switch book: destroy old doc → load new doc → report geometry → measure per-page sizes in
- *  the background (re-check the id across awaits, discard race results) */
+/** Switch book: destroy old → load new → report geometry → measure per-page sizes in the background
+ *  (re-check the id across awaits to discard race results) */
 async function openDocument(id: string | null, oldId: string | null): Promise<void> {
   if (oldId) void destroyPdfDoc(oldId);
   pdfDoc.value = null;
@@ -89,13 +86,13 @@ async function openDocument(id: string | null, oldId: string | null): Promise<vo
   }
   docState.value = "loading";
   try {
-    // pin: the focused book's doc is not LRU-evicted (background books in the scheduling bridge take at most 1 more)
+    // pin: the focused book's doc is never LRU-evicted (background books take at most 1 more slot)
     const doc = await loadPdfDoc(id, path, true);
     if (lib.currentPdfId !== id) {
-      void destroyPdfDoc(id); // race: book switched away before load finished → discard
+      void destroyPdfDoc(id); // race: switched away before load finished → discard
       return;
     }
-    // Geometry report: real page count + page-1 size (pt; getViewport scale=1 gives 1pt=1px)
+    // Real page count + page-1 size (pt; getViewport scale=1 gives 1pt=1px)
     const page1 = await doc.getPage(1);
     if (lib.currentPdfId !== id) {
       void destroyPdfDoc(id);
@@ -103,13 +100,11 @@ async function openDocument(id: string | null, oldId: string | null): Promise<vo
     }
     const vp = page1.getViewport({ scale: 1 });
     reader.setPdfGeometry(doc.numPages, vp.width, vp.height);
-    // Re-arm the pending jump once geometry is ready: the jumpTarget set by restorePageFor is
-    // consumed too early (page cards don't exist yet) before geometry, so reset it here to
-    // restore the remembered reading position
+    // Re-arm the remembered jump: restorePageFor's jumpTarget is consumed too early (no cards yet) before geometry
     reader.jumpTarget = reader.currentPage;
     pdfDoc.value = doc;
     docState.value = "ready";
-    void measurePageSizes(id, doc); // background per-page measurement (progressive; page-1 size holds until then)
+    void measurePageSizes(id, doc); // background per-page measurement; page-1 size holds until it lands
   } catch (error) {
     if (lib.currentPdfId !== id) return; // book already switched, error no longer relevant
     docError.value = String(error);
@@ -117,12 +112,8 @@ async function openDocument(id: string | null, oldId: string | null): Promise<vo
   }
 }
 
-/**
- * Per-page measurement (background, batched concurrent): PDFs with mixed page sizes
- * (crops differ per scan page, plus landscape pages) require overlay positioning from
- * each page's true geometry — OCR's loc is converted from the same per-page viewport,
- * so both ends must agree. getPage is pure metadata parsing, no render cost.
- */
+/** Per-page measurement (batched): mixed-size scans need each page's true geometry — OCR loc divides by the
+ *  same per-page viewport, so both ends must agree. getPage is metadata-only, no render cost. */
 async function measurePageSizes(id: string, doc: PDFDocumentProxy): Promise<void> {
   const sizes: Array<{ w: number; h: number }> = new Array(doc.numPages);
   const CHUNK = 32;
@@ -136,11 +127,11 @@ async function measurePageSizes(id: string, doc: PDFDocumentProxy): Promise<void
         }),
       ),
     );
-    if (lib.currentPdfId !== id) return; // book already switched: stale measurement
+    if (lib.currentPdfId !== id) return; // switched away: stale measurement
     chunk.forEach((s, k) => {
       sizes[i + k] = s;
     });
-    reader.setPageSizes([...sizes]); // progressive: measured pages immediately use their real size
+    reader.setPageSizes([...sizes]);
   }
 }
 
@@ -149,8 +140,7 @@ onBeforeUnmount(() => {
   if (id) void destroyPdfDoc(id);
 });
 
-/** Toolbar/status-strip page jump, PDF switch position restore → sync-scroll both panes (manual scroll doesn't trigger).
- *  flush post: scroll after the DOM update, page cards only exist then (book switch/geometry ready) */
+/** Page jump / position restore → sync-scroll both panes; flush post so page cards exist by then */
 watch(
   () => reader.jumpTarget,
   (p) => {
@@ -166,7 +156,7 @@ watch(
 <template>
   <div class="reader-area">
     <template v-if="lib.currentPdf">
-      <!-- Document-level load/error state (both panes are useless if fetching failed) -->
+      <!-- Document-level load/error state: both panes are useless if fetching failed -->
       <div v-if="docState === 'error'" class="pane-slot">
         <EmptyState :title="t('reader.loadFailed')" :desc="docError" />
       </div>
@@ -174,7 +164,6 @@ watch(
         <EmptyState :title="t('common.loading')" :desc="t('reader.loadingDesc')" />
       </div>
       <template v-else>
-        <!-- Left pane -->
         <div v-if="left && isTranslationPending(left)" class="pane-slot">
           <EmptyState :title="t('reader.notParsed')" :desc="t('reader.notParsedDesc')" />
         </div>
@@ -187,7 +176,6 @@ watch(
           @page-visible="onPageVisible"
         />
         <div v-if="right" class="pane-divider" />
-        <!-- Right pane -->
         <div v-if="right && isTranslationPending(right)" class="pane-slot">
           <EmptyState :title="t('reader.notParsed')" :desc="t('reader.notParsedDesc')" />
         </div>

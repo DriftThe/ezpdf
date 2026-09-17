@@ -1,31 +1,8 @@
 """OCR pipeline (ported from Wise-Paddle core_pipeline.py; concurrency and disk output removed).
 
-Pipeline tree (per page):
-
-    PIL.Image (any size)
-        │
-        ▼
-    LayoutDetector  ── internal processor resizes to 800x800
-        │ boxes (float xyxy) / labels / scores
-        ▼
-    ┌─ to int rectangle (np.round → int) ─┐
-    │  NMS (IoU)                          │  BoxFilter
-    │  area threshold                     │
-    │  score threshold                    │
-    └─────────────────────────────────────┘
-        │ kept LayoutBox
-        ▼
-    RegionCropper  ── numpy slice (RGB/HWC uint8)
-        │
-        ▼
-    bucket by label → same bucket batched to VLPredictor (PaddleOCR-VL-1.6)
-        │
-        ▼
-    each crop yields a markdown string → in-memory RegionResult (never written to disk)
-
-Removed from upstream: PipelinePool / BatchScheduler / Job / voucher / text_result
-persistence — Rust is the sole scheduler and results return over HTTP. Accuracy-critical
-parts (BoxFilter's NMS + unclip) are kept as-is.
+Per page: PP-DocLayoutV3 layout → BoxFilter (NMS + thresholds) → numpy crop → PaddleOCR-VL-1.6
+batched per label → in-memory RegionResult (never written to disk). Rust is the sole scheduler and
+results return over HTTP; the accuracy-critical BoxFilter NMS + unclip are kept as-is.
 """
 
 from __future__ import annotations
@@ -48,15 +25,9 @@ from transformers import (
 logger = logging.getLogger("ezpdf.pipeline")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Compatibility patch: transformers 5.x dropped the "default" RoPE init entry
-# ─────────────────────────────────────────────────────────────────────────────
+# Restore the "default" RoPE init entry that transformers 5.x dropped (older configs reference it)
 def _patch_rope_default() -> None:
-    """Restore the 'default' RoPE init entry removed in transformers 5.x.
-
-    Older model configs reference ``rope_type="default"``; re-registering an
-    equivalent implementation keeps them loading without manual edits.
-    """
+    """Re-register an equivalent ``rope_type="default"`` implementation so older configs load unedited."""
     import transformers.modeling_rope_utils as rope_utils
 
     if "default" in rope_utils.ROPE_INIT_FUNCTIONS:
@@ -89,13 +60,8 @@ def _patch_rope_default() -> None:
 _patch_rope_default()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Data classes
-# ─────────────────────────────────────────────────────────────────────────────
 @dataclass
 class LayoutBox:
-    """One layout region."""
-
     xyxy: np.ndarray  # float32, shape (4,) — [x1, y1, x2, y2] in source-image coordinates
     label_id: int
     label_name: str
@@ -113,8 +79,6 @@ class LayoutBox:
 
 @dataclass
 class RegionResult:
-    """Final result for one cropped region."""
-
     label: str
     score: float
     rect: tuple[int, int, int, int]
@@ -123,19 +87,13 @@ class RegionResult:
 
 @dataclass
 class PageResult:
-    """Result for one page."""
-
     width: int
     height: int
     elapsed_seconds: float
     regions: list[RegionResult] = field(default_factory=list)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1) Layout detection — PP-DocLayoutV3
-# ─────────────────────────────────────────────────────────────────────────────
 def _iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
-    """IoU of two xyxy boxes (float arrays of length 4)."""
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     ix1, iy1 = max(ax1, bx1), max(ay1, by1)
@@ -157,8 +115,6 @@ def _containment(a: np.ndarray, b: np.ndarray) -> float:
 
 
 class LayoutDetector:
-    """Run PP-DocLayoutV3 on an image of any size; returns (box, label, score)."""
-
     def __init__(
             self,
             model_path: str,
@@ -189,8 +145,8 @@ class LayoutDetector:
         self._fallback_sharpen = (2, 300, 1)  # PIL UnsharpMask: radius, percent, threshold
         self._fallback_iou = 0.3
         self._fallback_containment = 0.6
-        # Third pass, half-page tiles (see detect); add-only, and its whitelist also takes
-        # header/footer (a cover's standard line is classified as header).
+        # Third pass, half-page tiles (see detect); add-only, and its whitelist also takes header/footer
+        # because a cover's standard line is classified as header
         self._tile_labels = self._fallback_labels | {"header", "footer"}
         self._tile_threshold = 0.38
         self._tile_overlap = 0.08
@@ -200,7 +156,6 @@ class LayoutDetector:
         self._max_forward_batch = 4
 
     def _maybe_downscale(self, image: Image.Image) -> Image.Image:
-        """Downscale when the long side exceeds ``_max_long_side``; return the image unchanged otherwise."""
         w, h = image.size
         m = max(w, h)
         if m <= self._max_long_side:
@@ -218,10 +173,7 @@ class LayoutDetector:
             target_sizes: torch.Tensor,
             threshold: float,
     ) -> list[list[LayoutBox]]:
-        """Chunked forward (≤ ``_max_forward_batch``) + post-process.
-
-        Chunking avoids the slow batch=8 kernel; the three recall passes together exceed 4 images.
-        """
+        """Chunked forward (≤ ``_max_forward_batch``); the slow batch=8 kernel is why, see _max_forward_batch."""
         images = list(images)
         if len(images) <= self._max_forward_batch:
             return self._forward_one(images, target_sizes, threshold)
@@ -240,7 +192,6 @@ class LayoutDetector:
             target_sizes: torch.Tensor,
             threshold: float,
     ) -> list[list[LayoutBox]]:
-        """One forward + post-process; per-image LayoutBox lists in each input's coordinates."""
         inputs = self.processor(images=list(images), return_tensors="pt").to(self.device)
         outputs = self.model(**inputs)
         # post_process does a first coarse cut at threshold; BoxFilter filters IoU/area finer afterwards
@@ -256,7 +207,6 @@ class LayoutDetector:
             page_boxes: list[LayoutBox] = []
             for box, lid, sc in zip(boxes, labels, scores):
                 x1, y1, x2, y2 = box
-                # clamp to the source bounds
                 x1 = max(0.0, min(float(x1), src.width))
                 x2 = max(0.0, min(float(x2), src.width))
                 y1 = max(0.0, min(float(y1), src.height))
@@ -305,19 +255,10 @@ class LayoutDetector:
     def detect(self, images: Sequence[Image.Image]) -> list[list[LayoutBox]]:
         """Run layout detection on a batch of images (multi-pass, add-only).
 
-        pdfjs-rendered small / centered / letter-spaced text scores systematically lower
-        (~0.1-0.15 below pdfium on the same page), so whole blocks (cover info bars, notice
-        titles, dense body) go missing. Three add-only passes:
-
-        1. main pass: source image at 0.5 threshold; results are never removed or altered
-           (sharpening lowers some edge scores, so replace-style merging causes new misses);
-        2. second pass: sharpened full image at 0.45, adding text-family candidates;
-        3. third pass: sharpened top/bottom half-page tiles at 0.38 — squashing a long page
-           into 800x800 compresses it vertically, and half pages zoom ~1.5x, recovering lines
-           that shrank too far.
-
-        Only candidates with low overlap against kept boxes (IoU / containment thresholds)
-        are added, avoiding duplicate "line inside block" boxes. Pass whitelists live in __init__.
+        pdfjs-rendered text scores ~0.1-0.15 below pdfium, so whole blocks go missing; three add-only
+        passes (results are never replaced, since sharpening lowers some edge scores): source at 0.5,
+        sharpened full image at 0.45 (text-family), sharpened half-page tiles at 0.38.
+        Candidates only pass with low overlap vs kept boxes (IoU/containment); whitelists in __init__.
         """
         if not images:
             return []
@@ -373,23 +314,12 @@ class LayoutDetector:
         return out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2) Box filter — NMS + area / score thresholds
-# ─────────────────────────────────────────────────────────────────────────────
 class BoxFilter:
     """Pure numpy NMS + filtering; no extra dependencies.
 
-    Accuracy knobs:
-    - ``iou_threshold``: NMS overlap cap (higher dedupes more aggressively).
-    - ``min_area``: smallest box area (px²).
-    - ``min_score``: score floor; below the detector's pass thresholds on purpose, leaving
-      a path for the 0.38-0.5 recall candidates.
-    - ``contain_threshold``: nested dedup — a small box covered by a larger kept box beyond
-      this ratio is dropped (NMS cannot see low-IoU nesting).
-    - ``unclip_ratio``: grow each box by this proportion after NMS (0.05 = 5% per side) for
-      more VL context; too much swallows neighbouring regions. Most useful when doclayout
-      edges are tight.
-    - ``expand_pixels``: extra absolute pixels per side, additive with the ratio.
+    min_score sits below the detector's pass thresholds on purpose, leaving a path for the 0.38-0.5
+    recall candidates; contain_threshold catches nested boxes NMS can't see; unclip/expand add VL
+    context after NMS (too much swallows neighbouring regions).
     """
 
     def __init__(
@@ -409,7 +339,6 @@ class BoxFilter:
         self.expand_pixels = float(expand_pixels)
 
     def _unclip(self, box: np.ndarray) -> np.ndarray:
-        """Grow a box by ratio + absolute pixels; returns (x1,y1,x2,y2)."""
         x1, y1, x2, y2 = box
         w = x2 - x1
         h = y2 - y1
@@ -422,11 +351,7 @@ class BoxFilter:
             boxes: list[LayoutBox],
             page_size: Optional[tuple[int, int]] = None,
     ) -> list[LayoutBox]:
-        """Filter + NMS + optional unclip; ``page_size`` (W, H) clamps unclip to the image.
-
-        Returns kept ``LayoutBox`` items in score order.
-        """
-        # score-descending first
+        """Filter + NMS + optional unclip (``page_size`` (W,H) clamps unclip); returns kept boxes in score order."""
         keep: list[LayoutBox] = []
         candidates = sorted(boxes, key=lambda b: b.score, reverse=True)
         for b in candidates:
@@ -436,9 +361,8 @@ class BoxFilter:
                 continue
             keep.append(b)
 
-        # Nested dedup: keep large boxes first and drop small boxes significantly covered by them —
-        # NMS only sees IoU, which is low for a large box wrapping a small one. Judged by descending
-        # area; the output keeps score order (survivors are used as a filter).
+        # Nested dedup, judged by descending area: NMS only sees IoU, which is low for a large box
+        # wrapping a small one. Survivors then filter the score-ordered output.
         survivors: list[LayoutBox] = []
         for b in sorted(keep, key=lambda b: b.area, reverse=True):
             if any(
@@ -471,19 +395,10 @@ class BoxFilter:
         return keep
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3) Region cropper — numpy slicing
-# ─────────────────────────────────────────────────────────────────────────────
 class RegionCropper:
-    """Crop LayoutBox regions with numpy into RGB ``np.ndarray``."""
-
     def crop(self, rgb: np.ndarray, box: LayoutBox) -> np.ndarray:
-        """Crop ``box`` from an RGB ``(H, W, 3)`` uint8 array.
-
-        Returns a 1×1 black placeholder if the clamped box collapses to empty.
-        """
+        """Crop ``box`` from RGB ``(H,W,3)`` uint8; a collapsed box yields a 1×1 black placeholder."""
         x1, y1, x2, y2 = box.int_rect
-        # clamp to valid range
         h, w = rgb.shape[:2]
         x1 = max(0, min(x1, w))
         x2 = max(0, min(x2, w))
@@ -494,14 +409,8 @@ class RegionCropper:
         return rgb[y1:y2, x1:x2].copy()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4) VL predictor — PaddleOCR-VL-1.6, batched per label
-# ─────────────────────────────────────────────────────────────────────────────
 class VLPredictor:
-    """Wrap PaddleOCR-VL-1.6 to run VL recognition over a batch of crops."""
-
-    # Official PaddleOCR-VL task prompts (from the PaddleOCR-VL-1.6 README).
-    # Only labels differing from the default are listed; the rest fall back to "_default" (_prompt_for).
+    # Official PaddleOCR-VL task prompts; unlisted labels fall back to "_default" (_prompt_for).
     DEFAULT_PROMPTS: dict[str, str] = {
         "table": "Table Recognition:",
         "formula": "Formula Recognition:",
@@ -517,8 +426,8 @@ class VLPredictor:
             prompts: Optional[dict[str, str]] = None,
             dtype: torch.dtype = torch.bfloat16,
             max_new_tokens: int = 512,
-            max_pixels: int = 1280 * 28 * 28,  # official default 1MP (longest_edge)
-            min_pixels: int = 112896,  # official default shortest_edge
+            max_pixels: int = 1280 * 28 * 28,
+            min_pixels: int = 112896,
             max_forward_batch: int = 10,  # max images per VL forward (VRAM cap)
             attn_impl: str = "sdpa",
             repetition_penalty: float = 1.15,  # prevents repetition loops in batched inference
@@ -531,8 +440,8 @@ class VLPredictor:
             self.processor.tokenizer.padding_side = "left"
         except Exception:
             pass
-        # Critical: must be AutoModelForImageTextToText, not AutoModelForCausalLM — the
-        # CausalLM entry point left the model blind to images and it invented output
+        # Critical: must be AutoModelForImageTextToText, not AutoModelForCausalLM (that entry point
+        # left the model blind to images and it invented output)
         self.model = (
             AutoModelForImageTextToText.from_pretrained(
                 model_path,
@@ -566,7 +475,6 @@ class VLPredictor:
     def _build_messages(
             self, images: Sequence[Image.Image], label: str
     ) -> list[list[dict]]:
-        """Build one messages conversation per image (apply_chat_template batched mode needs a list)."""
         user_text = self._prompt_for(label)
         return [
             [
@@ -592,8 +500,7 @@ class VLPredictor:
             tokenize=True,
             return_dict=True,
             return_tensors="pt",
-            # transformers 5.x: processor.__call__ kwargs must live in the ``processor_kwargs``
-            # dict, else a deprecation warning is emitted
+            # transformers 5.x: processor kwargs must live in ``processor_kwargs`` else a warning fires
             processor_kwargs={
                 "padding": True,  # padding required for batched inference
                 "images_kwargs": {
@@ -629,16 +536,12 @@ class VLPredictor:
     def recognize_batch(
             self, images: Sequence[Image.Image], label: str
     ) -> list[str]:
-        """Batch inference with one prompt per label; splits into sub-batches above max_forward_batch.
-
-        e.g. 12 text crops with max_forward_batch=4 → 3 VL forwards (4+4+4)
-        """
+        """Batch inference with one prompt per label; splits into sub-batches above max_forward_batch."""
         if not images:
             return []
         cap = self.max_forward_batch
         if len(images) <= cap:
             return self._forward_once(images, label)
-        # split into sub-batches
         out: list[str] = []
         for start in range(0, len(images), cap):
             chunk = list(images[start:start + cap])
@@ -650,7 +553,6 @@ class VLPredictor:
             self, items: list[tuple[Image.Image, str]]
     ) -> list[str]:
         """Bucket by label → one batch inference per bucket → restore the original order."""
-        # buckets: label -> [(idx, img)]
         buckets: dict[str, list[tuple[int, Image.Image]]] = {}
         for idx, (img, lab) in enumerate(items):
             buckets.setdefault(lab, []).append((idx, img))
@@ -665,42 +567,31 @@ class VLPredictor:
         return [r or "" for r in results]  # type: ignore[arg-type]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5) Pipeline — chains the four steps above
-# ─────────────────────────────────────────────────────────────────────────────
 class OCRPipeline:
-    """Run layout detection → filter → crop → VL recognition → in-memory results for one image.
-
-    All accuracy/speed/VRAM knobs come in as constructor args (defaults align with Wise-Paddle).
-    """
+    """Run layout detection → filter → crop → VL recognition → in-memory results; knobs are constructor args."""
 
     def __init__(
             self,
             layout_model_path: str,
             vl_model_path: str,
             device: torch.device,
-            # ---- LayoutDetector ----
             score_threshold: float = 0.5,
-            # ---- BoxFilter ----
             box_iou_threshold: float = 0.5,
             box_min_area: float = 16 * 16,
             box_min_score: float = 0.35,
-            # Nested dedup: a small box covered by a larger one beyond this ratio is dropped (NMS misses low-IoU nesting)
             box_contain_threshold: float = 0.6,
             # Fixed small expansion only: proportional expansion grows with the box, so a large text box
             # reaches into small headings inside it and the two white covers overlap
             box_unclip_ratio: float = 0.0,
             box_expand_pixels: float = 2.0,
-            # ---- VLPredictor ----
-            # 256 truncates long paragraphs (measured: longest text block cut at 1087 chars vs 1157
-            # complete at 512); short blocks hit EOS early, so the cost is only extra decode on long ones
+            # 256 truncates long paragraphs (longest text block measured at 1157 chars); short blocks
+            # hit EOS early, so 512 only costs extra decode on long ones
             max_new_tokens: int = 512,
             vl_min_pixels: int = 112896,
             vl_max_pixels: int = 1280 * 28 * 28,
             vl_max_forward_batch: int = 4,
             vl_repetition_penalty: float = 1.15,
             vl_do_sample: bool = False,
-            # ---- runtime ----
             max_regions: int = 100,
             dtype: torch.dtype = torch.bfloat16,
             attn_impl: str = "sdpa",
@@ -737,7 +628,6 @@ class OCRPipeline:
             image: Image.Image,
             layouts: list[LayoutBox],
     ) -> list[tuple[Image.Image, LayoutBox]]:
-        """Filter boxes on one page and crop them into ``(PIL.Image, LayoutBox)`` pairs."""
         kept = self.box_filter.filter(
             layouts, page_size=(image.width, image.height)
         )[: self.max_regions]
@@ -752,36 +642,28 @@ class OCRPipeline:
         return crops
 
     def process_page(self, image: Image.Image) -> PageResult:
-        """Process a single image end-to-end; all results are returned in memory."""
         return self.process_pages([image])[0]
 
     def process_pages(self, images: Sequence[Image.Image]) -> list[PageResult]:
         """Process a batch end-to-end (cross-page tensor stacking + cross-page label bucketing).
 
-        Gains over calling ``process_page`` per page:
-        - layout: one stacked forward for the whole batch (the processor resizes to 800x800);
-        - VL: crops bucketed by label across pages (``recognize_grouped``), each forward capped
-          by ``max_forward_batch``;
-        - VRAM grows with batch size; 4 pages is safe on an 8GB card (single-page engine peak
-          ~3.1GB, with the layout/VL backbones resident).
-
-        Each page's ``elapsed_seconds`` is the whole-batch time (layout is one joint forward).
+        Layout is one stacked forward for the whole batch and VL crops are bucketed by label across
+        pages (each forward capped by max_forward_batch). VRAM grows with batch size; 4 pages is safe
+        on an 8GB card (single-page peak ~3.1GB with both backbones resident). Each page's
+        ``elapsed_seconds`` is the whole-batch time.
         """
         if not images:
             return []
         st = time.perf_counter()
         images = [im.convert("RGB") for im in images]
 
-        # 1) layout detection: one stacked forward for the batch (auto-resize inside)
         layouts_per_page = self.layout.detect(images)
 
-        # 2) per-page filter + crop
         pages_crops = [
             self._crop_page(image, layouts)
             for image, layouts in zip(images, layouts_per_page)
         ]
 
-        # 3) cross-page label bucketing → VL batch inference
         all_items = [
             (img, box.label_name)
             for page_crops in pages_crops
@@ -789,7 +671,6 @@ class OCRPipeline:
         ]
         markdowns = self.vl.recognize_grouped(all_items)
 
-        # 4) restore per-page RegionResult (markdowns follow all_items order; slice by cursor)
         elapsed = time.perf_counter() - st
         results: list[PageResult] = []
         cursor = 0

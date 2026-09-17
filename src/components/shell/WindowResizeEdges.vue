@@ -2,12 +2,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "../../lib/env";
 
-/**
- * Resize hit zones for the borderless window (Linux only):
- * with `decorations: false`, Windows still keeps its native resize border but
- * GTK/WebKitGTK has no resize entry point; these 8 zones call startResizeDragging
- * (permissions in capabilities/default.json). Other platforms use the native border.
- */
+/** Resize hit zones for the borderless window: with `decorations: false`, Windows keeps a native
+ *  resize border but GTK/WebKitGTK has none, so these 8 zones call startResizeDragging. */
 const isLinux = isTauri && /Linux/i.test(navigator.userAgent);
 const win = isLinux ? getCurrentWindow() : null;
 

@@ -2,13 +2,10 @@
 import { nextTick, ref, watch } from "vue";
 import { pendingConfirm, settleConfirm } from "../../composables/confirm";
 
-/**
- * Custom confirm dialog renderer (global singleton, mounted once in AppShell).
- * z-index 500: above settings page(10)/toolbar(20)/row menu(30)/hover card(100), below toast(1000).
- */
+/** Global confirm singleton. z-index 500: above settings/toolbar/row menu/hover card, below toast (1000). */
 const confirmBtn = ref<HTMLButtonElement | null>(null);
 
-// Focus the confirm button on open so Enter/Esc keyboard use is visible
+// Focus the confirm button so Enter/Esc use is visible
 watch(pendingConfirm, (c) => {
   if (c) void nextTick(() => confirmBtn.value?.focus());
 });
@@ -46,7 +43,7 @@ function onKeydown(e: KeyboardEvent): void {
   position: fixed;
   inset: 0;
   z-index: 500;
-  background: rgba(0, 0, 0, 0.35); /* dimmed mask: highlights dialog, blocks interaction below */
+  background: rgba(0, 0, 0, 0.35); /* dim + block interaction below */
   display: flex;
   align-items: center;
   justify-content: center;

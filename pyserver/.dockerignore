@@ -1,4 +1,3 @@
-# Build context keeps only what runtime needs: app/ + models + dependency pins
 .venv/
 **/__pycache__/
 **/*.pyc

@@ -1,7 +1,5 @@
-"""OCR engine singleton: lazy load + single-lock serialization.
-
-Simplified from Wise-Paddle's PipelinePool + BatchScheduler — Rust is the sole scheduler and
-there is no multi-user concurrency, so one pipeline instance + a threading.Lock is enough.
+"""OCR engine singleton: lazy load + single-lock serialization; Wise-Paddle's PipelinePool and
+BatchScheduler were removed because Rust is the sole scheduler with no multi-user concurrency.
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ class Engine:
 
     def recognize(self, image) -> PageResult:
         pipe = self.load()
-        with self._lock:  # one instance, inference serialized
+        with self._lock:
             return pipe.process_page(image)
 
     def recognize_batch(self, images: Sequence) -> list[PageResult]:

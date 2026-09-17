@@ -2,7 +2,6 @@
 import type { Block } from "./Block";
 
 /**
- * Page: 1-based index; finished = OCR done, translated = LLM pass done.
- * Older JSONs lack translated, defaulting to false → re-translated automatically.
+ * 1-based page; finished = OCR done, translated = LLM pass done (older JSONs default false → re-translated).
  */
 export type PageInfo = { index: number, finished: boolean, translated: boolean, blocks: Array<Block>, };

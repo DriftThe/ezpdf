@@ -1,16 +1,9 @@
-//! Table block parsing: PaddleOCR-VL's table markup stream → grid structure.
+//! PaddleOCR-VL table markup → grid. Marks: `<fcel>` new cell (text follows), `<ecel>` empty,
+//! `<lcel>` merge left (occupies a slot, left colspan += 1), `<ucel>`/`<xcel>` merge up (rendered
+//! blank), `<nl>` next row.
 //!
-//! Markup vocabulary (PP-StructureV3 / PaddleOCR-VL table text stream):
-//! - `<fcel>` new cell (followed by its text, possibly empty)
-//! - `<ecel>` empty cell
-//! - `<lcel>` merge with the left cell (occupies a slot, no new cell → left colspan += 1)
-//! - `<ucel>` merge with the cell above (v1 renders a blank cell: visually equivalent for stats tables)
-//! - `<xcel>` cross merge (same as above)
-//! - `<nl>` newline: next table row
-//!
-//! cols = max slot count across rows (slots = new-cell marks + `<lcel>`s). Short rows, usually
-//! just the last one cut at a page boundary, get a blank spanning cell appended rather than
-//! failing. Unshaped markup → None: no translate, no cover, original pixels show.
+//! cols = max slot count per row. Short rows (page-boundary truncation) get a blank spanning cell;
+//! unshaped markup → None (no translate, no cover, original pixels).
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -29,7 +22,6 @@ const MAX_CELLS: usize = 4000;
 #[serde(rename_all = "camelCase")]
 pub struct TableCell {
     pub text: String,
-    /// Colspan (≥1); +1 per `<lcel>`.
     pub colspan: u32,
 }
 
@@ -105,7 +97,6 @@ fn parse_line(line: &str) -> Option<(Vec<TableCell>, usize)> {
     Some((cells, slots))
 }
 
-/// Parse the markup stream → grid; untrustworthy shape → None.
 pub fn parse_markup(content: &str) -> Option<TableGrid> {
     let mut rows: Vec<TableRow> = Vec::new();
     let mut slots: Vec<usize> = Vec::new();
@@ -127,7 +118,6 @@ pub fn parse_markup(content: &str) -> Option<TableGrid> {
     if cols == 0 || cols > MAX_SLOTS || rows.len() > MAX_ROWS || total > MAX_CELLS {
         return None;
     }
-    // Short rows (page-boundary truncation) get one blank spanning cell padded to cols.
     for (row, n) in rows.iter_mut().zip(slots.iter()) {
         if *n < cols {
             row.cells.push(TableCell { text: String::new(), colspan: (cols - n) as u32 });
@@ -160,8 +150,7 @@ pub fn source_matrix(grid: &TableGrid) -> String {
     payload(grid).to_string()
 }
 
-/// Validate a table result: the shape must match the request (row count + cells per row), with
-/// string or null elements. On success returns compact JSON, numbers/bools normalized to strings.
+/// Validate a table result against the request shape (row + per-row cell counts); returns compact JSON, numbers/bools normalized.
 pub fn validate_value(value: &serde_json::Value, expected: &[usize]) -> Result<String, String> {
     let rows = match value {
         serde_json::Value::Array(rows) => rows,
@@ -278,10 +267,8 @@ mod tests {
         assert!(parse_markup("").is_none());
         assert!(parse_markup("   <nl><nl>  ").is_none());
         assert!(parse_markup("普通文本，没有表格标记").is_none());
-        // too many rows
         let too_many = "<fcel>a<nl>".repeat(MAX_ROWS + 1);
         assert!(parse_markup(&too_many).is_none());
-        // too many slots
         let too_wide = format!("{}<nl>", "<fcel>x".repeat(MAX_SLOTS + 1));
         assert!(parse_markup(&too_wide).is_none());
     }
@@ -291,7 +278,6 @@ mod tests {
         let expected = vec![2usize, 1];
         let ok = serde_json::json!([["译文", null], [42]]);
         assert_eq!(validate_value(&ok, &expected).unwrap(), "[[\"译文\",null],[\"42\"]]");
-        // the {"table": [...]} wrapper is also accepted
         let wrapped = serde_json::json!({"table": [["a", "b"], ["c"]]});
         assert_eq!(validate_value(&wrapped, &expected).unwrap(), "[[\"a\",\"b\"],[\"c\"]]");
     }
@@ -299,13 +285,9 @@ mod tests {
     #[test]
     fn validate_rejects_broken_shapes() {
         let expected = vec![2usize, 1];
-        // wrong row count
         assert!(validate_value(&serde_json::json!([["a", "b"]]), &expected).is_err());
-        // wrong row length
         assert!(validate_value(&serde_json::json!([["a"], ["b"]]), &expected).is_err());
-        // not an array
         assert!(validate_value(&serde_json::json!("a|b|c"), &expected).is_err());
-        // nested array as a cell
         assert!(validate_value(&serde_json::json!([[["a"], "b"], ["c"]]), &expected).is_err());
     }
 

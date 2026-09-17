@@ -9,7 +9,7 @@ import EmptyState from "../common/EmptyState.vue";
 const { t } = useI18n();
 const lib = useLibraryStore();
 
-/** New folder: inline input in the sidebar (no system prompt to avoid interrupting); backend adds a logical group only */
+/** New folder: inline input (no system prompt); the backend adds a logical group only */
 const folderOpen = ref(false);
 const folderName = ref("");
 const folderInput = ref<HTMLInputElement | null>(null);
@@ -139,7 +139,6 @@ function cancelNewFolder(): void {
 .grow {
   flex: 1;
 }
-/* Inline new-folder input row */
 .side-new-folder {
   display: flex;
   gap: 4px;

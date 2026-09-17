@@ -25,42 +25,32 @@ import { useSettingsStore, type LlmInvokePayload } from "./settings";
 
 /** Non-Tauri (browser pnpm dev): invoke always fails, so the whole scheduler stays silent. */
 
-/** Page-level predicates shared by scheduler sampling. */
 const needsOcr = (p: PageInfo): boolean => !p.finished;
 const needsTranslation = (p: PageInfo): boolean => p.finished && !p.translated;
 
-/** Types to translate: empty = built-in default (same fallback as Rust is_translatable). */
+/** Empty set = built-in default (same fallback as Rust). */
 function effectiveTypes(): readonly string[] {
   const types = useSettingsStore().general.translateTypes;
   return types.length > 0 ? types : DEFAULT_TRANSLATED_TYPES;
 }
 
-/** Table backfill: pages translated before table support have table blocks with no
- *  translation and would never be revisited. Only tables whose grid Rust has parsed and
- *  persisted (parsable) and whose translation is empty qualify; other types are untouched. */
+/** Backfill tables translated before table support (parsed grid, no translation); other types untouched. */
 function needsTableBackfill(p: PageInfo): boolean {
   if (!p.finished || !effectiveTypes().includes("table")) return false;
   return p.blocks.some((b) => b.type === "table" && !b.translation && !!b.grid);
 }
 
-/** Translation sampling predicate: untranslated pages + pages with backfill tables. */
 const needsWork = (p: PageInfo): boolean => needsTranslation(p) || needsTableBackfill(p);
 
 export const useParseStore = defineStore("parse", () => {
-  /** Global pause/resume. */
   const paused = ref(false);
-  /** pyserver lifecycle (driven by ocr://status; unknown/disconnected/failed show gray/red). */
   const serviceStatus = ref<ServiceStatus>("unknown");
-  /** Environment report (bootstrap JSON; null = not checked). */
   const envReport = ref<OcrEnvReport | null>(null);
-  /** Service/install log stream (ocr://log; ring-capped to the last 200 lines). */
   const envLogs = ref<string[]>([]);
-  /** Translation log stream (llm://log; ring-capped to 200 lines, shown in the LLM pane). */
   const llmLogs = ref<string[]>([]);
 
   const checking = ref(false);
   const installing = ref(false);
-  /** Install progress (ocr://install; null = not installing). */
   const installProgress = ref<InstallProgress | null>(null);
 
   function togglePaused(): void {
@@ -84,7 +74,7 @@ export const useParseStore = defineStore("parse", () => {
     pushCapped(llmLogs, line);
   }
 
-  // event subscriptions (once per singleton); non-Tauri silently fails
+  // once per singleton; listen() rejects silently outside Tauri
   listen<string>("ocr://log", (e) => pushLog(e.payload)).catch(() => undefined);
   listen<string>("llm://log", (e) => pushLlmLog(e.payload)).catch(() => undefined);
   listen<ServiceStatus>("ocr://status", (e) => {
@@ -94,7 +84,6 @@ export const useParseStore = defineStore("parse", () => {
     installProgress.value = e.payload;
   }).catch(() => undefined);
 
-  /** Check the environment: Rust runs bootstrap.py and caches the full report. */
   async function checkEnv(): Promise<void> {
     checking.value = true;
     try {
@@ -108,8 +97,6 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** One-click install: env + torch variant → model download, progress via ocr://install.
-   *  The backend skips already-installed envs (CPU ⊂ GPU) and aborts GPU mode without nvidia-smi. */
   async function installService(mode: "cpu" | "gpu", useMirror: boolean): Promise<void> {
     if (installing.value) return;
     installing.value = true;
@@ -137,7 +124,6 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** Lifecycle commands (start/stop): toast on failure; status comes from ocr://status. */
   async function runServiceCommand(command: string): Promise<void> {
     try {
       await invoke(command);
@@ -149,8 +135,7 @@ export const useParseStore = defineStore("parse", () => {
   const startService = (): Promise<void> => runServiceCommand("ocr_start");
   const stopService = (): Promise<void> => runServiceCommand("ocr_stop");
 
-  /** Online handshake: read /health for the server-advertised batch size before every OCR
-   *  request so config changes take effect. Throws on failure (never send with a stale number). */
+  /** Re-read /health before every online batch so a changed batch size takes effect. */
   async function handshakeOnline(): Promise<ParseServiceHealth> {
     const ocr = useSettingsStore().ocr;
     const health = await invoke<ParseServiceHealth>("ocr_health", {
@@ -161,7 +146,6 @@ export const useParseStore = defineStore("parse", () => {
     return health;
   }
 
-  /** Health report → localized toast text. */
   function healthDetail(h: ParseServiceHealth): string {
     return t("ocr.healthDetail", {
       pid: h.pid ?? "?",
@@ -170,12 +154,10 @@ export const useParseStore = defineStore("parse", () => {
     });
   }
 
-  /** Health report → one-line English log summary (logs are English everywhere). */
   function healthLine(h: ParseServiceHealth): string {
     return `pid ${h.pid ?? "-"} ${h.elapsedMs}ms max_batch_pages=${h.maxBatchPages}`;
   }
 
-  /** Online connect (registered as the OCR target only after a health probe); throws on failure. */
   async function connectOnline(url: string): Promise<ParseServiceHealth> {
     const health = await invoke<ParseServiceHealth>("ocr_start_remote", {
       url,
@@ -185,7 +167,6 @@ export const useParseStore = defineStore("parse", () => {
     return health;
   }
 
-  /** Start service: local spawns the child; online probes then registers the endpoint. */
   async function startServiceForMode(): Promise<void> {
     if (useSettingsStore().ocr.mode !== "online") {
       await startService();
@@ -199,7 +180,6 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** Health-probe only, without changing connection state. */
   async function testRemote(): Promise<void> {
     try {
       const h = await handshakeOnline();
@@ -212,8 +192,6 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** Auto-wake on start: local needs env + models ready (else log only); online skips the
-   *  local check and just probes + registers. */
   async function autoStartIfEnabled(): Promise<void> {
     const settings = useSettingsStore();
     if (!isTauri || !settings.general.autoLaunch) return;
@@ -237,40 +215,29 @@ export const useParseStore = defineStore("parse", () => {
     await startService();
   }
 
-  // ---- page-level OCR scheduling loop: parse_pdf bridge ----
-  // The frontend schedules: one tick = one batch (same book) → Rust parse_pdf, one atomic write.
-  // Event-driven: a finished batch continues the chain; an empty sweep goes standing.
-
-  /** A batch in flight (re-entry guard). */
   const parsing = ref(false);
-  /** Standing flag (no work); a wake event clears it. */
   const standing = ref(false);
-  /** Wake arrived while a batch was in flight, taken over after it finishes. */
+  /** Wake arrived mid-batch, taken over after it finishes; external wakes reset strikes. */
   let wakePending = false;
-  /** Whether the pending wake includes an external event (only those reset strikes). */
   let wakePendingExternal = false;
-  /** Local batch size (≤4 pages, same book). Online uses the server's advertised value. */
   const LOCAL_BATCH_SIZE = 4;
-  /** Last online handshake (advertised batch size + pid/elapsed, shown in settings). */
+  /** Server-advertised batch size from the last handshake (settings display too). */
   const onlineHealth = ref<ParseServiceHealth | null>(null);
-  /** Pages per batch: local = constant; online = advertised (fallback 4). */
   function currentBatchSize(): number {
     if (useSettingsStore().ocr.mode !== "online") return LOCAL_BATCH_SIZE;
     return onlineHealth.value?.maxBatchPages ?? LOCAL_BATCH_SIZE;
   }
-  /** First + 2 retries = 3 strikes → suspend that batch kind. */
+  /** First + 2 retries = 3 strikes. */
   const MAX_ATTEMPTS = 3;
-  /** Per-book strike counts, OCR and translation separate; cleared on an external wake. */
+  /** Per-book strikes, OCR and translation separate; an external wake clears them. */
   const ocrStrikes = new Map<string, number>();
   const translateStrikes = new Map<string, number>();
 
-  /** OCR precondition: parse service connected (local spawned / online registered). */
   function canOcr(): boolean {
     return serviceStatus.value === "connected";
   }
 
-  /** Translation precondition: only LLM config, independent of the parse service.
-   *  With translation off the payload is still non-null (bypass needs no keys). */
+  /** Translation needs only LLM config; bypass (translation off) still sends a keyless payload. */
   function canTranslate(): boolean {
     return llmPayload() !== null;
   }
@@ -290,13 +257,11 @@ export const useParseStore = defineStore("parse", () => {
     translateStrikes.clear();
   }
 
-  /** Kick the loop (idempotent: a running chain continues by itself).
-   *  external=false (self-continuation) keeps strike counts, so a broken LLM is not
-   *  retried 3× per batch; real events (open/import/connect/resume) reset them. */
+  /** Kick the loop; external events (open/import/connect/resume) reset strikes, self-continuation keeps them. */
   function wake(external = true): void {
     if (!isTauri || paused.value) return;
     if (parsing.value) {
-      wakePending = true; // in flight: the finally after this batch takes over, no lost wake
+      wakePending = true;
       wakePendingExternal = wakePendingExternal || external;
       return;
     }
@@ -305,8 +270,6 @@ export const useParseStore = defineStore("parse", () => {
     queueMicrotask(() => void tick());
   }
 
-  /** One tick: pick a book → ring-collect a batch → offscreen render → parse_pdf → apply.
-   *  Continues via queueMicrotask unless pickBook returns null (then standing). */
   async function tick(): Promise<void> {
     if (!isRunnable()) {
       if (isTauri) {
@@ -321,7 +284,7 @@ export const useParseStore = defineStore("parse", () => {
     try {
       const book = await pickBook();
       if (!book) {
-        standing.value = true; // sweep found nothing → wait for an event
+        standing.value = true;
         clearStrikes();
         pushLlmLog("[ui] sweep done: no processable pages → standing");
         notifyLlmMissingOnce();
@@ -364,19 +327,13 @@ export const useParseStore = defineStore("parse", () => {
     name: string;
     state: PDF;
     focused: boolean;
-    /** translate = finished-but-untranslated pages (priority over new OCR); ocr = unfinished pages. */
     kind: "ocr" | "translate";
   }
 
-  /** Translation needs baseUrl/apiKey/model; the settings store assembles the compat snapshot. */
   function llmPayload(): LlmInvokePayload | null {
     return useSettingsStore().llmInvokePayload();
   }
 
-  /** Pick a book: focused first, then index order; per-book load_pdf reads the JSON flags
-   *  (no extra progress query command). Translation retries outrank new OCR — a finished but
-   *  untranslated page may be an orphan from a restart or a failed translation. A saturated
-   *  translation strike count suspends only that branch; OCR keeps running (and vice versa). */
   async function pickBook(): Promise<PickTarget | null> {
     const lib = useLibraryStore();
     const index = lib.repoIndex;
@@ -398,7 +355,6 @@ export const useParseStore = defineStore("parse", () => {
       ) {
         return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "translate" };
       }
-      // OCR needs the parse service; skip while unavailable and wake once connected
       if (
         canOcr() &&
         (ocrStrikes.get(entry.id) ?? 0) < MAX_ATTEMPTS &&
@@ -410,7 +366,7 @@ export const useParseStore = defineStore("parse", () => {
     return null;
   }
 
-  /** Book state: the focused book uses the store cache, background books read via load_pdf. */
+  /** Focused book from the store cache; background books re-read via load_pdf. */
   async function bookState(entry: PDFStruct): Promise<PDF | null> {
     const lib = useLibraryStore();
     if (entry.id === lib.currentPdfId && lib.currentPdf) return lib.currentPdf;
@@ -422,7 +378,6 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** If a sweep ends with no work but the focused book needs translation and LLM is unset → notify once. */
   let llmMissingNotified = false;
   function notifyLlmMissingOnce(): void {
     if (llmMissingNotified || llmPayload()) return;
@@ -434,7 +389,6 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** Ring start: the focused book from the current page, background books from page 1. */
   function startPageFor(book: PickTarget): number {
     const reader = useReaderStore();
     return book.focused
@@ -442,7 +396,7 @@ export const useParseStore = defineStore("parse", () => {
       : 1;
   }
 
-  /** Ring-collect ≤limit hits (pick null skips a page; limit defaults to the local batch size). */
+  /** Collect ≤limit hits in a ring starting at startPageFor. */
   function ringCollect<T>(
     book: PickTarget,
     pick: (page: PageInfo) => T | null,
@@ -458,7 +412,6 @@ export const useParseStore = defineStore("parse", () => {
     return out;
   }
 
-  /** Process a batch: translation retry or OCR (translation queued alongside via queueTranslate). */
   async function processBatch(book: PickTarget): Promise<void> {
     if (book.kind === "translate") {
       await processTranslateBatch(book);
@@ -467,7 +420,6 @@ export const useParseStore = defineStore("parse", () => {
     }
   }
 
-  /** Translation retry batch: finished but untranslated pages (ring, focused book from current). */
   async function processTranslateBatch(book: PickTarget): Promise<void> {
     const lib = useLibraryStore();
     const llm = llmPayload();
@@ -475,25 +427,24 @@ export const useParseStore = defineStore("parse", () => {
     const root = lib.repoRoot;
     if (!root) throw new Error("no repository open");
     const pages = ringCollect(book, (page) => (needsWork(page) ? page.index : null));
-    if (pages.length === 0) return; // race: all translated already
+    if (pages.length === 0) return;
     pushLlmLog(`[ui] translation retry batch p${pages.join(",")} (${book.name})`);
     const outcome = await invokeTranslate(root, book.id, pages, llm);
     if (outcome.updatedPages.length === 0) {
-      throw new Error("translation made no progress"); // count a strike, avoid spinning on a bad page
+      throw new Error("translation made no progress");
     }
   }
 
-  /** OCR batch: ring-collect unfinished pages → offscreen render → parse_pdf → queue translation.
-   *  Online renegotiates via /health first (a failed handshake counts as a batch failure). */
+  /** A failed online handshake counts as a batch failure. */
   async function processOcrBatch(book: PickTarget): Promise<void> {
     const lib = useLibraryStore();
     if (useSettingsStore().ocr.mode === "online") await handshakeOnline();
     const limit = currentBatchSize();
     const take = ringCollect(book, (page) => (needsOcr(page) ? page : null), limit);
-    if (take.length === 0) return; // race: all finished already
+    if (take.length === 0) return;
     pushLlmLog(`[ui] OCR batch p${take.map((p) => p.index).join(",")} (${book.name})`);
 
-    // offscreen render uses the Rust-resolved path (load_pdf validates it); never build name-id
+    // offscreen render uses the Rust-resolved path; never build name-id
     const pdfPath = book.state.pdfPath;
     const doc = await loadPdfDoc(book.id, pdfPath);
     const pages: ParsePageInput[] = [];
@@ -510,22 +461,20 @@ export const useParseStore = defineStore("parse", () => {
       pages,
     });
     applyOutcome(book.id, outcome);
-    // translation is decoupled from the OCR pipeline: queue it as soon as the batch returns,
-    // then move to the next OCR batch. Same-book translation is serial (Rust makes interior
-    // pages concurrent) so contexts don't collide across batches.
+    // decoupled: queue translation as soon as the batch returns, then start the next OCR batch
     queueTranslate(book.id, take.map((p) => p.index));
   }
 
-  /** Per-book translation chain: serial, failures don't block later batches, in-flight books are skipped. */
+  /** Per-book serial chain; failures don't block later batches, in-flight books are skipped. */
   const translateChains = new Map<string, Promise<boolean>>();
 
   function queueTranslate(bookId: string, pages: number[]): void {
-    if (paused.value) return; // paused: leave untranslated pages to the retry branch
+    if (paused.value) return;
     const llm = llmPayload();
     if (!llm || pages.length === 0) return;
-    // true = no progress (all failed / paused) — wake the retry branch after the chain drains
+    // true = no progress → wake the retry branch after the chain drains
     const run = async (): Promise<boolean> => {
-      if (paused.value) return true; // paused: skip, wake resumes it
+      if (paused.value) return true;
       const root = useLibraryStore().repoRoot;
       if (!root) return false;
       const outcome = await invokeTranslate(root, bookId, pages, llm);
@@ -543,15 +492,12 @@ export const useParseStore = defineStore("parse", () => {
     void next.then((noProgress) => {
       if (translateChains.get(bookId) !== next) return;
       translateChains.delete(bookId);
-      // untranslated pages left (failure/missed) → wake the retry branch; background books
-      // have no cache, so fall back to noProgress. wake(false) keeps strike counts so a
-      // broken LLM is not retried every batch.
+      // wake(false) keeps strikes so a broken LLM isn't retried every batch
       const cached = useLibraryStore().pdfs[bookId];
       if (noProgress || cached?.pages.some(needsWork)) wake(false);
     });
   }
 
-  /** Call translate_pdf once and merge results into the store (shared by retry branch and chain). */
   async function invokeTranslate(
     root: string,
     bookId: string,
@@ -563,8 +509,7 @@ export const useParseStore = defineStore("parse", () => {
     return outcome;
   }
 
-  /** Apply results: patch the cached focused book in place; background books are already
-   *  written atomically by Rust and read fresh next round. */
+  /** Patch the cached focused book; background books are written by Rust and re-read next round. */
   function applyOutcome(id: string, outcome: ParseOutcome): void {
     const lib = useLibraryStore();
     const cached = lib.pdfs[id];
@@ -574,8 +519,7 @@ export const useParseStore = defineStore("parse", () => {
     cached.pages = cached.pages.map((p) => updated.get(p.index) ?? p);
   }
 
-  // ---- skeleton backfill on open: books lopdf could not read have empty pages;
-  //      fill the measured count once pdfjs geometry is ready, then wake the scheduler ----
+  // books lopdf could not read have empty pages; fill the pdfjs count once geometry is ready
   watch(
     () => {
       const lib = useLibraryStore();
@@ -593,13 +537,13 @@ export const useParseStore = defineStore("parse", () => {
       await invoke("prefill_pages", { root: lib.repoRoot, id, total: numPages });
       if (lib.currentPdfId !== id) return; // switched books: JSON filled, store untouched
       await lib.loadPdf(id);
-      wake(); // skeleton ready → run now
+      wake();
     } catch (e) {
       toast(String(e), "error");
     }
   }
 
-  // service connected (reconnect or manual start) → wake the chain
+  // service connected → wake the chain
   watch(serviceStatus, (s) => {
     if (s === "connected") wake();
   });

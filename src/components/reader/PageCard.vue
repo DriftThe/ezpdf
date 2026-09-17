@@ -13,14 +13,11 @@ import PdfPageCanvas from "./PdfPageCanvas.vue";
 import TableCover from "./TableCover.vue";
 
 /**
- * Single page card: pdfjs canvas (self-virtualized in PdfPageCanvas) + block overlay.
- * Card geometry = this page's real widthPt/heightPt × zoom (measured per page via
- * reader.pageSizeFor; a page-1 size assumption misaligns scan PDFs with mixed sizes).
- * Overlay system (absolute positioning, never reflows the original PDF):
- * - Original pane: dashed boxes for all blocks (controlled by the hover-preview toggle);
- * - Translation pane: a white cover box only for render types (lib/blocks.ts isOverlayType
- *   = user-checked types + formula), text = translation ?? content (during bypass
- *   translation is all null → shows the original content), font size auto-fitted by v-fit.
+ * Single page card: pdfjs canvas + absolutely-positioned block overlay (never reflows the PDF).
+ * Card geometry = this page's real widthPt/heightPt × zoom (reader.pageSizeFor): a page-1 size
+ * assumption misaligns scan PDFs with mixed page sizes.
+ * Original pane: dashed boxes (hover-preview toggle); translation pane: a white cover for render
+ * types (isOverlayType = checked types + formula), text = translation ?? content, fitted by v-fit.
  */
 const props = defineProps<{
   doc: PDFDocumentProxy | null;
@@ -56,7 +53,6 @@ const rects = computed<Rect[]>(() =>
   })),
 );
 
-/** Original pane: block type → dashed box colour (image green, formula purple, table orange, title gets a bottom edge) */
 const TYPE_CLASS: Record<string, string> = {
   image: "lbl-figure",
   formula: "lbl-formula",
@@ -69,19 +65,16 @@ function typeClass(type: string): string {
   return TYPE_CLASS[type] ?? "lbl-text";
 }
 
-/** Percentage rect → absolute-position style (shared by original dashed box / translation white box) */
 function rectStyle(r: Rect): Record<string, string> {
   return { left: r.left + "%", top: r.top + "%", width: r.width + "%", height: r.height + "%" };
 }
 
 interface CoverRect extends Rect {
-  /** Content HTML: body escaped + formulas via KaTeX (lib/richText.ts) */
   html: string;
 }
 
-/** Translation covers: render types with non-empty text only; content becomes rich text (empty figure etc. draws no white box) */
 const settings = useSettingsStore();
-/** User-checked translate types (Settings → General); unchecked types are not covered, original PDF pixels show through */
+/** User-checked translate types; unchecked ones keep the original pixels */
 const overlayTypes = computed(() => new Set(settings.general.translateTypes));
 
 const coverRects = computed<CoverRect[]>(() =>
@@ -95,21 +88,14 @@ const coverRects = computed<CoverRect[]>(() =>
     .map((r) => ({ ...r, html: renderRichText(r.block.translation ?? r.block.content) })),
 );
 
-/**
- * Table covers in the translation pane: drawn only when table is checked and Rust has
- * parsed a grid. Unchecked / not yet processed (no grid / parse failed) → not drawn,
- * original PDF pixels show through.
- */
 const tableRects = computed<Rect[]>(() =>
   rects.value.filter(
     (r) => r.block.type === "table" && r.block.grid && isOverlayType(r.block.type, overlayTypes.value),
   ),
 );
 
-// ---- Original-pane hover preview: hovering a translated block shows a translation card
-// (a floating layer, deliberately not a title attribute). Position follows the cursor
-// (mousemove throttled via rAF, positioning only, no content re-render); in the lower
-// viewport half it flips upward (above → translateY(-100%)), clamped horizontally.
+// ---- Original-pane hover preview: a floating card (deliberately not a title attr) follows the cursor
+// (rAF-throttled, position only) and flips upward in the lower viewport half.
 
 interface HoverInfo {
   html: string;
@@ -120,7 +106,6 @@ interface HoverInfo {
 
 const hoverInfo = ref<HoverInfo | null>(null);
 
-/** Mouse position → card placement (12px right margin; flips up in the lower 45% of the viewport) */
 function previewPos(e: MouseEvent): { x: number; y: number; above: boolean } {
   const cardMax = Math.min(460, window.innerWidth - 24);
   const x = Math.max(8, Math.min(e.clientX + 16, window.innerWidth - cardMax - 12));
@@ -132,7 +117,7 @@ function previewPos(e: MouseEvent): { x: number; y: number; above: boolean } {
 function onBlockEnter(r: Rect, e: MouseEvent): void {
   const translated = r.block.translation?.trim();
   if (!translated) return; // untranslated (including non-translate types): don't pop
-  // Table: translation is a 2-D matrix JSON; convert to readable multi-line text (don't show raw JSON)
+  // Table translation is matrix JSON: render it as readable lines, not raw JSON
   const grid = r.block.grid;
   const html =
     r.block.type === "table" && grid
@@ -144,7 +129,7 @@ function onBlockEnter(r: Rect, e: MouseEvent): void {
 let moveRaf = 0;
 let pendingMove: MouseEvent | null = null;
 
-/** Follow the cursor: update position at most once per frame (html unchanged, Vue only patches style) */
+/** Follow the cursor, at most once per frame (html unchanged, only style patched) */
 function onBlockMove(e: MouseEvent): void {
   if (!hoverInfo.value) return;
   pendingMove = e;
@@ -172,7 +157,7 @@ onBeforeUnmount(() => {
   if (moveRaf) cancelAnimationFrame(moveRaf);
 });
 
-// Close the preview when the toggle turns off: the indicator boxes disappear with it
+// Toggle off: the hover targets disappear, so close the preview too
 watch(
   () => reader.hoverPreview,
   (on) => {
@@ -180,12 +165,9 @@ watch(
   },
 );
 
-// ---- v-fit: cover-box font-size auto-fit (box size × text amount → fills without overflowing) ----
-// Performance constraint (measured): resizing all cover boxes at once on zoom and running the
-// binary search synchronously would block the main thread for seconds on large books. So measure
-// only boxes near the viewport: off-screen boxes are merely marked dirty (WeakSet, zero layout)
-// and fitted when they enter the viewport (IntersectionObserver, one screen of margin); updated /
-// ResizeObserver also just mark off-screen boxes dirty.
+// ---- v-fit: cover-box font-size auto-fit. Measured constraint: fitting every cover synchronously on
+// zoom would block the main thread for seconds on large books, so only viewport-near boxes are measured;
+// off-screen boxes are just marked dirty (zero layout) and fitted on entry. ----
 
 const roMap = new WeakMap<HTMLElement, ResizeObserver>();
 const visibleBoxes = new Set<HTMLElement>();
@@ -193,10 +175,8 @@ const dirtyBoxes = new WeakSet<HTMLElement>();
 const pendingFits = new Set<HTMLElement>();
 let flushRaf = 0;
 
-// KaTeX font load completes = glyph widths/line heights changed: re-fit the currently
-// visible boxes (small count, negligible cost). The listener is global while this code
-// runs once per page-card instance — it must be removed on unmount, otherwise every page
-// leaves a never-collected listener (its closure pins each instance's visibleBoxes).
+// KaTeX font load changes glyph widths → re-fit the visible boxes. This runs once per page-card
+// instance, so the global listener must be removed on unmount or its closure leaks (pins visibleBoxes).
 const onFontsLoaded = (): void => {
   for (const box of visibleBoxes) fitCoverText(box);
 };
@@ -224,7 +204,7 @@ function fitCoverText(box: HTMLElement): void {
   span.style.fontSize = `${size}px`; // when even MIN overflows, stay at MIN and let overflow:hidden truncate
 }
 
-/** Request a fit: off-screen boxes just get marked dirty for the IO; visible boxes join the batch and are measured at frame end (updated/RO deduped within a frame) */
+/** Off-screen boxes → dirty for the IO; visible boxes join the per-frame fit batch */
 function requestFit(box: HTMLElement): void {
   if (!visibleBoxes.has(box)) {
     dirtyBoxes.add(box);
@@ -253,7 +233,7 @@ const fitIO = new IntersectionObserver(
       visibleBoxes.add(box);
       if (dirtyBoxes.has(box)) {
         dirtyBoxes.delete(box);
-        fitCoverText(box); // initial/entry report: fit before paint, avoiding a flash of the default size
+        fitCoverText(box); // entry report: fit before paint to avoid a flash of the default size
       }
     }
   },
@@ -262,14 +242,14 @@ const fitIO = new IntersectionObserver(
 
 const vFit: Directive<HTMLElement> = {
   mounted(box) {
-    dirtyBoxes.add(box); // don't measure now: wait for the first IO report, off-screen boxes pay no layout cost
+    dirtyBoxes.add(box); // wait for the first IO report; off-screen boxes pay no layout cost
     fitIO.observe(box);
-    const ro = new ResizeObserver(() => requestFit(box)); // zoom/window change → re-fit
+    const ro = new ResizeObserver(() => requestFit(box));
     ro.observe(box);
     roMap.set(box, ro);
   },
   updated(box) {
-    requestFit(box); // re-fit after text/geometry updates
+    requestFit(box);
   },
   unmounted(box) {
     fitIO.unobserve(box);
@@ -288,8 +268,7 @@ const vFit: Directive<HTMLElement> = {
       <!-- pdfjs canvas: same render in both panes, all differences live in the overlays -->
       <PdfPageCanvas :doc="doc" :page-number="pageNumber" :zoom="zoom" />
 
-      <!-- Original: dashed OCR block boxes (also hides the hover targets when the preview is off);
-           hovering a translated block pops the translation card (a floating layer, not a title) -->
+      <!-- Original: dashed OCR block boxes (also hides hover targets when preview is off) -->
       <template v-if="kind === 'original' && reader.hoverPreview">
         <div
           v-for="(r, ri) in rects"
@@ -303,8 +282,7 @@ const vFit: Directive<HTMLElement> = {
         />
       </template>
 
-      <!-- Translation: white covers for render types only (uncovered types show original PDF pixels);
-           box text = translation ?? content: during bypass all null → original content -->
+      <!-- Translation: covers for render types only; text = translation ?? content (bypass → original) -->
       <template v-if="kind === 'translation'">
         <div
           v-for="(r, ri) in coverRects"
@@ -317,7 +295,7 @@ const vFit: Directive<HTMLElement> = {
         >
           <span class="cover-text" v-html="r.html"></span>
         </div>
-        <!-- Table: redrawn as a web table (the component goes transparent when it doesn't fit, original PDF pixels show through) -->
+        <!-- Table: web table; transparent when it doesn't fit, original pixels show through -->
         <TableCover
           v-for="(r, ri) in tableRects"
           :key="`t${ri}`"
@@ -330,7 +308,7 @@ const vFit: Directive<HTMLElement> = {
     <div class="page-num">{{ pageNumber }}</div>
   </div>
 
-  <!-- Original-pane hover translation card: teleported to body (escapes the scroll container clip), fixed to follow the cursor -->
+  <!-- Hover card: teleported to body to escape the scroll-container clip -->
   <Teleport to="body">
     <div
       v-if="hoverInfo"
@@ -362,7 +340,7 @@ const vFit: Directive<HTMLElement> = {
   user-select: none;
 }
 
-/* ---- Original: dashed boxes (page is always white, so annotation colours are theme-independent) ---- */
+/* ---- Original: dashed boxes (annotation colours are theme-independent: the page is always white) ---- */
 .blk-line {
   position: absolute;
   border: 1px dashed var(--page-annot);
@@ -388,7 +366,7 @@ const vFit: Directive<HTMLElement> = {
   border-bottom-style: solid;
 }
 
-/* ---- Original-pane hover translation card (teleported to body): white card follows the cursor, doesn't capture the mouse ---- */
+/* ---- Hover card (teleported to body): follows the cursor, doesn't capture the mouse ---- */
 .hover-preview {
   position: fixed;
   z-index: 100;
@@ -411,13 +389,11 @@ const vFit: Directive<HTMLElement> = {
   margin: 0.1em 0;
 }
 
-/* ---- Translation: white covers (unchecked types get no cover) ---- */
-/* Base styles in main.css .cover-box (shared with TableCover) */
+/* ---- Translation covers (base styles in main.css .cover-box; shared with TableCover) ---- */
 .blk-cover {
   padding: 0;
 }
-/* Formula: KaTeX vertically centered; KaTeX display formulas carry 1em top/bottom margins,
-   which in a ~16pt-high box push content to the top and force v-fit to pick a tiny size — trim them */
+/* Formula: KaTeX display margins (~1em) would eat a small box and force a tiny v-fit size — trim them */
 .cover-formula {
   display: flex;
   align-items: center;
@@ -430,7 +406,6 @@ const vFit: Directive<HTMLElement> = {
   width: 100%;
   line-height: 1.25;
   color: #222;
-  /* font size is set dynamically by the v-fit directive from box size × text amount */
-  overflow-wrap: anywhere; /* long words/URLs also wrap, width never overflows */
+  overflow-wrap: anywhere;
 }
 </style>

@@ -1,16 +1,10 @@
-// Pack production resources: relocatable Python 3.12 (bare interpreter + pip),
-// pyserver code, and system prompts -> src-tauri/resources/ (gitignored; mapped
-// into the install dir by bundle.resources in tauri.conf.json).
+// Pack production resources: relocatable Python 3.12 (bare interpreter + pip), pyserver code, and
+// system prompts -> src-tauri/resources/ (gitignored; bundle.resources maps it into the install dir).
 //
 // Usage: node scripts/pack-runtime.mjs [--force]
-//
-// Python sources, in order:
-//   1. cached archive in src-tauri/resources/.cache/<asset>
-//   2. EZPDF_PYTHON_PKG pointing at a local archive (offline / slow download)
-//   3. mirror chain: NJU -> ghfast -> GitHub direct (NJU ~1MB/s, direct ~20KB/s)
-//
-// Deps are not preinstalled; the in-app "install service" fetches them.
-// Safety assertion: dist/ must not contain the auth.cfg apiKey (never ship the dev key).
+// Python sources in order: cached archive in .cache/ -> EZPDF_PYTHON_PKG -> mirror chain
+// NJU -> ghfast -> GitHub direct (NJU ~1MB/s, direct ~20KB/s). Deps are not preinstalled; the
+// in-app "install service" fetches them. Safety assertion: dist/ must not contain the auth.cfg apiKey.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -25,9 +19,7 @@ const cacheDir = path.join(resDir, ".cache");
 const PY_TAG = "20260901";
 const PY_VERSION = "3.12.14";
 
-/** Target platform -> python-build-standalone asset triple + interpreter path in the bundle.
- *  Tauri does not cross-compile, so the host platform is always used;
- *  EZPDF_PACK_PLATFORM only drills other platforms locally. */
+/** Target platform -> python-build-standalone triple + interpreter path; EZPDF_PACK_PLATFORM only drills other platforms locally. */
 const PLATFORM = process.env.EZPDF_PACK_PLATFORM ?? process.platform;
 const ARCH = process.env.EZPDF_PACK_ARCH ?? process.arch;
 
@@ -45,9 +37,8 @@ function targetFor() {
 }
 
 const TARGET = targetFor();
-/** Use the stripped variant: unstripped Linux libpython is 209MB and bin/python3.12 98MB
- *  (Windows ships .pdb); stripping only drops debug symbols, verified on both platforms
- *  with an interpreter self-check plus venv creation. */
+/** Use the stripped variant (unstripped Linux libpython is 209MB; stripping only drops debug
+ *  symbols, verified on both platforms with an interpreter self-check plus venv creation). */
 const PY_VARIANT = "install_only_stripped";
 const PY_ASSET = `cpython-${PY_VERSION}+${PY_TAG}-${TARGET.triple}-${PY_VARIANT}.tar.gz`;
 const ASSET_ENC = encodeURIComponent(PY_ASSET);
@@ -70,11 +61,9 @@ function rmrf(p) {
 
 function dirSize(p) {
   let total = 0;
-  // Dedupe hard links: the bundled Python reuses one binary (bin/python3.12, libpython*.so),
-  // tar/deb store it once, so the reported size must count it once (else Linux doubles it)
+  // Dedupe hard links: the bundled Python reuses one binary, tar/deb store it once, so count once
   const seen = new Set();
   for (const entry of fs.readdirSync(p, { withFileTypes: true, recursive: true })) {
-    // fs.readdirSync recursive gives relative paths in entry.parentPath
     const abs = path.join(entry.parentPath ?? p, entry.name);
     try {
       const st = fs.statSync(abs);
@@ -93,8 +82,6 @@ function dirSize(p) {
 function fmtSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
 }
-
-// ---- pyserver code / system prompts -------------------------------------------------------
 
 const PY_EXCLUDES = new Set([".venv", "models", "__pycache__", ".pytest_cache", "cache"]);
 
@@ -159,8 +146,7 @@ async function fetchArchive() {
   throw new Error("所有下载源均失败；可手动下载后设 EZPDF_PYTHON_PKG 指向压缩包");
 }
 
-/** Windows ships bsdtar (System32/tar.exe); a PATH tar may be MSYS GNU tar,
- *  which treats `D:\...` as a remote host ("Cannot connect to D:"), so use the system tar */
+/** Windows ships bsdtar (System32/tar.exe); a PATH GNU tar misreads `D:\...` as a remote host, so use the system tar */
 const TAR =
   process.platform === "win32" && fs.existsSync("C:\\Windows\\System32\\tar.exe")
     ? "C:\\Windows\\System32\\tar.exe"
@@ -185,9 +171,8 @@ function extractPython(archive) {
   log(`Python 运行时就位：${path.relative(root, target)}（${fmtSize(dirSize(target))}）`);
 }
 
-/** Trim unused bulk (tkinter/tcl/test suite/headers/share + Windows debug symbols).
- *  Linux layout checked against the tar manifest: lib/tcl9.0, lib/tk9.0, lib/libtcl9.0.so,
- *  lib/pythonX.Y/config-<triplet>, share/, include/; Windows has tcl/ + DLLs/*.pdb. */
+/** Trim unused bulk (tkinter/tcl/test/headers/share + Windows .pdb); Linux layout checked against
+ *  the tar manifest (lib/tcl9.0, config-<triplet>, share/, include/), Windows has tcl/ + DLLs/*.pdb. */
 function trimPython(dir) {
   const [major, minor] = PY_VERSION.split(".");
   const version = `${major}.${minor}`;
@@ -237,7 +222,6 @@ function assertNoAuthKey() {
   log("安全断言通过：dist 未包含 auth.cfg 的 apiKey");
 }
 
-// ---- main -----------------------------------------------------------------------------------
 
 async function main() {
   fs.mkdirSync(resDir, { recursive: true });

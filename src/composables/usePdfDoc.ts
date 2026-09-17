@@ -2,14 +2,10 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { openPdf } from "../lib/pdfjs";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 
-/** pdfjs doc cache keyed by stable PDF id, shared by both panes and the offscreen renderer.
- *  LRU ≤2: the pinned focused book is never evicted; background books go oldest-first.
- *  Always free via loadingTask.destroy() (PDFDocumentProxy.destroy() is gone in v6);
- *  a failed load clears the cache so it can be retried. */
+/** LRU ≤2 with the focused book pinned; destroy via loadingTask.destroy() (PDFDocumentProxy.destroy() is gone in v6). */
 const MAX_DOCS = 2;
 /** Insertion-ordered Map as an LRU (touch = delete + reinsert, newest last). */
 const cache = new Map<string, Promise<PDFDocumentProxy>>();
-/** Pinned focused books — never evicted. */
 const pinnedIds = new Set<string>();
 
 function touch(id: string): void {
@@ -19,7 +15,6 @@ function touch(id: string): void {
   cache.set(id, task);
 }
 
-/** Evict over capacity: destroy unpinned docs oldest-first. */
 function evictOverflow(): void {
   for (const id of cache.keys()) {
     if (cache.size <= MAX_DOCS) break;
@@ -36,9 +31,7 @@ export function loadPdfDoc(id: string, pdfPath: string, pin = false): Promise<PD
     evictOverflow();
     return cached;
   }
-  // PDF bytes never travel through invoke: convertFileSrc maps the absolute path to an
-  // asset:// URL streamed by Rust's asset protocol under the repo scope; openPdf attaches
-  // the CJK cMaps / standard fonts / wasm / ICC resource paths.
+  // bytes never travel through invoke: convertFileSrc → asset:// streamed by Rust's asset scope
   const task = openPdf(convertFileSrc(pdfPath)).promise;
   cache.set(id, task);
   task.catch(() => {
@@ -49,7 +42,6 @@ export function loadPdfDoc(id: string, pdfPath: string, pin = false): Promise<PD
   return task;
 }
 
-/** Free a doc via loadingTask.destroy() (also aborts in-flight load requests). */
 export async function destroyPdfDoc(id: string): Promise<void> {
   pinnedIds.delete(id);
   const task = cache.get(id);
@@ -58,6 +50,5 @@ export async function destroyPdfDoc(id: string): Promise<void> {
   try {
     await (await task).loadingTask.destroy();
   } catch {
-    // destroy failure is not fatal (e.g. a crashed worker)
   }
 }

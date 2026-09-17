@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
-# Split an already-built pyserver image into part files and upload them to a Release.
+# Split an already-built pyserver image into parts and upload to a Release.
 #
-#   bash scripts/docker-snapshot.sh cpu v0.1.2 pyserver-v0.1.2
-#   bash scripts/docker-snapshot.sh gpu v0.1.2 pyserver-v0.1.2
-#     arg2 = build-source tag (names the files), arg3 = target Release
-#     (images ship separately from installers: pyserver-<app tag>; defaults to arg2)
-#
-# Requires the image (ezpdf-pyserver:cpu / :gpu, see pyserver/Dockerfile), a logged-in gh
-# (GITHUB_TOKEN in CI), and GNU coreutils split/sha256sum (Linux).
-#
-# Parts are needed because a GitHub Release asset is capped at 2 GiB while the tar is
-# ~2.1GB (CPU) / ~4.5GB (GPU); downloaders merge them (cat or copy /b) then docker load.
+#   bash scripts/docker-snapshot.sh <cpu|gpu> <tag> [release]
+#     arg2 names the files (build-source tag); arg3 is the target Release (defaults to arg2).
+# Images ship separately from the app installers as pyserver-<app tag>. Parts because a Release
+# asset is capped at 2 GiB while the tar is ~2.1GB (CPU) / ~4.5GB (GPU); downloaders merge
+# (cat / copy /b) then docker load. Needs the image, a logged-in gh, and GNU split/sha256sum.
 set -euo pipefail
 
 variant="${1:?usage: docker-snapshot.sh <cpu|gpu> <tag> [release]}"

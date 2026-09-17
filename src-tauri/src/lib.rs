@@ -22,9 +22,7 @@ pub struct RepoTree {
     pub pdfs: Vec<PDFStruct>,
 }
 
-/// Index entry (one line of the flat .ezrepo index):
-/// id = stable identifier minted at import (survives moves/renames); name = PDF name;
-/// bind = repo-relative bound-JSON path (None = unparsed); belong = logical folder label (None = root).
+/// One .ezrepo index line; id is minted at import; bind is the repo-relative bound-JSON path (None = unparsed); belong is a logical folder label (None = root).
 #[derive(Clone, Serialize, TS, Deserialize)]
 #[ts(export)]
 pub struct PDFStruct {
@@ -34,10 +32,9 @@ pub struct PDFStruct {
     pub belong: Option<String>,
 }
 
-// ---- Domain model. The bound JSON <name>-<id>.json and the load_pdf payload are isomorphic; ts-rs exports to bindings/, re-exported by the frontend's domain.ts ----
+// ---- Domain model: bound JSON and load_pdf payload are isomorphic; ts-rs bindings are re-exported by domain.ts ----
 
-/// Book-level parse state: Pending / Processing / Finished.
-/// Import creates Pending; the OCR pipeline drives the other two.
+/// Book-level parse state; import creates Pending, the OCR pipeline drives the other two.
 #[derive(Clone, Copy, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "PascalCase")]
@@ -47,8 +44,7 @@ pub enum PDFStatus {
     Finished,
 }
 
-/// Layout block: one OCR-detected region and its source/translated text.
-/// kind is a PP-DocLayoutV3 label; kept as a string (not an enum) so new labels pass through.
+/// One OCR-detected region; kind is a PP-DocLayoutV3 label kept as a string so new labels pass through.
 #[derive(Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -59,17 +55,14 @@ pub struct Block {
     pub content: String,
     /// [x1, y1, x2, y2] top-left → bottom-right, in PDF points.
     pub loc: [f64; 4],
-    /// Translation; None for figures/formulas (formulas render as-is) or when untranslated.
-    /// Table blocks hold the translated matrix as JSON text (2-D string|null, see table.rs).
+    /// Translation; None = render content as-is. Table blocks hold the translated matrix as 2-D JSON (see table.rs).
     pub translation: Option<String>,
-    /// Table grid (only for type == "table"): Rust parses content and persists it; the frontend
-    /// only renders. None when unparsable or not yet backfilled → no cover.
+    /// Table grid (type == "table"; Rust parses+persists, frontend renders): None = unparsable/not backfilled → no cover.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid: Option<table::TableGrid>,
 }
 
-/// Page: 1-based index; finished = OCR done, translated = LLM pass done.
-/// Older JSONs lack translated, defaulting to false → re-translated automatically.
+/// 1-based page; finished = OCR done, translated = LLM pass done (older JSONs default false → re-translated).
 #[derive(Clone, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -89,9 +82,7 @@ pub struct BindDoc {
     pub pages: Vec<PageInfo>,
 }
 
-/// Full PDF entity: identity fields + bound-JSON content.
-/// bind = repo-relative bound-JSON path, None = unbound (legacy entry);
-/// status/pages come from the bound JSON (Pending/empty when bind is None).
+/// PDF entity; bind = repo-relative bound-JSON path (None = legacy/unbound → Pending, no pages).
 #[derive(Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -138,7 +129,6 @@ fn check_and_build_repo(root: &str) -> Result<bool, String> {
     }
     let sign_path = dir.join(".ezrepo");
     match is_dir_empty(dir) {
-        // Empty dir = new repo: create the index, return true. Existing .ezrepo = open it.
         Ok(true) => {
             write_text_atomic(&sign_path, r#"{"folders":[],"pdfs":[]}"#)?;
             Ok(true)
@@ -149,7 +139,6 @@ fn check_and_build_repo(root: &str) -> Result<bool, String> {
     }
 }
 
-/// Read the repo index (.ezrepo).
 fn read_index(root: &str) -> Result<RepoTree, String> {
     let sign_path = Path::new(root).join(".ezrepo");
     let text = fs::read_to_string(&sign_path)
@@ -157,15 +146,13 @@ fn read_index(root: &str) -> Result<RepoTree, String> {
     serde_json::from_str(&text).map_err(|e| format!("Failed when reading string: {e}"))
 }
 
-/// Atomic text write: temp file + rename (on Windows rename overwrites the target).
-/// Half-written files are worse than a failed write.
+/// Atomic write: temp file + rename (Windows rename overwrites), so never a half-written file.
 pub(crate) fn write_text_atomic(path: &Path, text: &str) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, text).map_err(|e| format!("failed to write temporary file: {e}"))?;
     fs::rename(&tmp, path).map_err(|e| format!("failed to replace file: {e}"))
 }
 
-/// Atomic pretty-JSON write.
 pub(crate) fn write_json_atomic<T: serde::Serialize>(
     path: &Path,
     value: &T,
@@ -176,12 +163,10 @@ pub(crate) fn write_json_atomic<T: serde::Serialize>(
     write_text_atomic(path, &text)
 }
 
-/// Write the repo index back (pretty JSON).
 fn write_index(root: &str, index: &RepoTree) -> Result<(), String> {
     write_json_atomic(&Path::new(root).join(".ezrepo"), index, ".ezrepo")
 }
 
-/// Shared "id not in index" message for read/delete/move/parse paths.
 pub(crate) fn pdf_not_found(id: &str) -> String {
     format!("PDF id not found in repo: {id}")
 }
@@ -204,8 +189,7 @@ fn bind_file_name(name: &str, id: &str) -> String {
     format!("{name}-{id}.json")
 }
 
-/// Lexical repo-relative path check: non-empty, no absolute/drive prefix/`..` (`.` allowed).
-/// Stops hand-written .ezrepo name/bind values from escaping the repo root.
+/// Lexical repo-relative check (`.` allowed, `..`/absolute rejected): stops hand-written .ezrepo values escaping the root.
 fn check_relative(rel: &str) -> Result<(), String> {
     let ok = !rel.is_empty()
         && Path::new(rel)
@@ -218,8 +202,7 @@ fn check_relative(rel: &str) -> Result<(), String> {
     }
 }
 
-/// Resolve a bound-JSON path: lexical check + canonicalize must stay inside the repo root
-/// (lexical stops `../`; canonicalize catches symlink escapes).
+/// Resolve a bound-JSON path: lexical check + canonicalize inside the root (the latter catches symlink escapes).
 fn resolve_bind_path(root: &str, rel: &str) -> Result<PathBuf, String> {
     check_relative(rel)?;
     let root_canon = fs::canonicalize(root).map_err(|e| format!("invalid repo root path: {e}"))?;
@@ -233,9 +216,7 @@ fn resolve_bind_path(root: &str, rel: &str) -> Result<PathBuf, String> {
 
 #[tauri::command]
 async fn gettree_from_config(app: tauri::AppHandle, root: &str) -> Result<RepoTree, String> {
-    // Read the index first to confirm a repo, then grant the asset protocol for its root only;
-    // the static scope is empty, so this runtime grant is the single entry point (least privilege).
-    // AppHandle is injected by Tauri; the frontend invoke args are unchanged.
+    // Grant the asset protocol for this repo root only (static scope is empty → single least-privilege entry point).
     let index = read_index(root)?;
     app.asset_protocol_scope()
         .allow_directory(root, true)
@@ -243,19 +224,17 @@ async fn gettree_from_config(app: tauri::AppHandle, root: &str) -> Result<RepoTr
     Ok(index)
 }
 
-/// Read and parse a bound JSON (shared by load_pdf and parse.rs batch writes).
 pub(crate) fn read_bind_doc(abs: &Path) -> Result<BindDoc, String> {
     let text = fs::read_to_string(abs).map_err(|e| format!("Failed when reading bound JSON: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("Failed when parsing bound JSON: {e}"))
 }
 
-// Open a PDF by its stable id: look up the .ezrepo entry, resolve paths, read the bound JSON.
+// Open a PDF by its stable id.
 #[tauri::command]
 async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
     let dir = Path::new(_root);
     let entry = find_pdf(_root, _id)?;
 
-    // Physical names minted at import: name-id.pdf / name-id.json.
     let name = entry.name.clone();
     let pdf_name = pdf_file_name(&name, &entry.id);
     check_relative(&pdf_name)?; // a hand-written .ezrepo can smuggle ../ via name/id
@@ -264,9 +243,7 @@ async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
         Some(rel) => {
             let json_abs = resolve_bind_path(_root, rel)?;
             let mut doc = read_bind_doc(&json_abs)?;
-            // Backfill table grids for older JSONs, then persist so the frontend can render
-            // them and only re-translate parsable untranslated tables. Same file lock as
-            // translation batches to avoid clobbering a concurrent read-modify-write.
+            // Backfill table grids for older JSONs and persist (same per-book lock as translation batches, so no clobbering).
             let lock = parse::file_lock(_root, &_id);
             let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             if parse::backfill_table_grids(&mut doc) {
@@ -289,8 +266,7 @@ async fn load_pdf(_root: &str, _id: &str) -> Result<PDF, String> {
     })
 }
 
-/// Content hash → 12 hex-char stable id; same content = same id (blocks duplicate imports).
-/// DefaultHasher's algorithm can change across versions, but ids only need repo-local uniqueness.
+/// 12 hex-char content id (same content = same id, blocks duplicates); DefaultHasher may vary across versions but ids need only repo-local uniqueness.
 fn content_id(bytes: &[u8]) -> String {
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
@@ -303,8 +279,7 @@ fn pdf_page_count(bytes: &[u8]) -> Option<u32> {
     u32::try_from(doc.get_pages().len()).ok()
 }
 
-/// Import one file: validate → content-hash id → copy in (name-id naming) → write bound JSON
-/// (pages pre-filled from the real count, empty on failure) → return (index entry, page warning).
+/// Import one file; the bound JSON pre-fills pages from the real count (empty on unreadable).
 fn import_one(
     dir: &Path,
     belong: Option<&str>,
@@ -366,8 +341,6 @@ fn import_one(
     ))
 }
 
-// Import PDFs (multi-file, best-effort): copy into the repo, create bound JSON
-// skeletons, append .ezrepo entries; report successes and per-file failures.
 #[tauri::command]
 async fn import_pdf(
     root: &str,
@@ -414,10 +387,8 @@ async fn import_pdf(
     })
 }
 
-// ---- Repo entry CRUD: folders are logical only (belong labels, nothing on disk);
-//      PDFs/bound JSONs always stay flat in the repo root; deleting a folder cascades ----
+// ---- Repo entry CRUD: folders are logical labels only; PDFs stay flat in the root; folder delete cascades ----
 
-/// Folder-name (logical label) check: non-empty, no separators/drive, not `.`/`..`, length-capped.
 fn check_folder_name(name: &str) -> Result<(), String> {
     let bad = name.trim().is_empty()
         || name.contains(['/', '\\', ':'])
@@ -431,14 +402,12 @@ fn check_folder_name(name: &str) -> Result<(), String> {
     }
 }
 
-/// Ensure the folder exists in the index (idempotent; belong is a label, no physical dir).
 fn ensure_folder(index: &mut RepoTree, name: &str) {
     if !index.folders.iter().any(|f| f == name) {
         index.folders.push(name.to_string());
     }
 }
 
-/// Create a folder (index only; duplicate names rejected).
 #[tauri::command]
 fn create_folder(root: &str, name: String) -> Result<RepoTree, String> {
     let name = name.trim().to_string();
@@ -452,8 +421,7 @@ fn create_folder(root: &str, name: String) -> Result<RepoTree, String> {
     Ok(index)
 }
 
-/// Delete a PDF's files (PDF + bound JSON), best-effort: the index is authoritative,
-/// so out-of-bounds/missing bind paths are non-fatal (stray files don't break anything).
+/// Best-effort file delete: the index is authoritative, so missing/out-of-bounds paths are non-fatal.
 fn remove_pdf_files(root: &str, entry: &PDFStruct) {
     let pdf_name = pdf_file_name(&entry.name, &entry.id);
     if check_relative(&pdf_name).is_ok() {
@@ -466,9 +434,7 @@ fn remove_pdf_files(root: &str, entry: &PDFStruct) {
     }
 }
 
-/// Delete a folder, cascading over all its PDFs (index + files). The frontend confirm dialog
-/// states the cascade. Racy in-flight OCR/translation batches abort safely when they fail to
-/// re-read a deleted bound JSON, so deleted data can't come back.
+/// Delete a folder and cascade over its PDFs (the confirm dialog says so); racy batches abort on the deleted JSON, so data can't come back.
 #[tauri::command]
 fn delete_folder(root: &str, name: String) -> Result<RepoTree, String> {
     let mut index = read_index(root)?;
@@ -492,7 +458,6 @@ fn delete_folder(root: &str, name: String) -> Result<RepoTree, String> {
     Ok(index)
 }
 
-/// Delete a PDF: remove its index entry + best-effort delete the PDF and bound JSON.
 #[tauri::command]
 fn delete_pdf(root: &str, id: &str) -> Result<RepoTree, String> {
     let mut index = read_index(root)?;
@@ -526,11 +491,9 @@ fn move_pdf(root: &str, id: &str, belong: Option<String>) -> Result<RepoTree, St
     Ok(index)
 }
 
-// ---- Settings persistence: dev = `config.json` in the repo root; prod = beside the app. ----
+// ---- Settings persistence ----
 
-/// Settings location: Windows prod = the exe's directory (NSIS per-user install, writable);
-/// Linux/macOS prod = ~/.ezpdf/config.json (deb/rpm install under root-owned /usr/lib and
-/// AppImage mounts read-only, so the app dir isn't writable). dev = source repo root.
+/// Windows prod = beside the exe (NSIS per-user, writable); Linux/macOS prod = ~/.ezpdf/config.json (install dir read-only); dev = repo root.
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     #[cfg(dev)]
     {
@@ -543,8 +506,7 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// Production settings path (separate fn so dev builds still compile-check it).
-/// Windows = beside the exe; elsewhere = ~/.ezpdf/config.json (same place as models).
+/// Production settings path (separate fn so dev builds compile-check it): beside the exe on Windows, else ~/.ezpdf/config.json.
 #[cfg_attr(dev, allow(dead_code))]
 fn prod_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if cfg!(windows) {
@@ -587,8 +549,7 @@ fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
     write_text_atomic(&path, &json)
 }
 
-// ---- OCR service: env report / env install / lifecycle. Probe+install details live in
-//      pyenv.rs, the process state machine in pyserver.rs ----
+// ---- OCR service commands (details in pyenv.rs / pyserver.rs) ----
 
 #[tauri::command]
 async fn ocr_env_report(paths: tauri::State<'_, pyenv::PyPaths>) -> Result<pyenv::OcrEnvReport, String> {
@@ -644,8 +605,7 @@ async fn ocr_stop(
     Ok(())
 }
 
-/// Remote-mode probe (the "Test" button): probe only, no connection state change.
-/// Returns the server's advertised batch size (used for hints and per-batch negotiation).
+/// Remote-mode probe ("Test" button): no state change; returns the server's advertised batch size.
 #[tauri::command]
 async fn ocr_health(url: String, token: String) -> Result<pyserver::ParseServiceHealth, String> {
     pyserver::probe_health(&url, &token).await
@@ -676,8 +636,7 @@ async fn ocr_start_remote(
 
 // ---- OCR parse loop: batch OCR + skeleton prefill + per-batch LLM translation; details in parse.rs / translate.rs ----
 
-/// Backend entry for one OCR batch (≤4 pages, same book): page images → whole-batch OCR →
-/// one atomic write. The frontend then fires translate_pdf concurrently (no waiting).
+/// One OCR batch (≤4 pages, same book): images → OCR → one atomic write; translate_pdf is fired concurrently.
 #[tauri::command]
 async fn parse_pdf(
     root: &str,
@@ -803,8 +762,7 @@ mod tests {
         assert!(check_relative("../foo.json").is_err());
         assert!(check_relative("sub/../../foo.json").is_err());
         assert!(check_relative("/abs/foo.json").is_err());
-        // Drive prefixes/backslashes only escape on Windows; on Unix `\` is an ordinary
-        // character, so these values stay in-repo and the assertions don't apply.
+        // Drive prefixes/backslashes escape only on Windows (on Unix `\` is ordinary), so these assertions are Windows-only.
         #[cfg(windows)]
         {
             assert!(check_relative(r"C:\evil\foo.json").is_err());

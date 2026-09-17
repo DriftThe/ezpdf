@@ -2,7 +2,4 @@
 import type { PDFStatus } from "./PDFStatus";
 import type { PageInfo } from "./PageInfo";
 
-/**
- * parse_pdf result: status summary + the pages actually updated.
- */
 export type ParseOutcome = { bookStatus: PDFStatus, updatedPages: Array<PageInfo>, };

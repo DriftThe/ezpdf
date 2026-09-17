@@ -7,13 +7,8 @@ import { parseTableMatrix } from "../../lib/table";
 
 /**
  * Table cover: redraws an OCR table as a web table in the translation pane.
- *
- * - Data from the bound JSON: `grid` (Rust persists it after parsing the markup stream) +
- *   `translation` (2-D matrix JSON text);
- * - Auto-fit: binary-search a font size into the loc box; if even the minimum overflows, the
- *   whole cover goes transparent (original PDF pixels show through, never worse than nothing);
- * - Merge: `colspan` (`<lcel>`) via CSS grid; vertical merges are parsed by Rust into empty cells;
- * - Cell text goes through renderRichText (inline `\(...\)` renders as KaTeX).
+ * `grid` + `translation` (2-D matrix JSON) come from the bound JSON; colspan merges via CSS grid;
+ * text goes through renderRichText (inline `\(...\)` → KaTeX).
  */
 const props = defineProps<{
   grid: TableGrid;
@@ -39,7 +34,7 @@ const rows = computed<DisplayCell[][]>(() =>
 );
 
 const el = ref<HTMLElement | null>(null);
-/** Doesn't fit → whole cover transparent (text/formula paths fall back to v-fit truncation; truncating a table loses content, so don't cover) */
+/** Doesn't fit → whole cover transparent (truncating a table would lose content, unlike text/formula v-fit) */
 const fitted = ref(true);
 
 const MIN = 5;
@@ -57,7 +52,7 @@ function fit(): void {
     MAX,
   );
   if (size === MIN && !(box.scrollHeight <= box.clientHeight + 1)) {
-    fitted.value = false; // even the minimum overflows: whole cover transparent (truncation would lose table content)
+    fitted.value = false;
     return;
   }
   box.style.setProperty("--tbl-font", `${size}px`);
@@ -94,7 +89,6 @@ onBeforeUnmount(() => {
   }
 });
 
-// Translation/grid change (translation done, parse state cleared) → re-fit
 watch([() => props.translation, () => props.grid], scheduleFit);
 </script>
 
@@ -124,12 +118,12 @@ watch([() => props.translation, () => props.grid], scheduleFit);
 </template>
 
 <style scoped>
-/* Base styles in main.css .cover-box (shared with PageCard's text blocks); size comes from the loc percentage */
+/* Base styles in main.css .cover-box; size comes from the loc percentage */
 .tbl-cover {
   padding: 1px;
   --tbl-font: 10px;
 }
-/* Doesn't fit: whole cover transparent → original PDF pixels show through (no mouse capture: the original pane's hover blocks are the interaction surface) */
+/* Doesn't fit: whole cover transparent → original pixels show through (truncating would lose cells) */
 .tbl-cover.is-unfit {
   opacity: 0;
   pointer-events: none;
@@ -150,7 +144,7 @@ watch([() => props.translation, () => props.grid], scheduleFit);
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-/* Bold first row (the overwhelming majority of OCR tables have a header there; no semantic judgement, just a visual hint) */
+/* Bold first row: most OCR tables have a header there (visual hint only, no semantic judgement) */
 .tbl td.cell-head {
   font-weight: 600;
   background: rgba(0, 0, 0, 0.03);

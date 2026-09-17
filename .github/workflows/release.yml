@@ -1,8 +1,6 @@
 name: Release
 
-# A v<version> tag (matching src-tauri/tauri.conf.json) builds Windows + Linux (deb/rpm)
-# installers into a draft Release (smoke test, then publish); workflow_dispatch also works.
-# The in-app update check reads GitHub's latest release, so drafts/prereleases are invisible.
+# A v<version> tag matching tauri.conf.json builds Windows+Linux installers into a draft Release (drafts/prereleases are invisible to the in-app update check); workflow_dispatch also works.
 on:
   push:
     tags: ["v*"]
@@ -70,9 +68,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # tauri build runs beforeBuildCommand (pnpm build + pack-runtime.mjs) itself:
-      # vue-tsc typecheck -> vite build -> bundled Python/pyserver/prompts -> LTO release -> package
-      # (pack-runtime.mjs picks the python-build-standalone asset for the runner; mirror chain ~50MB)
+      # tauri build runs beforeBuildCommand itself: pnpm build (vue-tsc + vite) -> pack-runtime.mjs (bundled Python/pyserver/prompts) -> LTO release -> package
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -94,8 +90,7 @@ jobs:
           uploadUpdaterJson: false # no Tauri updater plugin (the app polls GitHub Releases)
           args: ${{ matrix.args }}
 
-  # Release notes always come from docs/release-notes/v<version>.md (bilingual, tag-tracked),
-  # applied after the matrix; tauri-action's releaseBody is only a fallback.
+  # Release notes come from docs/release-notes/v<version>.md (applied after the matrix; releaseBody is a fallback)
   notes:
     needs: build
     runs-on: ubuntu-latest

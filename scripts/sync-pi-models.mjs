@@ -1,16 +1,8 @@
-// Vendor the @mariozechner/pi-ai model catalog into src/lib/piModels.generated.ts,
-// the single data source for provider/model presets.
-//
-// Not a runtime dependency: pi-ai pulls every SDK (openai/anthropic/google/mistral/
-// aws-sdk/undici) into the bundle, but we only need its catalog and compat detection
-// (pure data, zero-import models.generated.js). Runtime translation stays in our own
-// OpenAI-compatible client (Rust translate.rs).
-//
-// Usage: node scripts/sync-pi-models.mjs [--version=0.73.1] [--latest] [--check]
-//   --check verifies the repo file against the current pi-ai version (CI, no write)
-//
-// Also ports the non-exported detectCompat/thinking mapping from pi-ai
-// dist/providers/openai-completions.js (see DETECT_COMPAT_NOTE); re-diff on upgrade.
+// Vendor the @mariozechner/pi-ai model catalog into src/lib/piModels.generated.ts, the single data
+// source for provider/model presets. Not a runtime dependency: pi-ai pulls every SDK into the
+// bundle, but we only need its pure-data catalog + compat detection (runtime translation stays in
+// Rust translate.rs). Usage: node scripts/sync-pi-models.mjs [--version=X] [--latest] [--check];
+// --check verifies the repo file against the current pi-ai version (CI, no write).
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -70,10 +62,8 @@ async function fetchPackage(version) {
   return dir;
 }
 
-// ---- ported pi-ai compat detection ---------------------------------------------------------
-// DETECT_COMPAT_NOTE: detectCompat below mirrors pi-ai dist/providers/openai-completions.js
-// (that function is not exported, so it is copied). Re-diff on every pi-ai upgrade.
-// Used only for OpenAI-compatible request shaping: max_tokens field name + thinking-off shape.
+// DETECT_COMPAT_NOTE: detectCompat mirrors pi-ai's non-exported openai-completions.js (copied, not
+// exported); re-diff on upgrade. Drives request shaping only: max_tokens field + thinking-off shape.
 function detectCompat(model) {
   const provider = model.provider;
   const baseUrl = model.baseUrl;
@@ -94,12 +84,9 @@ function detectCompat(model) {
   };
 }
 
-/** pi-ai thinking-off parameter shapes (the equivalent of openai-completions buildParams).
- *  Rust applies the same table for the "off" level.
- *  - anthropic-messages: only `thinking: {type:"disabled"}`, regardless of the catalog off value;
- *  - openai-responses: `reasoning.effort` from the catalog off (off: null = cannot disable,
- *    so no parameter is sent);
- *  - everything else (incl. openai-completions): the detectCompat shape table. */
+/** pi-ai thinking-off parameter shapes (equivalent of openai-completions buildParams); Rust applies
+ *  the same table. anthropic-messages → thinking.type only; openai-responses → reasoning.effort
+ *  from the catalog off (off: null = cannot disable); everything else → the detectCompat shape. */
 function thinkingOffShape(api, reasoning, format, offValue) {
   if (api === "anthropic-messages") {
     return { kind: reasoning ? "thinking_type" : "none" };
@@ -132,7 +119,6 @@ function extractEnvKeys(src) {
   return map;
 }
 
-// ---- generation ------------------------------------------------------------------------
 
 function toCatalog(MODELS, envKeys, version) {
   const providers = [];

@@ -1,14 +1,9 @@
 """Single-page / batch OCR: POST /ocr/page {image_b64} and POST /ocr/pages.
 
-- /ocr/page  → {blocks, width, height, elapsed} (curl smoke/debug);
-- /ocr/pages → {elapsed, pages: [{blocks, width, height}]} (the main path for Rust's parse_pdf; batch
-  size follows /health's max_batch_pages — the client's own for local hosting, the server's advertised
-  value online, with PyService holding the token);
-- Images decode with PIL (Wise-Paddle's cv2 path serves file uploads, not needed here); size is bounded
-  and decoding runs in the threadpool (see _decode_image / MAX_BODY_BYTES);
-- bbox_px is source-image pixel coordinates (including the unclip expansion); the px→PDF pt conversion
-  (pt = px/scale) happens in Rust when writing the bound JSON — this service never sees scale;
-- The engine is lazy-loaded and serialized by one lock; the first request takes minutes (VL model ~1.8GB).
+Both decode with PIL (not Wise-Paddle's cv2 file-upload path), in the threadpool and with size
+bounded (see _decode_image / MAX_BODY_BYTES). bbox_px is source-image pixels including the unclip
+expansion; the px→pt conversion happens in Rust, so this service never sees scale.
+The engine is lazy-loaded and serialized by one lock; the first request takes minutes (VL ~1.8GB).
 """
 
 from __future__ import annotations
@@ -44,7 +39,6 @@ MAX_PIXELS = 40_000_000
 
 
 def _decode_image(payload: str) -> Image.Image:
-    """base64 (optionally with a data: URI prefix) → PIL RGB Image."""
     if payload.startswith("data:"):
         # partition, not split[1]: a malformed data: string cannot raise IndexError
         _, sep, rest = payload.partition(",")

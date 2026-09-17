@@ -3,10 +3,7 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore, type ThemeMode } from "../../stores/settings";
 
-/**
- * Theme toggle: click cycles light → dark → system. The icon is the current
- * mode; persisted in settings.general.theme (config.json).
- */
+/** Theme toggle: click cycles light → dark → system; persisted in settings.general.theme. */
 const { t } = useI18n();
 const settings = useSettingsStore();
 

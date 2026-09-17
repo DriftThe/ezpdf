@@ -1,11 +1,8 @@
-//! Batch OCR: the frontend renders page images offscreen → batch call pyserver /ocr/pages →
-//! px→pt mapping → one atomic write of the bound JSON per batch. Translation is separate
-//! (translate_pdf, queued concurrently by the frontend after each OCR batch returns).
+//! Batch OCR: offscreen page images → pyserver /ocr/pages → px→pt → one atomic bound-JSON write
+//! per batch; translation is separate (translate_pdf, fired concurrently after each batch).
 //!
-//! Batch semantics: parse_pdf handles ≤4 pages of one book; each batch is exactly one
-//! read → one inference → one tmp+rename write, so a crash loses at most one batch and the
-//! JSON is always a complete snapshot. OCR and translation may write concurrently: the lock
-//! only covers read-modify-atomic-write (network/model calls stay outside it).
+//! parse_pdf handles ≤4 pages of one book: one read → one inference → one tmp+rename write, so a
+//! crash loses at most one batch. The per-book lock covers only read-modify-write; network calls stay outside it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -41,7 +38,6 @@ pub struct ParsePageInput {
     pub scale: f64,
 }
 
-/// parse_pdf result: status summary + the pages actually updated.
 #[derive(Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -74,8 +70,7 @@ fn px_to_pt(v: f64, scale: f64) -> f64 {
     ((v / scale) * 100.0).round() / 100.0
 }
 
-/// OCR response block → bound-JSON Block: label kept as-is (PP-DocLayoutV3 emits ~20 classes);
-/// image blocks get an empty content (figure contract); translation=None (bypass stage).
+/// OCR block → Block: label kept as-is; image gets empty content (figure contract); translation None (bypass stage).
 fn map_blocks(blocks: &[OcrBlockResponse], scale: f64) -> Vec<Block> {
     blocks
         .iter()
@@ -93,8 +88,7 @@ fn map_blocks(blocks: &[OcrBlockResponse], scale: f64) -> Vec<Block> {
         .collect()
 }
 
-/// Patch a batch of (index, blocks) into the BindDoc: finished=true, translated=false
-/// (re-OCR'd pages need re-translation); unknown indexes are skipped; returns updated indexes.
+/// Patch (index, blocks) into the BindDoc: finished=true, translated=false (re-OCR needs re-translation); unknown indexes skipped.
 fn patch_pages(doc: &mut BindDoc, updates: Vec<(u32, Vec<Block>)>) -> Vec<u32> {
     let mut patched = Vec::new();
     for (index, blocks) in updates {
@@ -108,9 +102,7 @@ fn patch_pages(doc: &mut BindDoc, updates: Vec<(u32, Vec<Block>)>) -> Vec<u32> {
     patched
 }
 
-/// Book status transition (Rust is the single writer):
-/// all pages finished (and at least one) → Finished; Pending → Processing on the first batch;
-/// Processing/Finished stay put.
+/// Status transition (Rust is sole writer): all pages finished (≥1) → Finished; Pending → Processing; else stay put.
 fn finalize_status(doc: &mut BindDoc) {
     if !doc.pages.is_empty() && doc.pages.iter().all(|p| p.finished) {
         doc.status = PDFStatus::Finished;
@@ -119,9 +111,7 @@ fn finalize_status(doc: &mut BindDoc) {
     }
 }
 
-/// Backfill table grids: pre-table JSONs have no `grid`, so the frontend can neither render
-/// nor re-translate them. Parsed once and persisted on load (derived data, no LLM), letting
-/// the frontend target only parsable untranslated tables. Returns whether anything changed.
+/// Backfill `grid` on pre-table JSONs so the frontend can render/re-translate them; parsed once on load (no LLM).
 pub(crate) fn backfill_table_grids(doc: &mut BindDoc) -> bool {
     let mut changed = false;
     for page in doc.pages.iter_mut() {
@@ -143,7 +133,6 @@ pub(crate) fn write_bind_atomic(json_path: &Path, doc: &BindDoc) -> Result<(), S
     crate::write_json_atomic(json_path, doc, "bound JSON")
 }
 
-/// Locate and parse a book's bound JSON into a BindDoc (shared entry point).
 fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
     let entry = crate::find_pdf(root, id)?;
     let bind = entry
@@ -155,7 +144,6 @@ fn load_bind(root: &str, id: &str) -> Result<(PathBuf, BindDoc), String> {
     Ok((json_path, doc))
 }
 
-/// Snapshots of the given page indexes (for updatedPages).
 fn pages_by_index(doc: &BindDoc, indices: &[u32]) -> Vec<PageInfo> {
     indices
         .iter()
@@ -163,7 +151,6 @@ fn pages_by_index(doc: &BindDoc, indices: &[u32]) -> Vec<PageInfo> {
         .collect()
 }
 
-/// Batch result summary (shared by parse_batch / translate_batch).
 fn outcome(doc: &BindDoc, updated: Vec<PageInfo>) -> ParseOutcome {
     ParseOutcome {
         book_status: doc.status,
@@ -171,8 +158,7 @@ fn outcome(doc: &BindDoc, updated: Vec<PageInfo>) -> ParseOutcome {
     }
 }
 
-/// Parse one OCR batch: locate the bound JSON → POST /ocr/pages (token header) → map blocks
-/// + patch pages → status transition → one atomic write. Translation follows via translate_pdf.
+/// POST /ocr/pages, patch pages, transition status, one atomic write; translation follows via translate_pdf.
 pub async fn parse_batch(
     root: &str,
     id: &str,
@@ -267,10 +253,7 @@ fn phase_pages(indices: &[u32], phase: usize) -> Vec<u32> {
         .collect()
 }
 
-/// Translate-only (no OCR) for the given pages, used for retries (finished && !translated).
-/// Stride-2 phases: neighbors never translate concurrently, so context candidates don't
-/// collide; phases run serially, and phase 2 sees phase 1's persisted external bindings.
-/// Per-page catch; if nothing progressed the write is skipped (the frontend records a strike).
+/// Translate-only retry for finished && !translated pages. Stride-2 phases keep neighbours non-concurrent (context can't collide); phase 2 sees phase 1's persisted bindings.
 pub async fn translate_batch(
     root: &str,
     id: &str,
@@ -311,7 +294,7 @@ pub async fn translate_batch(
             continue;
         }
 
-        // Snapshot under lock; phase 2 sees phase 1's persisted external bindings.
+        // Snapshot under lock.
         let tasks: Vec<translate::PageTask> = {
             let lock = file_lock(root, id);
             let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -345,7 +328,7 @@ pub async fn translate_batch(
             continue;
         }
 
-        // Persist under lock: re-read → apply this phase's results (incl. external neighbour bindings) → atomic write.
+        // Persist under lock.
         let lock = file_lock(root, id);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let (json_path, mut doc) = load_bind(root, id)?;
@@ -367,8 +350,7 @@ pub async fn translate_batch(
     Ok(outcome(&doc, pages_by_index(&doc, &touched)))
 }
 
-/// Disabled-translation path: no network/prompts, copies source into translation per page and
-/// marks it done in one atomic write. The frontend chain is identical; only this branch differs.
+/// Disabled-translation path: no network, source text copied into translation and the page marked done in one write.
 fn bypass_batch(
     root: &str,
     id: &str,
@@ -401,8 +383,7 @@ fn bypass_batch(
     Ok(outcome(&doc, pages_by_index(&doc, &touched)))
 }
 
-/// Prefill on open: when pages is empty (failed lopdf parse) rebuild a 1..=N skeleton from
-/// the real count; never touches existing pages. Returns the current book status.
+/// When pages is empty (failed lopdf parse) rebuild a 1..=N skeleton from the real count; never touches existing pages.
 pub async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
     let (json_path, mut doc) = load_bind(root, id)?;
     if !doc.pages.is_empty() || total == 0 {
@@ -413,9 +394,7 @@ pub async fn prefill_pages(root: &str, id: &str, total: u32) -> Result<PDFStatus
     Ok(doc.status)
 }
 
-/// Clear a book's parse state: drop all OCR blocks/translations and rebuild a 1..=N empty
-/// skeleton (the PDF itself is untouched). total = pdfjs page count; when 0 (book not open)
-/// the existing JSON page count is reused.
+/// Drop all blocks/translations and rebuild a 1..=N skeleton (PDF untouched); total=0 (book not open) reuses the JSON count.
 pub fn reset_pdf_state(root: &str, id: &str, total: u32) -> Result<PDFStatus, String> {
     let lock = file_lock(root, id);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -430,8 +409,7 @@ pub fn reset_pdf_state(root: &str, id: &str, total: u32) -> Result<PDFStatus, St
     Ok(doc.status)
 }
 
-/// Rust-side hard batch limit shared by OCR and translation batches; advertised values clamp to it.
-/// Guards against malformed/malicious counts allocating huge Vecs (release is panic=abort, so OOM kills).
+/// Hard batch limit (advertised values clamp to it); guards malformed counts from huge Vecs (panic=abort, so OOM kills).
 pub(crate) const MAX_BATCH_PAGES: u32 = 32;
 
 /// Page-count cap for import prefill (malformed-PDF guard).
@@ -464,8 +442,7 @@ pub(crate) fn truncate(s: &str, cap: usize) -> &str {
 mod tests {
     use super::*;
 
-    /// Backfill: only parsable tables get a grid; unparsable ones stay grid=None (so the
-    /// frontend does not treat them as re-translation targets).
+    /// Backfill: only parsable tables get a grid (unparsable stay None, not re-translation targets).
     #[test]
     fn backfill_fills_only_parsable_tables() {
         let blk = |content: &str, grid| Block {
@@ -503,7 +480,6 @@ mod tests {
         .unwrap();
         let full = std::fs::canonicalize(&root).unwrap();
         let path = full.join(bind);
-        // A bound JSON with content, translated, status Finished
         let doc = BindDoc {
             status: PDFStatus::Finished,
             pages: vec![page_for_reset(1), page_for_reset(2)],

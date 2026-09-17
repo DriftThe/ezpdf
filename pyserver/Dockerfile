@@ -1,21 +1,15 @@
 # ezpdf parse service image (CPU / GPU, switched by the VARIANT build arg)
-#
 #   docker build -t ezpdf-pyserver:cpu --build-arg VARIANT=cpu pyserver
-#   docker build -t ezpdf-pyserver:gpu --build-arg VARIANT=gpu pyserver
-#
-# Models (models/, ~1.9GB) are COPYed straight in → a self-contained snapshot, inference-ready offline.
-# CUDA deps come from pip's nvidia-* wheels (host only needs the driver + nvidia-container-toolkit),
-# so the GPU variant is also based on python:3.12-slim, no nvidia/cuda base image.
-# The base image is swappable (Docker Hub is unreachable in some regions):
-#   --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
+# Models (~1.9GB) are COPYed in → self-contained, offline inference-ready. CUDA deps come from pip's
+# nvidia-* wheels, so the GPU variant is also python:3.12-slim (no nvidia/cuda base image). The base
+# image is swappable via BASE_IMAGE where Docker Hub is unreachable.
 ARG BASE_IMAGE=python:3.12-slim
 FROM ${BASE_IMAGE}
 
 ARG VARIANT=cpu
-# Mirrors for slow/blocked builds (the same ones the client's "use mirror" switch uses):
-#   --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
-#   --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
-#   --build-arg TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # GPU variant: .../cu132
+# Mirrors for slow/blocked builds (same as the client's "use mirror" switch):
+#   APT_MIRROR=mirrors.tuna.tsinghua.edu.cn  PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+#   TORCH_INDEX=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu   # GPU variant: .../cu132
 ARG APT_MIRROR=""
 ARG PIP_INDEX=""
 ARG TORCH_INDEX=""
@@ -28,14 +22,9 @@ ENV PYTHONUNBUFFERED=1 \
     EZPDF_TOKEN_FILE=/data/token.txt \
     EZPDF_MAX_BATCH_PAGES=32
 
-# opencv-contrib-python needs libgl/libglib (slim images lack them); kept in sync with the local .venv —
-# no headless swap, since the image is a faithful package of a verified env and packages are not trimmed for size
-# build-essential: on the CUDA path the pipeline JIT-compiles a triton kernel at runtime
-#   ("Failed to find C compiler" on GPU); triton's JIT needs gcc/g++ and libc6 headers, usually present
-#   on bare-metal Linux but required explicitly in a container
-# Optional apt mirror (deb.debian.org returns 502 in some regions)
-# apt cache uses a BuildKit cache mount (lists/packages stay in the cache, out of the image layer):
-# re-running this layer unpacks from cache instead of downloading debs again
+# libgl/libglib for opencv-contrib-python; build-essential because the CUDA path JIT-compiles a triton
+# kernel at runtime (needs gcc/g++ + libc6 headers). Packages are deliberately not trimmed for size.
+# apt cache lives in a BuildKit cache mount, so re-running this layer unpacks from cache.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     set -eux; \

@@ -1,10 +1,7 @@
 """Model directory contract, shared by the probe (bootstrap.py) and the downloader (app.fetch); stdlib only.
-
-Completeness = `config.json` + `preprocessor_config.json` + any weight file. Both callers must agree,
-else the probe reports missing while the downloader reports complete.
-
-Lives under app/ (not the repo root) so both bootstrap.py (`sys.path[0]` = script dir) and
-`python -m app.*` can import it; app/__init__.py is empty, so no third-party deps leak in.
+Completeness = `config.json` + `preprocessor_config.json` + any weight file; both callers must agree
+or the probe reports missing while the downloader reports complete.
+Lives under app/ so both `python bootstrap.py` and `python -m app.*` can import it.
 """
 
 from __future__ import annotations

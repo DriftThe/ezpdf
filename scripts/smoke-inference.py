@@ -1,13 +1,9 @@
-"""Minimal inference for image smoke tests: draw a page -> run real OCR -> assert regions.
+"""Minimal inference smoke test: draw a page, run real OCR, assert regions.
 
-CI (.github/workflows/pyserver-images.yml) runs this inside the container to prove the image
-can actually infer, since /health only proves the service started. Run from the pyserver
-directory (cwd is /app in the container and the script dir is not on sys.path, so add cwd):
-
-    cd pyserver && ./.venv/Scripts/python.exe ../scripts/smoke-inference.py
+CI (pyserver-images.yml) runs this inside the container because /health only proves the service
+started, not that it can infer. Run from pyserver/ so app imports resolve (cwd is on sys.path):
     docker run --rm -v "$PWD/scripts/smoke-inference.py:/smoke.py:ro" ezpdf-pyserver:cpu python /smoke.py
-
-Exit code 0 = pass; failures print a reason and return 1.
+Exit 0 = pass; failures print a reason and return 1.
 """
 
 from __future__ import annotations

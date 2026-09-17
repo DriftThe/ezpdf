@@ -1,7 +1,4 @@
-/* ===== ezpdf global styles: variables / reset / shared controls ===== */
-
 :root {
-  /* Light = blue-white: blue-tinted neutrals, blue accent */
   --bg-app: #eef3fc;
   --bg-panel: #ffffff;
   --bg-hover: #e9f0fd;
@@ -18,7 +15,7 @@
   --accent-weak: rgba(47, 107, 255, 0.14);
   --accent-contrast: #ffffff;
 
-  /* In-page annotation colors (pages stay white, independent of theme) */
+  /* In-page annotation colors (pages stay white in both themes) */
   --page-annot: #2f6bff;
   --page-annot-figure: #2ea44f;
   --page-annot-formula: #8b5cf6;
@@ -43,9 +40,8 @@
   --titlebar-h: 34px;
 }
 
-/* Dark: explicit data-theme (JS is the source of truth; theme.ts resolves system → light/dark) */
+/* Dark: data-theme is set by theme.ts (source of truth) */
 :root[data-theme="dark"] {
-  /* Black/gray/white monochrome */
   --bg-app: #121212;
   --bg-panel: #1c1c1c;
   --bg-hover: #262626;
@@ -74,7 +70,7 @@
   --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.6);
 }
 
-/* Only during a theme switch: apply color transitions (0.3 s), not permanently, so hover stays fast */
+/* Only during a theme switch, so hover stays fast */
 html.theme-switching,
 html.theme-switching *,
 html.theme-switching *::before,
@@ -120,7 +116,6 @@ textarea {
   color: var(--text-1);
 }
 
-/* ---- shared buttons ---- */
 .btn {
   border: 1px solid var(--border-strong);
   background: var(--bg-panel);
@@ -159,7 +154,6 @@ textarea {
 .btn.warn {
   color: var(--warn);
 }
-/* Destructive (e.g. delete confirm): solid red, both themes define --err */
 .btn.danger {
   background: var(--err);
   border-color: var(--err);
@@ -191,7 +185,6 @@ textarea {
   cursor: default;
 }
 
-/* ---- service status (toolbar / settings) ---- */
 .svc {
   display: inline-flex;
   align-items: center;
@@ -219,14 +212,14 @@ textarea {
 .svc.disconnected {
   color: var(--err);
 }
-/* Shared modifiers: ok=ready/idle, info=info (CPU), err=failed */
+/* ok=ready/idle, info=CPU, err=failed */
 .svc.ok .svc-dot {
   background: var(--ok);
 }
 .svc.info .svc-dot {
   background: var(--accent);
 }
-/* Busy: online with a batch in flight (accent pulse, vs amber for starting) */
+/* busy: online with a batch in flight (accent pulse vs amber starting) */
 .svc.busy .svc-dot {
   background: var(--accent);
   animation: ez-pulse 1.2s ease-in-out infinite;
@@ -239,8 +232,7 @@ textarea {
 .svc.failed {
   color: var(--err);
 }
-/* Settings log area (OCR stderr/pip, LLM chain; streaming output) */
-/* Translation-pane white cover box (shared by text blocks and TableCover; caller positions it) */
+/* Translation-pane white cover (text blocks + TableCover) */
 .cover-box {
   position: absolute;
   background: #fff;
@@ -270,7 +262,6 @@ textarea {
   }
 }
 
-/* ---- toggle switch ---- */
 .switch {
   display: inline-flex;
   align-items: center;
@@ -309,7 +300,6 @@ textarea {
   left: 14px;
 }
 
-/* ---- settings panes (shared by settings/sections/) ---- */
 .set-pane {
   padding: 24px 32px;
 }
@@ -343,7 +333,7 @@ textarea {
 }
 .set-field-row {
   display: flex;
-  flex-wrap: wrap; /* wrap when items are many (e.g. OCR checks) in a narrow window */
+  flex-wrap: wrap; /* wrap when items are many in a narrow window */
   gap: 40px;
 }
 .set-field-row .set-field {
@@ -361,12 +351,12 @@ textarea {
 .set-check input {
   accent-color: var(--accent);
 }
-/* Self-drawn select (install mode etc.); arrow drawn by an outer SVG */
+/* Self-drawn select; arrow drawn by an outer SVG */
 .set-select-wrap {
   position: relative;
   display: inline-flex;
   align-items: center;
-  /* grid items stretch by default; without this the absolute arrow flies to the far right */
+  /* without this the absolute arrow flies to the far right */
   justify-self: start;
 }
 .set-select {
@@ -394,7 +384,6 @@ textarea {
   pointer-events: none;
   color: var(--text-3);
 }
-/* Field hint text (small note under checkboxes) */
 .set-hint {
   margin: -4px 0 10px;
   font-size: 12px;
@@ -403,7 +392,7 @@ textarea {
   max-width: 560px;
 }
 
-/* Settings button: same specs as set-field input; standalone class, do not combine with .btn */
+/* same specs as set-field input; standalone, do not combine with .btn */
 .set-button {
   justify-self: start; /* keep natural width in the 1fr cell */
   border: 1px solid var(--border-strong);
@@ -424,7 +413,6 @@ textarea {
   cursor: default;
 }
 
-/* ---- scrollbar ---- */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;

@@ -1,10 +1,7 @@
 # ezpdf parse service: one config for both variants; pick one with a profile
-#
 #   docker compose --profile cpu up -d      # CPU image (small, runs anywhere)
 #   docker compose --profile gpu up -d      # GPU image (host needs nvidia-container-toolkit)
-#
-# After start, read the auth token from the logs and paste it into App → Settings → OCR Service → Service Token:
-#   docker compose logs -f ezpdf-pyserver-cpu
+# After start, read the auth token from the logs and paste it into App → Settings → OCR service.
 services:
   ezpdf-pyserver-cpu:
     build:
@@ -18,8 +15,7 @@ services:
         TORCH_INDEX: ${TORCH_INDEX:-}
     image: ezpdf-pyserver:cpu
     profiles: ["cpu"]
-    # Binds localhost by default; change to "9055:9055" for LAN/public use (plain HTTP —
-    # put your own HTTPS reverse proxy in front for public access)
+    # Binds localhost only; use "9055:9055" for LAN/public (plain HTTP — put an HTTPS proxy in front)
     ports:
       - "127.0.0.1:9055:9055"
     volumes:

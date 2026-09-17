@@ -3,8 +3,6 @@ import type { PDFStatus } from "./PDFStatus";
 import type { PageInfo } from "./PageInfo";
 
 /**
- * Full PDF entity: identity fields + bound-JSON content.
- * bind = repo-relative bound-JSON path, None = unbound (legacy entry);
- * status/pages come from the bound JSON (Pending/empty when bind is None).
+ * PDF entity; bind = repo-relative bound-JSON path (None = legacy/unbound → Pending, no pages).
  */
 export type PDF = { id: string, name: string, pdfPath: string, bind: string | null, status: PDFStatus, pages: Array<PageInfo>, };

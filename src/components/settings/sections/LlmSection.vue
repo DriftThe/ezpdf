@@ -16,12 +16,12 @@ const settings = useSettingsStore();
 const parse = useParseStore();
 const { t } = useI18n();
 
-// Catalog lazy-load (~400KB separate chunk): fetched only when the LLM panel opens
+// Catalog (~400KB chunk) is lazy-loaded only when this panel opens
 onMounted(() => void settings.ensureCatalog());
 
 const isCustom = computed(() => settings.llm.provider === CUSTOM_PROVIDER);
 
-/** Current provider is one of the "unsupported protocol" kind (stale config): show it as a single disabled option */
+/** Stale config on an unsupported protocol: show as one disabled option (keeps the dropdown non-empty) */
 const unsupportedProvider = computed(() =>
   settings.otherProviders.some((p) => p.id === settings.llm.provider),
 );
@@ -34,7 +34,7 @@ function onProtocol(e: Event): void {
   settings.applyProtocol((e.target as HTMLSelectElement).value);
 }
 
-/** Base URL example follows the protocol (custom endpoints most often get the path wrong) */
+/** Placeholder follows the protocol (custom endpoints most often get the path wrong) */
 const baseUrlPlaceholder = computed(() => {
   switch (settings.protocol) {
     case "anthropic-messages":
@@ -46,7 +46,6 @@ const baseUrlPlaceholder = computed(() => {
   }
 });
 
-/** Target language: use a preset hit directly, otherwise show "custom" and expand the input */
 const customLang = ref(false);
 const langPick = computed(() => {
   if (customLang.value) return CUSTOM_TARGET_LANG;
@@ -64,21 +63,15 @@ function onPickLang(e: Event): void {
   <div class="set-pane">
     <h2 class="set-title">{{ t("llm.title") }}</h2>
 
-    <!-- Enable translation: the master switch; when off, Rust records the OCR text into the
-         translation column and marks it done (no model request, no null), so re-enabling never
-         re-translates those pages -->
+    <!-- Master switch: when off, Rust writes the OCR text into the translation column and marks it
+         done (terminal, no request) so re-enabling never re-translates those pages -->
     <label class="set-check">
       <input v-model="settings.llm.translateEnabled" type="checkbox" />
       <span>{{ t("llm.translateEnabled") }}</span>
     </label>
 
-    <!--
-      Provider presets (integration of the pi-ai catalog): picking a provider fills the endpoint and
-      lists its preset models, and derives "protocol / max tokens field / thinking-off param shape"
-      for the Rust client (lib/piModels.ts). Providers with an unsupported protocol (google/bedrock/
-      mistral/azure etc.) are not listed; a stale config pointing at one shows it as a disabled option
-      so the dropdown isn't empty.
-    -->
+    <!-- Provider presets: a pick derives protocol / max-tokens field / thinking-off shape for Rust.
+         Unsupported-protocol providers are hidden; a stale config shows one disabled option. -->
     <div class="set-field">
       <span>{{ t("llm.provider") }}</span>
       <span class="set-select-wrap">
@@ -95,11 +88,7 @@ function onPickLang(e: Event): void {
       </span>
     </div>
 
-    <!--
-      Protocol: the three wire protocols each have their own request body/auth headers/field
-      extraction (see docs/protocols.md). Preset models get their protocol from the pi-ai
-      catalog and show it read-only; only "custom" lets you pick one and auto-fills the Base URL path.
-    -->
+    <!-- Protocol (see docs/protocols.md): read-only from the catalog for presets; pickable for "custom" -->
     <div class="set-field">
       <span>{{ t("llm.protocol") }}</span>
       <span class="set-select-wrap">
@@ -113,7 +102,6 @@ function onPickLang(e: Event): void {
     </div>
     <p v-if="isCustom" class="set-hint">{{ t("llm.protocolHintCustom") }}</p>
 
-    <!-- Preset endpoint (thinking-off/env-var explanations are no longer shown) -->
     <p v-if="!isCustom && settings.presetProvider" class="set-hint llm-meta">
       <code class="llm-url">{{ settings.llm.baseUrl }}</code>
     </p>
@@ -123,9 +111,7 @@ function onPickLang(e: Event): void {
       <input v-model="settings.llm.baseUrl" :placeholder="baseUrlPlaceholder" />
     </label>
 
-    <!-- API Key + verify: the verify button checks connectivity and probes the thinking-off
-         parameter strategy; a preset that already declares its shape needs no probe
-         (the strategy is still written back as an explicit override) -->
+    <!-- Verify checks connectivity and probes the thinking-off strategy (a preset shape still gets written back) -->
     <div class="set-field-row llm-row">
       <label class="set-field">
         <span>{{ t("llm.apiKey") }}</span>
@@ -136,7 +122,7 @@ function onPickLang(e: Event): void {
       </button>
     </div>
 
-    <!-- Model: free-text input ("fetch online list" fills the datalist; a catalog hit uses the preset snapshot) -->
+    <!-- Model: free text ("fetch online list" fills the datalist; catalog hits use the preset snapshot) -->
     <div class="set-field-row llm-row">
       <label class="set-field">
         <span>{{ t("llm.model") }}</span>

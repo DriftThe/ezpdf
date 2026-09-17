@@ -12,13 +12,12 @@ function onLang(e: Event): void {
   void settings.setLang((e.target as HTMLSelectElement).value as AppLocale);
 }
 
-/** Block type checkbox: edits general.translateTypes directly (saved wholesale by the settings back button) */
 function onToggleType(kind: string, e: Event): void {
   const on = (e.target as HTMLInputElement).checked;
   const cur = new Set(settings.general.translateTypes);
   if (on) cur.add(kind);
   else cur.delete(kind);
-  // Keep a stable order (per BLOCK_TYPE_OPTIONS) for easier config diffing and log reading
+  // Stable BLOCK_TYPE_OPTIONS order: easier config diffing and log reading
   settings.general.translateTypes = BLOCK_TYPE_OPTIONS.filter((k) => cur.has(k));
 }
 
@@ -54,7 +53,6 @@ function isTypeOn(kind: string): boolean {
       <span>{{ t("settings.general.resumeOnStart") }}</span>
     </label>
 
-    <!-- Translation block types: checked types are translated and covered in the translation pane -->
     <h3 class="block-type-title">{{ t("settings.general.blockTypes") }}</h3>
     <div class="block-types">
       <label v-for="kind in BLOCK_TYPE_OPTIONS" :key="kind" class="set-check block-type">
@@ -63,7 +61,6 @@ function isTypeOn(kind: string): boolean {
       </label>
     </div>
     <button class="set-button" @click="resetTypes">{{ t("settings.general.blockTypesReset") }}</button>
-    <!-- Update check: silent once at launch, re-run manually here -->
     <div class="set-field">
       <span>{{ t("update.title") }}</span>
       <div class="set-field-row update-row">
@@ -88,7 +85,6 @@ function isTypeOn(kind: string): boolean {
   line-height: 1.6;
   color: var(--text-3);
 }
-/* Translation block types: subheading + multi-column checkbox grid */
 .block-type-title {
   margin: 18px 0 6px;
   font-size: 13px;

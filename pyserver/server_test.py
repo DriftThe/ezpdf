@@ -1,22 +1,10 @@
 #!/usr/bin/env python3
-"""Developer tool: run a parse "service" locally (default 127.0.0.1:9055) for the app's Online service mode.
+"""Developer tool: run a local parse "service" (default 127.0.0.1:9055) for the app's Online service mode.
 
-Differences from `python -m app.main` (the app-managed in-process mode):
-- fixed port, no EZPDF_READY line, does not read stdin, stops on Ctrl+C;
-- no token check by default (`--token` enables it to exercise the auth path);
-- no env/model readiness check (a missing piece fails the first request; the log says why).
-
-Usage (run with a python that has the same deps as the service, e.g. pyserver/.venv):
-
-    python server_test.py                          # 127.0.0.1:9055
-    python server_test.py --host 0.0.0.0 --port 9055
-    python server_test.py --token secret           # require x-ezpdf-token: secret
-    python server_test.py --reload                 # auto-reload on code change (dev)
-
-Then in the app: Settings → OCR Service → Service Source "Online service" → Service URL http://127.0.0.1:9055
-→ click "Test" to probe → click "Start service" to register it as the OCR target.
-
-HTTP contract (ports, request/response fields, coordinate conversion, lifecycle) is in pyserver/PROTOCOL.md.
+Unlike app.main: fixed port, no EZPDF_READY line, does not read stdin, stops on Ctrl+C; no token
+check unless --token; no env/model readiness check (a missing piece fails the first request).
+Use a python with the service deps (e.g. pyserver/.venv), then in the app point Settings → OCR
+Service → Online service at the URL and click Test / Start service. Wire contract: pyserver/PROTOCOL.md.
 """
 
 from __future__ import annotations

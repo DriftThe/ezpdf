@@ -1,16 +1,12 @@
 import { ref } from "vue";
 import { t } from "../lib/i18n";
 
-/** Self-drawn confirm dialog replacing plugin-dialog's system ask.
- *  Module-level singleton state + renderer component; `await confirmDialog({...})` returns a bool.
- *  Single instance: a new request cancels the old one (its promise resolves false). */
+/** Singleton self-drawn confirm; a new request cancels the pending one (resolves false). */
 interface ConfirmOptions {
   title: string;
   message: string;
-  /** Confirm button label (defaults to Delete, the dominant destructive case). */
   confirmText?: string;
   cancelText?: string;
-  /** Destructive: solid red confirm button. */
   danger?: boolean;
 }
 
@@ -23,11 +19,10 @@ interface PendingConfirm {
   resolve: (ok: boolean) => void;
 }
 
-/** Pending confirm (null = none); ConfirmDialog.vue renders it. */
 export const pendingConfirm = ref<PendingConfirm | null>(null);
 
 export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
-  settleConfirm(false); // single instance: cancel any pending request
+  settleConfirm(false);
   return new Promise<boolean>((resolve) => {
     pendingConfirm.value = {
       confirmText: t("common.delete"),
@@ -39,7 +34,6 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
   });
 }
 
-/** Settle the request (Esc/backdrop/cancel → false, confirm → true); no-op when none. */
 export function settleConfirm(ok: boolean): void {
   const c = pendingConfirm.value;
   if (!c) return;

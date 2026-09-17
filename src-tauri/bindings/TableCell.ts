@@ -3,8 +3,4 @@
 /**
  * Cell: text + horizontal colspan (from `<lcel>`). Vertical merges are not expressed in v1.
  */
-export type TableCell = { text: string, 
-/**
- * Colspan (≥1); +1 per `<lcel>`.
- */
-colspan: number, };
+export type TableCell = { text: string, colspan: number, };

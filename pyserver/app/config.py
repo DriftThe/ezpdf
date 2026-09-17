@@ -1,11 +1,8 @@
-"""pyserver runtime config: all values come from the environment (Rust injects them on spawn); no config file.
+"""pyserver runtime config, all from the environment (Rust injects it on spawn).
 
-- EZPDF_TOKEN            session token; empty disables auth (manual debug / client-generated local mode)
-- EZPDF_TOKEN_FILE       token file path (default <pyserver>/token.txt); server_docker.py only — the
-                         deployed form has no client to generate a token, so it reads/creates this file
-- EZPDF_MODELS_DIR       model root (default <pyserver>/models)
-- EZPDF_MAX_BATCH_PAGES  max pages per /ocr/pages (default 32); the client reads it from /health to pick a
-                         batch size (see PROTOCOL.md §4/§6)
+EZPDF_TOKEN overrides EZPDF_TOKEN_FILE (default <pyserver>/token.txt, used by server_docker.py);
+EZPDF_MODELS_DIR defaults to <pyserver>/models; EZPDF_MAX_BATCH_PAGES (1..32, default 32) is
+advertised via /health for the client's batch size (PROTOCOL.md §4/§6).
 """
 
 from __future__ import annotations
@@ -25,11 +22,7 @@ MODELS_DIR = Path(os.environ.get("EZPDF_MODELS_DIR", str(ROOT / "models")))
 
 
 def resolve_token() -> tuple[str, bool]:
-    """Server-form token resolution: env var > token file > generate and persist.
-
-    Returns (token, generated). A generated token is written to TOKEN_FILE
-    (0600 on POSIX) so restarts and container rebuilds reuse it.
-    """
+    """Server-form token resolution: env var > token file > generate and persist (0600), so restarts reuse it."""
     if TOKEN:
         return TOKEN, False
     try:

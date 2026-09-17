@@ -1,11 +1,7 @@
 /**
- * Copy pdfjs runtime assets into public/pdfjs/ (run before dev and build):
- * - cmaps: CJK encoding maps; missing them breaks Chinese text
- * - standard_fonts: standard 14 fonts
- * - wasm: JPEG2000 and other image decoders (wasm since v5)
- * - iccs: ICC color profiles
- * public/ is served by Vite in dev and copied into dist on build, so Tauri bundles it.
- * The output is gitignored and regenerated on the first dev/build after a reinstall.
+ * Copy pdfjs runtime assets into public/pdfjs/ (gitignored, regenerated before dev/build):
+ * cmaps (CJK encoding maps), standard_fonts, wasm (JPEG2000/image decoders, v5+), iccs (color profiles).
+ * public/ is served by Vite in dev and bundled into dist on build.
  */
 import { cpSync, mkdirSync } from "node:fs";
 import path from "node:path";

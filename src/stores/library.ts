@@ -10,7 +10,6 @@ import { useSettingsStore } from "./settings";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
-/** Import result text: failure details, unknown-page reasons, or a success note. */
 function formatImportOutcome(outcome: ImportOutcome): { text: string; kind: "warn" | "info" } {
   if (outcome.failed.length > 0) {
     const reasons = outcome.failed.map((f) => f.reason).join("；");
@@ -43,20 +42,16 @@ function formatImportOutcome(outcome: ImportOutcome): { text: string; kind: "war
 
 export const useLibraryStore = defineStore("library", () => {
   const repoRoot = ref<string | null>(null);
-  /** Flat .ezrepo index (source of truth); repoGroups derives the tree by belong. */
+  /** Flat index (source of truth); repoGroups derives the tree. */
   const repoIndex = ref<RepoTree | null>(null);
   const currentPdfId = ref<PDFId | null>(null);
-  /** Sidebar open state (auto-collapses after opening a PDF). */
   const sidebarOpen = ref(true);
-  /** Loaded PDF entities keyed by stable id. */
   const pdfs = ref<Record<PDFId, PDF>>({});
 
   const currentPdf = computed<PDF | null>(() =>
     currentPdfId.value ? (pdfs.value[currentPdfId.value] ?? null) : null,
   );
 
-  /** Index → grouped view by belong (null = root); empty folders still get a group.
-   *  Folders and PDFs within each group are sorted by name. */
   const repoGroups = computed<RepoGroup[] | null>(() => {
     const idx = repoIndex.value;
     if (!idx) return null;
@@ -84,9 +79,7 @@ export const useLibraryStore = defineStore("library", () => {
     return groups;
   });
 
-  /** Fetch a PDF by id into the cache (the only load_pdf call site).
-   *  Normalizes id to the request key; the backend resolves the path, the frontend never builds it.
-   *  Throws on failure; background books read directly instead (parse.bookState). */
+  /** Cache a PDF by id; the backend resolves the path (frontend never builds it). */
   async function loadPdf(id: string): Promise<PDF> {
     const loaded = await invoke<PDF>("load_pdf", { root: repoRoot.value, id });
     const normalized: PDF = { ...loaded, id };
@@ -94,7 +87,7 @@ export const useLibraryStore = defineStore("library", () => {
     return normalized;
   }
 
-  /** Open a PDF by stable id; cached use-and-discard — only the current PDF is kept. */
+  /** Open a PDF and keep only the current one cached (re-reading the JSON is cheap). */
   async function selectPdf(pdf: PDFStruct): Promise<void> {
     const key = pdf.id;
 
@@ -104,7 +97,7 @@ export const useLibraryStore = defineStore("library", () => {
         return;
       }
       try {
-        await loadPdf(key); // id missing / read failure → toast and don't switch
+        await loadPdf(key);
       } catch (error) {
         toast(String(error), "error");
         return;
@@ -112,11 +105,10 @@ export const useLibraryStore = defineStore("library", () => {
     }
 
     currentPdfId.value = key;
-    sidebarOpen.value = false; // collapse the sidebar to give the reader room
+    sidebarOpen.value = false;
     useReaderStore().restorePageFor(key);
-    useParseStore().wake(); // opening a book wakes the scheduler (incl. a first batch for Pending)
+    useParseStore().wake();
 
-    // use-and-discard: keep only the current PDF (re-reading the JSON is cheap)
     for (const id of Object.keys(pdfs.value)) {
       if (id !== key) {
         delete pdfs.value[id];
@@ -128,7 +120,6 @@ export const useLibraryStore = defineStore("library", () => {
     sidebarOpen.value = !sidebarOpen.value;
   }
 
-  // ---- repo: select/load + entry create/delete/move ----
   async function chooseRepoRoot(): Promise<void> {
     const repoPath = await open({
       directory: true,
@@ -151,7 +142,6 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
 
-  /** Auto-open the last repo from settings.repoPath; on failure clear it and go unselected. */
   async function openLastRepo(): Promise<void> {
     const settings = useSettingsStore();
     const root = settings.repoPath;
@@ -164,11 +154,8 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
 
-  /** Import in progress; disables all import entries and blocks re-entry. */
   const importing = ref(false);
 
-  /** Multi-file import: dialog → backend copy (name-id) + skeleton JSON + .ezrepo update
-   *  → outcome details → reload the index. `belong` null = repo root. */
   async function importPdf(belong: string | null = null): Promise<void> {
     if (importing.value) {
       toast(t("library.importingBusy"), "warn");
@@ -194,10 +181,9 @@ export const useLibraryStore = defineStore("library", () => {
         belong,
         paths,
       });
-      // reload the index: gettree_from_config → repoIndex → repoGroups → the tree updates
       await loadRepo(repoRoot.value);
       if (outcome.imported.length > 0) {
-        useParseStore().wake(); // imported books enter the scheduler without being opened
+        useParseStore().wake();
       }
       const report = formatImportOutcome(outcome);
       toast(report.text, report.kind);
@@ -208,10 +194,7 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
 
-  // ---- repo entry mutations: folders are logical (belong); the returned RepoTree
-  //      updates the tree in place, no full refresh ----
-
-  /** Single mutation entry point: update the index in place on success, else toast + false. */
+  /** Update the index in place on success, else toast + false. */
   async function mutateRepoTree(command: string, args: Record<string, unknown>): Promise<boolean> {
     if (!repoRoot.value) return false;
     try {
@@ -223,7 +206,6 @@ export const useLibraryStore = defineStore("library", () => {
     }
   }
 
-  /** Create a folder (backend rejects duplicates/invalid names). */
   function createFolder(name: string): Promise<boolean> {
     if (!repoRoot.value) {
       toast(t("library.noRepo"), "warn");
@@ -232,12 +214,10 @@ export const useLibraryStore = defineStore("library", () => {
     return mutateRepoTree("create_folder", { name });
   }
 
-  /** Delete a folder: the backend cascades to its PDFs (index + files). */
   function deleteFolder(name: string): Promise<boolean> {
     return mutateRepoTree("delete_folder", { name });
   }
 
-  /** Delete a PDF (index + files); if it was open, go to the empty state. */
   async function deletePdf(pdf: PDFStruct): Promise<boolean> {
     const ok = await mutateRepoTree("delete_pdf", { id: pdf.id });
     if (ok) {
@@ -247,14 +227,11 @@ export const useLibraryStore = defineStore("library", () => {
     return ok;
   }
 
-  /** Move a PDF: belong=folder name (created if missing), null = repo root. */
   function movePdf(id: string, belong: string | null): Promise<boolean> {
     return mutateRepoTree("move_pdf", { id, belong });
   }
 
-  /** Clear parse state: backend rebuilds an empty 1..=N skeleton (PDF kept), the frontend
-   *  drops its cache, reloads if open, and wakes the scheduler.
-   *  Page count: pdfjs value for the open book, 0 otherwise (backend reuses the JSON count). */
+  /** Rebuild the empty 1..=N skeleton; total = pdfjs count for the open book, else 0. */
   async function clearPdfState(pdf: PDFStruct): Promise<boolean> {
     if (!repoRoot.value) return false;
     const total = currentPdfId.value === pdf.id ? useReaderStore().pageCount : 0;
@@ -265,19 +242,18 @@ export const useLibraryStore = defineStore("library", () => {
       return false;
     }
     delete pdfs.value[pdf.id];
-    if (currentPdfId.value === pdf.id) await selectPdf(pdf); // reload the new skeleton
+    if (currentPdfId.value === pdf.id) await selectPdf(pdf);
     toast(t("library.clearDone", { name: pdf.name }), "info");
     useParseStore().wake(); // reset state = new work available
     return true;
   }
 
-  /** Fetch the repo index; apply + persist the path on success, leave state on failure. */
   async function loadRepo(root: string): Promise<void> {
     const index = await invoke<RepoTree>("gettree_from_config", { root });
     repoRoot.value = root;
-    repoIndex.value = index; // flat index stored as-is, no tree conversion
-    void useSettingsStore().setRepoPath(root); // default for the next launch
-    useParseStore().wake(); // repo switch/refresh = new work, try to continue the chain
+    repoIndex.value = index;
+    void useSettingsStore().setRepoPath(root);
+    useParseStore().wake();
   }
 
   return {
