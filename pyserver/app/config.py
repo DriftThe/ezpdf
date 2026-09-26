@@ -181,6 +181,19 @@ FIGURE_INNER_MIN_BOXES = _env_int("EZPDF_OCR_FIGURE_INNER_MIN_BOXES", 3)
 FIGURE_INNER_MIN_COVERAGE = _env_float("EZPDF_OCR_FIGURE_INNER_MIN_COVERAGE", 0.25)
 FIGURE_MIN_SIDE_PX = _env_int("EZPDF_OCR_FIGURE_MIN_SIDE", 100)  # smaller figures are never re-scanned
 
+# --- Mistral-compatible /v1/ocr ---
+# PDF pages are rendered here (pypdfium2) at this DPI. 144 pt/inch = the render scale 2.0 the pixel
+# thresholds above are calibrated for (a scale-2.0 A4 page is 1190x1684 px), so a document_url request
+# runs through exactly the tuning the client's own renders do. Do not lower this: the detector's boxes
+# and margins are pixel-scale dependent.
+RENDER_DPI = _env_int("EZPDF_OCR_RENDER_DPI", 144)
+# Document limits mirror Mistral's published ones; the per-image limits are the pre-existing
+# decompression-bomb guard, applied to every rendered page.
+DOC_MAX_BYTES = _env_int("EZPDF_OCR_DOC_MAX_BYTES", 50 * 1024 * 1024)
+DOC_MAX_PAGES = _env_int("EZPDF_OCR_DOC_MAX_PAGES", 1000)
+DOC_MAX_SIDE_PX = _env_int("EZPDF_OCR_DOC_MAX_SIDE_PX", 12_000)
+DOC_MAX_PIXELS = _env_int("EZPDF_OCR_DOC_MAX_PIXELS", 40_000_000)
+
 # --- VL (PaddleOCR-VL-1.6) ---
 VL_MAX_NEW_TOKENS = _env_int("EZPDF_OCR_VL_MAX_NEW_TOKENS", 512)  # 256 truncates long paragraphs
 VL_MIN_PIXELS = _env_int("EZPDF_OCR_VL_MIN_PIXELS", 112896)

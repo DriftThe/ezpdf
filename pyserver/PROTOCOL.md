@@ -14,8 +14,8 @@
 
 | 形态 | 谁启动 | 地址 | 鉴权 | 用途 |
 | --- | --- | --- | --- | --- |
-| **本地托管** | 客户端 spawn `python -m app.main` | 由服务自选临时端口（见 §7.1） | 每次启动的随机会话 token（必带） | 默认形态；需先装环境与模型 |
-| **在线服务** | 部署方自己（`app/server_docker.py`，见 §7.4；开发联调 `server_test.py`） | 固定端口，如 `http://127.0.0.1:9055` | 服务端部署形态一律校验（`token.txt`）；`server_test.py` 默认无 | 基础环境（没装 torch/模型）也能用；也可放内网/公网 |
+| **本地托管** | 客户端 spawn `python -m app.main` | 由服务自选临时端口（见 §8.1） | 每次启动的随机会话 token（必带） | 默认形态；需先装环境与模型 |
+| **在线服务** | 部署方自己（`app/server_docker.py`，见 §8.4；开发联调 `server_test.py`） | 固定端口，如 `http://127.0.0.1:9055` | 服务端部署形态一律校验（`token.txt`）；`server_test.py` 默认无 | 基础环境（没装 torch/模型）也能用；也可放内网/公网 |
 
 客户端在 设置 → OCR 服务 → 服务来源 里二选一；在线服务填地址（+ 服务令牌），点「测试」探活、
 点「启动服务」登记。两种形态用的是**同一套 HTTP 契约**，服务端不需要知道自己是哪一种。
@@ -27,7 +27,7 @@
   - 本地托管：客户端每次 spawn 生成随机 token，经环境变量 `EZPDF_TOKEN` 传给服务；服务
     **必须**校验（本实现用常量时间比较，不匹配回 `403`）。
   - 在线服务：部署方决定要不要校验。`server_test.py` 默认不校验；带 `--token X` 时校验；
-    服务端部署形态（`python -m app.server_docker`，见 §7.4）**一律校验**，令牌由服务端
+    服务端部署形态（`python -m app.server_docker`，见 §8.4）**一律校验**，令牌由服务端
     自己生成并落在 `token.txt`。
   - 令牌范围为**所有路由**（含 `/health`）：服务端开了鉴权，客户端连健康探测都会带这个头。
   - 客户端在设置 → OCR 服务 → 服务令牌 里填同一串令牌（每次 OCR 前都会重新握手，所以
@@ -46,7 +46,8 @@
 | --- | --- | --- | --- |
 | GET | `/health` | 探活 | 启动确认 / 在线模式「测试」 |
 | POST | `/ocr/page` | 单页 OCR | 仅调试（curl 冒烟） |
-| POST | `/ocr/pages` | 批量 OCR（≤32 页） | **主路径**，客户端每批 ≤4 页 |
+| POST | `/ocr/pages` | 批量 OCR（≤32 页） | 原生协议**主路径**，客户端每批 ≤4 页 |
+| POST | `/v1/ocr`（别名 `/ocr`） | Mistral 形状的文档 OCR | 协议选 Mistral 时的**主路径**（见 §7） |
 
 ## 4. `GET /health`
 
@@ -61,7 +62,7 @@
 - **每次** OCR 请求前先调 `/health` 读这个值，然后按它收集这一批的页（所以服务端可以随时
   调整它，客户端下一批就跟上）；
 - 字段缺失/非法 → 客户端按 4 页发（保守值）；值 > 32 → 夹到 32（客户端本地 Rust 侧的批次
-  上限是 32，超了整批会被拒，见 §8）；
+  上限是 32，超了整批会被拒，见 §9）；
 - 本地托管形态下客户端用自己固定的 4 页/批，不读这个字段。
 
 本实现的取值来自环境变量 `EZPDF_MAX_BATCH_PAGES`（默认 32，`server_test.py --max-batch N`
@@ -162,9 +163,125 @@ pt 换算，更不要把 `bbox_px` 归一化到 0..1 或返回原始 PDF 尺寸�
 `text` 块）就能跑通全流程；块越准，译文覆盖框越贴合原文。OCR 之外的版面分析（阅读顺序、
 表结构）不参与协议。
 
-## 7. 连接与生命周期
+## 7. `POST /v1/ocr`（Mistral 形状，两种协议并存）
 
-### 7.1 本地托管（客户端 spawn）
+客户端在 设置 → OCR 服务 → 协议 里二选一：**ezpdf 原生**（§5/§6，客户端渲染页图）或
+**Mistral OCR**（本节，本服务渲染 PDF）。选 Mistral 后，客户端不再发页图，而是把**整份 PDF**（base64
+data URI）和它要的页号发过来；本服务渲染页面、跑同一套版面+识别流程，再按 Mistral 的形状回答。
+路由同时注册 `/ocr`（LiteLLM 两个路径都注册）。
+
+**为什么要有这一节**：Mistral 的 OCR 响应是当下最常见的形状（LiteLLM 的 `/v1/ocr` 支持
+mistral / azure_ai / vertex_ai / cohere 等上游），把它作为服务端的对外形状，客户端就能接任何
+Mistral 兼容服务，而不只是本目录这一份实现。
+
+### 请求
+
+```json
+{
+  "model": "mistral-ocr-latest",
+  "document": { "type": "document_url", "document_url": "data:application/pdf;base64,JVBERi0..." },
+  "pages": [19, 20],
+  "include_blocks": true
+}
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `model` | ✖ | 客户端发的模型名；服务端可以回显，本实现忽略 |
+| `document.type` | ✔ | `document_url`（PDF，本服务渲染）或 `image_url`（一张已渲染的页图，页号只能是 0）；`file` 不支持（没有文件存储，回 422） |
+| `document.document_url` / `.image_url` | ✔ | base64 data URI，**不接受 http(s) 远程地址**（本服务不去抓取调用方给的 URL；回 422） |
+| `pages` | ✖ | 0 基页号，可写数组 `[19,20]` 或字符串 `"0,2-4"`（闭区间）；缺省 = 全部页。越界回 422 |
+| `include_blocks` | ✖ | 是否回逐块框。**本实现默认 `true`**：Mistral 的 OpenAPI 写的是默认 false，但重新生成的官方客户端签名里默认 true，两处自相矛盾，而一个 OCR 服务默认不回块没有意义；要旧语义就显式传 `false`（此时 `blocks` 为 `null`，官方模型接受 null） |
+| `include_image_base64` | ✖ | 图块是否附裁剪图（`images[].image_base64`，PNG data URI） |
+| `image_limit` / `image_min_size` | ✖ | 图块数量上限 / 最小边长（px） |
+
+### 响应
+
+```json
+{
+  "pages": [{
+    "index": 19,
+    "markdown": "整页文本（各块拼接）",
+    "dimensions": { "dpi": 144, "width": 940, "height": 1183 },
+    "images": [{ "id": "img-19-0", "top_left_x": 231, "top_left_y": 814, "bottom_right_x": 756, "bottom_right_y": 1050 }],
+    "blocks": [{
+      "type": "text",
+      "top_left_x": 57, "top_left_y": 573, "bottom_right_x": 926, "bottom_right_y": 676,
+      "content": "Evidently, the DVM is a better voltmeter…",
+      "label": "text"
+    }]
+  }],
+  "model": "mistral-ocr-latest",
+  "usage_info": { "pages_processed": 1, "doc_size_bytes": 25025825 },
+  "object": "ocr"
+}
+```
+
+- `index` 是**文档内的绝对 0 基页号**：`pages` 过滤后仍不重编号（请求 `"19-20"` 就回 `index: 19, 20`），
+  客户端靠它把结果对回自己的 1 基页号。`page` 顺序与请求一致。
+- `dimensions` 是**本服务渲染出来的那张位图**的像素尺寸，块与图的四个角坐标都在这个空间里。
+  渲染 DPI 固定为 `EZPDF_OCR_RENDER_DPI`（默认 144 = 72×2.0，与 §6 的 scale 2.0 一致，这样
+  `app/config.py` 里那套按像素标定的阈值仍然成立）。**`dpi` 永远是整数**：Mistral 的
+  `OCRPageDimensions.dpi` 是必填 `int`，写 `null` 会被官方客户端判为非法响应（实测）；`image_url`
+  输入的位图没有物理比例，填的是名义渲染 DPI。
+- **调用方必须用 `width`/`height` 的比例换算，不要用 `dpi`**：块坐标 ÷ 本服务的位图尺寸 × 自己的页尺寸，
+  就能落回自己的坐标系（本仓库客户端就是这么做的，并在宽高比不一致时整页失败而不是画错框）。
+- `blocks[].type` 是 Mistral 的 13 类词表（`text` / `title` / `list` / `table` / `image` /
+  `equation` / `caption` / `code` / `references` / `aside_text` / `header` / `footer` / `signature`），
+  这样官方客户端能直接解析；本服务同时把 PP-DocLayout 的原始标签放在额外的 `label` 字段里
+  （`label` 不属于 Mistral 规范：官方 SDK 会忽略未知字段、`model_dump()` 里看不到它，我们的客户端
+  读它，于是 21 类标签不会在这一层被压扁）。
+- 表格块的 `content` 仍是 `<fcel>/<ecel>/<lcel>/<ucel>/<xcel>/<nl>` 标记流（不是 HTML）。
+  客户端认两种方言：这套标记流与 HTML `<table>`（`table.rs::parse_any`）；**markdown 管道表
+  （`| a | b |`）目前不解析**，遇到就只当普通文本块（不翻译、不覆盖）。Mistral 官方的
+  `tables[].format` 可取 markdown，所以接真 Mistral 时表格这一项还不完整，见 §10。
+
+### 截断即失败
+
+识别被 `max_new_tokens` 截断的页面**整页失败**（HTTP 502），不返回半页内容：块级协议里没有
+"这页只读了一半"的表达，静默的半页就是漏识别。这条对任何上游都成立——若你的服务调用一个可能截断的
+模型（上下文上限、输出上限），必须自己检测并把该页变成错误，而不是返回残缺的 `blocks`。
+
+### 鉴权与限制
+
+- 鉴权与 §2 同一串共享密钥，**两种写法都收**：`x-ezpdf-token: <token>` 或 `Authorization: Bearer <token>`。
+- 文档上限：解码后 50 MB（Mistral 自身也是 50 MB）、≤1000 页；每张渲染图沿用 12k px 单边 / 40 MP 的总像素上限。
+- 请求体上限仍是 64 MB（§2）：PDF 转 base64 会膨胀约 1/3，所以 50 MB 的文档其实到不了这一层
+  （约 67 MB），客户端按批次发送时注意这一点。
+- `/health` 是可选的：Mistral 规范没有这个路由，客户端的「测试/启动服务」在 Mistral 协议下
+  把**任何拒绝**（401/403/404/405…）视为"可达但无健康检查"（见 §8.2）；只有连不上（无应答、
+  超时）才算不可达。
+- 客户端发来的是**页切片**，不是整份文档：只要 lopdf 能安全切出请求的页，`document_url` 里就
+  只含那几页，`pages` 过滤器随之省略（切片本身就是选区）。切片失败（加密、页框读不到、重写后
+  自检不过）时才退回整份文档 + `pages` 过滤。因此**不要假设 `pages` 一定存在**，也不要把
+  `pages[].index` 当作文档绝对页号：切片形态下它必然是 0..n-1。
+- 客户端会显式发 `include_blocks: true`、`include_image_base64: false` 与 `table_format: "html"`。
+  后两者是"不要白传、按我能解析的形式给"：表格请按 HTML 返回（markdown 管道表表达不了 rowspan，
+  客户端会把解析不出的表格退回原像素）。
+
+### 作为客户端，我们对 Mistral 兼容服务的硬要求
+
+接第三方（Mistral 官方、LiteLLM 前置的 provider、自建网关）时，只有下面几条是必需的，其余都能容错：
+
+1. **`blocks` 必须带几何**。`include_blocks: true` 时每个块要有 `top_left_x/y`、`bottom_right_x/y`
+   （整数像素）+ `type` + `content`。客户端完全没有别的位置来源——没有 `blocks` 的页只能整页拒绝。
+2. **`dimensions.width/height` 必须与页面同比例**。客户端按 `pdfjs` 视口 pt 尺寸 / `dimensions`
+   的比例换算坐标，**不看 `dpi`**（图片文档里它是 null，部署还可能按任意 scale 渲染）。宽高比
+   与视口相差超过 2% 的页会被判为"服务端渲染了另一个页面框"并拒绝该页（旋转页、CropBox 差异是
+   典型原因）。`dpi` 字段本身请给一个整数：官方 `mistralai` 客户端的 pydantic 模型要求非空。
+3. **`pages[].index` 要自洽**：切片形态下是 0..n-1（按请求页升序），整份文档形态下是文档绝对
+   0 基页号。客户端两种都能识别，但**不能混用**——两种都对不上就整批失败。
+4. **整份文档形态下要遵守 `pages` 过滤器**：只要请求的页，不要把整本都识别一遍。
+5. **模型名字段**会按用户在设置里填的值原样发出；官方端点填 `mistral-ocr-latest`，LiteLLM/网关
+   填其配置里的别名。请忽略不认识的模型名时也不要 500。
+
+可以放心"不实现"的东西：`/health`、`bbox_annotation_format`、`document_annotation_format`、
+`extract_header` / `extract_footer`（我们靠块类型取页眉页脚）、`confidence_scores_granularity`
+（我们不读）。`label` 字段可给可不给（给了会优先于 `type` 使用，这是我们自己的扩展）。
+
+## 8. 连接与生命周期
+
+### 8.1 本地托管（客户端 spawn）
 
 1. 客户端以 `EZPDF_TOKEN` / `EZPDF_MODELS_DIR` 环境变量启动 `python -m app.main`（cwd =
    `pyserver/`，stdin/stdout/stderr 全部接管）。
@@ -183,22 +300,28 @@ pt 换算，更不要把 `bbox_px` 归一化到 0..1 或返回原始 PDF 尺寸�
 5. 崩溃自动重启：非主动退出 → 指数退避（1s 起、上限 15s）重拉，连续 3 次失败进入终态
    `failed`（前端显示红色，需手动再启动）。
 
-### 7.2 在线服务（客户端只做 HTTP）
+### 8.2 在线服务（客户端只做 HTTP）
 
 1. 客户端对地址跑一次 `GET /health`（5s 超时，回环地址不走系统代理）；成功即把该地址登记为
    OCR 目标并把状态置为"已连接"（`ocr://status` 事件 → 前端「服务」灯），同时记下
    `max_batch_pages` 显示在设置页地址下方。
+   - 协议选 **Mistral OCR** 时，`/health` 的**任何拒绝都视为"可达但无健康检查"**（401/403/404/405…）：
+     Mistral 规范没有这个路由，第三方实现不该被迫加一个，云服务网关对未知路径回什么也无法预料；
+     探活会同时带上 `x-ezpdf-token` 与 `Authorization: Bearer`，登记后由第一次 `/v1/ocr` 证明
+     令牌是否有效。只有超时/连不上才判为不可达。
 2. 连接是**无状态**的：没有心跳、没有长连接、没有会话。任意一次 `/ocr/pages` 失败都会让这一批
    计入连败；前端连败 3 次只暂停该类批次的调度，不会"断开连接"。
 3. 客户端不主动重连也不做健康轮询：地址挂了要在设置页点「测试」/「启动服务」重新登记。
+   Mistral 协议下客户端也不再逐批握手（那个协议没有批大小可协商），每批页数取设置页的
+   「每请求页数」（默认 16，上限 32）。
 
-### 7.3 客户端认为"能用"的条件
+### 8.3 客户端认为"能用"的条件
 
 `GET /health` 返回 2xx。仅此而已——`/health` 应答慢或返回非 JSON 都算失败。
 在线模式下这个握手**每条 OCR 批次前都会重跑**，所以 `/health` 挂掉等价于"这一批解析失败"
-（计入连败，见 §8）；翻译不受影响。
+（计入连败，见 §9）；翻译不受影响。
 
-### 7.4 服务端部署（Docker / 裸机）：token 文件
+### 8.4 服务端部署（Docker / 裸机）：token 文件
 
 `python -m app.server_docker` 是给"没有客户端 spawn"的部署形态准备的入口（容器、内网/公网
 服务器），与 `app.main` 的差别只有三处：绑定 `EZPDF_HOST:EZPDF_PORT`（默认 `0.0.0.0:9055`）
@@ -217,7 +340,7 @@ pt 换算，更不要把 `bbox_px` 归一化到 0..1 或返回原始 PDF 尺寸�
 
 裸机开发联调仍可用 `server_test.py`（默认不校验，`--token X` 开启），它不读令牌文件。
 
-## 8. 错误与重试
+## 9. 错误与重试
 
 | 状态码 | 何时 | 客户端行为 |
 | --- | --- | --- |
@@ -230,7 +353,12 @@ pt 换算，更不要把 `bbox_px` 归一化到 0..1 或返回原始 PDF 尺寸�
 错误响应体沿用 FastAPI 的 `{"detail": "..."}`；客户端把 `detail` 前缀进日志（截断 300 字符）。
 前端同一本书解析失败 3 次就不再重试该书（OCR 支路关闭，翻译支路不受影响）。
 
-## 9. 用别的语言/框架实现：最小清单
+Mistral 协议下客户端还会自己先重试一轮（最多 3 次尝试）：**429** 按 `Retry-After`（超过 30s 就不再
+原地等）、**5xx 与超时**按指数退避，**其它 4xx 立即失败**（令牌错、模型名错，重试改变不了答案）。
+429 耗尽后这一批不是"失败"而是"整体限流"：前端不进连败计数，而是全局冷却 15s 再继续——限流意味着
+整个客户端超配额了，在批内死等只会压住队列。
+
+## 10. 用别的语言/框架实现：最小清单
 
 - [ ] `GET /health` → 2xx + `{"status":"ok","max_batch_pages":N}`（快，别做重活；N 就是你的
       批次上限，客户端每次请求前都来读一遍）。
@@ -240,20 +368,30 @@ pt 换算，更不要把 `bbox_px` 归一化到 0..1 或返回原始 PDF 尺寸�
       不要因为多了字段而报错——客户端将来会加字段）。
 - [ ] 本地托管形态：支持 `EZPDF_READY` 就绪行、`x-ezpdf-token` 校验、stdin-EOF 自退。
 - [ ] 无状态、可并发（客户端一次只发一批，但可能重连后立刻再发）。
-- [ ] 服务端部署形态（可选）：固定地址启动、令牌可复现（见 §7.4）。
+- [ ] 服务端部署形态（可选）：固定地址启动、令牌可复现（见 §8.4）。
+- [ ] Mistral 协议（可选，见 §7）：`POST /v1/ocr` 收 base64 PDF，自己渲染（`EZPDF_OCR_RENDER_DPI`
+      默认 144），回 `pages[]` + `dimensions` + `blocks[]`（4 个角坐标 + `type`）；**`dimensions` 与
+      逐块坐标是硬要求**——只回页面级 `markdown` 的实现接不上，这个客户端的译文要画在原文像素上。
+      另外 `include_blocks: true` 才回块、截断整页失败（502）；`pages` 过滤器可能缺席（客户端发
+      切片时），页号请按"回答里第几页"自洽编号。
 
-参考实现：本目录 `app/`（`routers/ocr.py` 是端点、`services/pipeline.py` 是版面+识别流程；
-`app/server_docker.py` 是服务端/容器入口）。
+参考实现：本目录 `app/`（`routers/ocr.py` / `routers/ocr_mistral.py` 是端点、`services/pipeline.py`
+是版面+识别流程、`services/pdf_pages.py` 是 PDF 渲染；`app/server_docker.py` 是服务端/容器入口）。
 开发联调：`python server_test.py`（默认 `127.0.0.1:9055`）。
 容器部署：`pyserver/Dockerfile` + `docker compose --profile cpu|gpu up -d`（见 `docker-compose.yml`）。
 
-## 10. 兼容性规则
+## 11. 兼容性规则
 
 - **没有版本号**：加字段是兼容的（客户端忽略未知字段），删字段/改语义不兼容。
 - `markdown` 允许为空串（例如 `image` 块或识别失败），客户端照存。
 - `blocks` 允许为空数组（整页无文本），客户端会把该页标为已 OCR 完成、无覆盖框。
 - `/health` 里没有 `max_batch_pages` 不算错：客户端按 4 页发批（老服务/最小实现可直接省略）。
 - 服务端不要做 PDF/pt 相关换算，也不要尝试翻译。
+- Mistral 协议下 `blocks` 为 `null`（显式 `include_blocks: false` 或该服务没实现块）或 `dimensions`
+  缺失都算该页失败，不是"空页"；`label` 是本实现加的额外字段（官方 SDK 忽略它）。
+- 本实现的响应体已用官方 `mistralai` 客户端的 pydantic 模型实测校验通过（`document_url` /
+  `image_url` / `blocks: null` 三种情况）；唯一的语义偏离是上面那条 `include_blocks` 默认值。
+- 别把"模型输出被截断"当成正常回答：块级协议里没有表达方式，客户端只会当成完整的半页。
 
 ## English
 
@@ -294,3 +432,16 @@ LLM itself (`src-tauri/src/translate.rs`), independently of the parse service.
   book's OCR branch in the client (translation keeps working).
 - Compatibility: no version field, unknown response fields are ignored, missing-but-required fields
   break the client; empty `blocks` means "page has no text".
+- **Two protocols, chosen in Settings → OCR service → Protocol**: the native one above (the client
+  renders, `POST /ocr/pages`) and a **Mistral-shaped `POST /v1/ocr`** (alias `/ocr`, see §7) in which
+  the client uploads the wanted pages as a base64 `document_url` and the service renders them. Both
+  live on the same service and share the token; `x-ezpdf-token` or `Authorization: Bearer` are both
+  accepted. The Mistral shape is the one other OCR services speak (LiteLLM's `/v1/ocr` fronts mistral,
+  azure_ai, vertex_ai and cohere), so a client speaking it can use them — but note what such a service
+  must return to be usable here: `pages[].dimensions` plus per-block 4-corner boxes in `blocks[]`
+  (`include_blocks: true`). Page-level `markdown` alone cannot be placed on the original page, and a
+  page whose reading was truncated must be an error, not a half page. A client request carries only the
+  pages it wants (lopdf extracts them; when that is impossible the whole document goes and `pages`
+  selects), so a service must not assume the `pages` filter is present. `/health` is optional on this
+  route: the client treats any refusal there as "reachable, no handshake", and the model name comes
+  from the settings (a gateway picks its upstream from it).

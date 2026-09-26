@@ -8,3 +8,4 @@ tiktoken==0.13.0  # required to load the PaddleOCR-VL-1.6 tokenizer
 sentencepiece==0.2.2  # tokenizer.model is SentencePiece protobuf
 protobuf==7.35.1  # required by SentencePieceExtractor; without it the file is misread as tiktoken
 opencv-contrib-python==4.10.0.84  # required by PP-DocLayoutV3 post_process_object_detection
+pypdfium2==5.13.0  # PDF rasterizer for the Mistral-shaped /v1/ocr document_url form (Apache-2.0; PyMuPDF is AGPL)
