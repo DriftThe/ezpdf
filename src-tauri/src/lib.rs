@@ -8,6 +8,7 @@ use tauri::Manager;
 use tauri::Emitter;
 use ts_rs::TS;
 
+pub mod mistral;
 pub mod parse;
 pub mod pyenv;
 pub mod pyserver;
@@ -45,7 +46,7 @@ pub enum PDFStatus {
 }
 
 /// One OCR-detected region; kind is a PP-DocLayoutV3 label kept as a string so new labels pass through.
-#[derive(Clone, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct Block {
@@ -181,7 +182,7 @@ pub(crate) fn find_pdf(root: &str, id: &str) -> Result<PDFStruct, String> {
 }
 
 /// Disk naming (minted at import, collision-free): `<name>-<id>.pdf` / `<name>-<id>.json`.
-fn pdf_file_name(name: &str, id: &str) -> String {
+pub(crate) fn pdf_file_name(name: &str, id: &str) -> String {
     format!("{name}-{id}.pdf")
 }
 
@@ -190,7 +191,7 @@ fn bind_file_name(name: &str, id: &str) -> String {
 }
 
 /// Lexical repo-relative check (`.` allowed, `..`/absolute rejected): stops hand-written .ezrepo values escaping the root.
-fn check_relative(rel: &str) -> Result<(), String> {
+pub(crate) fn check_relative(rel: &str) -> Result<(), String> {
     let ok = !rel.is_empty()
         && Path::new(rel)
             .components()
@@ -606,9 +607,15 @@ async fn ocr_stop(
 }
 
 /// Remote-mode probe ("Test" button): no state change; returns the server's advertised batch size.
+/// `tolerant` (the Mistral-shaped protocol): the endpoint need not implement /health at all, so any
+/// refusal still counts as reachable and comes back with a `synthetic` health.
 #[tauri::command]
-async fn ocr_health(url: String, token: String) -> Result<pyserver::ParseServiceHealth, String> {
-    pyserver::probe_health(&url, &token).await
+async fn ocr_health(
+    url: String,
+    token: String,
+    tolerant: Option<bool>,
+) -> Result<pyserver::ParseServiceHealth, String> {
+    pyserver::probe_health(&url, &token, tolerant.unwrap_or(false)).await
 }
 
 /// Remote-mode connect: register as the OCR target only after a successful probe.
@@ -618,18 +625,23 @@ async fn ocr_start_remote(
     svc: tauri::State<'_, pyserver::PyService>,
     url: String,
     token: String,
+    tolerant: Option<bool>,
 ) -> Result<pyserver::ParseServiceHealth, String> {
     let base = pyserver::normalize_base(&url)?;
-    let health = pyserver::probe_health(&base, &token).await?;
+    let health = pyserver::probe_health(&base, &token, tolerant.unwrap_or(false)).await?;
     svc.set_remote(&app, base.clone(), token);
     let _ = app.emit(
         "ocr://log",
-        format!(
-            "[ezpdf] online parse service connected: {base} (pid {}, {} ms, max batch {} pages)",
-            health.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
-            health.elapsed_ms,
-            health.max_batch_pages
-        ),
+        if health.synthetic {
+            format!("[ezpdf] online parse service connected: {base} (no /health; {} ms)", health.elapsed_ms)
+        } else {
+            format!(
+                "[ezpdf] online parse service connected: {base} (pid {}, {} ms, max batch {} pages)",
+                health.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+                health.elapsed_ms,
+                health.max_batch_pages
+            )
+        },
     );
     Ok(health)
 }
@@ -648,6 +660,23 @@ async fn parse_pdf(
         .ocr_target()
         .ok_or_else(|| "OCR service not connected".to_string())?;
     parse::parse_batch(root, id, pages, &base, &token).await
+}
+
+/// One OCR batch over a Mistral-shaped service: the wanted pages travel as their own PDF, and the page
+/// size the viewer measures comes along because the service's boxes are mapped back by that ratio.
+/// `model` is what selects the upstream on a LiteLLM/gateway deployment; empty keeps the default.
+#[tauri::command]
+async fn parse_pdf_mistral(
+    root: &str,
+    id: &str,
+    pages: Vec<mistral::MistralPageInput>,
+    svc: tauri::State<'_, pyserver::PyService>,
+    model: Option<String>,
+) -> Result<parse::ParseOutcome, String> {
+    let (base, token) = svc
+        .ocr_target()
+        .ok_or_else(|| "OCR service not connected".to_string())?;
+    parse::parse_batch_mistral(root, id, pages, &base, &token, model.as_deref()).await
 }
 
 /// Retry translation-only (no OCR) for finished && !translated pages.
@@ -724,6 +753,7 @@ pub fn run() {
             ocr_health,
             ocr_start_remote,
             parse_pdf,
+            parse_pdf_mistral,
             translate_pdf,
             prefill_pages,
             reset_pdf_state,

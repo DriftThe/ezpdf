@@ -26,6 +26,11 @@ onMounted(() => {
 
 const online = computed(() => settings.ocr.mode === "online");
 const probing = ref(false);
+
+/** Clamp on blur rather than on input: clamping while typing turns "1" → "16" under the cursor. */
+function onPagesBlur(): void {
+  settings.ocr.pagesPerRequest = settings.mistralPages();
+}
 async function onTest(): Promise<void> {
   probing.value = true;
   try {
@@ -159,6 +164,20 @@ const lights = computed(() => [
       </span>
     </div>
 
+    <!-- Wire contract: our own /ocr/pages with the client's renders, or the Mistral-shaped /v1/ocr that
+         takes the PDF and renders it service-side (the common shape other OCR services speak) -->
+    <div class="set-field">
+      <span>{{ t("ocr.protocol") }}</span>
+      <span class="set-select-wrap">
+        <select v-model="settings.ocr.api" class="set-select">
+          <option value="ezpdf">{{ t("ocr.protocolNative") }}</option>
+          <option value="mistral-ocr">{{ t("ocr.protocolMistral") }}</option>
+        </select>
+        <SelectArrow />
+      </span>
+    </div>
+    <p v-if="settings.ocr.api === 'mistral-ocr'" class="set-hint">{{ t("ocr.protocolMistralHint") }}</p>
+
     <!-- "Test" only probes (start service registers the connection) -->
     <template v-if="online">
       <div class="set-field">
@@ -177,8 +196,39 @@ const lights = computed(() => [
           <input v-model="settings.ocr.token" class="url-input" :placeholder="t('ocr.tokenPlaceholder')" />
         </div>
       </div>
-      <!-- Server-advertised batch size (re-handshaked before every OCR request) -->
-      <p v-if="parse.onlineHealth" class="set-hint batch-hint">
+      <!-- Mistral-shaped services: the protocol has no handshake, so what it needs from us is a model
+           name (a gateway selects its upstream from it) and how many pages one request may carry. -->
+      <template v-if="settings.ocr.api === 'mistral-ocr'">
+        <div class="set-field">
+          <span>{{ t("ocr.model") }}</span>
+          <div class="set-field-row url-row">
+            <input
+              v-model="settings.ocr.model"
+              class="url-input"
+              :placeholder="t('ocr.modelPlaceholder')"
+            />
+          </div>
+        </div>
+        <p class="set-hint">{{ t("ocr.modelHint") }}</p>
+        <div class="set-field">
+          <span>{{ t("ocr.pagesPerRequest") }}</span>
+          <div class="set-field-row url-row">
+            <input
+              v-model.number="settings.ocr.pagesPerRequest"
+              class="url-input pages-input"
+              type="number"
+              min="1"
+              max="32"
+              step="1"
+              @blur="onPagesBlur"
+            />
+          </div>
+        </div>
+        <p class="set-hint">{{ t("ocr.pagesPerRequestHint") }}</p>
+      </template>
+      <!-- Server-advertised batch size (re-handshaked before every OCR request); a Mistral-shaped
+           service advertises nothing, so it shows the local page count instead -->
+      <p v-else-if="parse.onlineHealth && !parse.onlineHealth.synthetic" class="set-hint batch-hint">
         {{ t("ocr.batchHint", { batch: parse.onlineHealth.maxBatchPages }) }}
       </p>
     </template>
@@ -257,6 +307,9 @@ const lights = computed(() => [
 .url-input {
   flex: 1;
   min-width: 0;
+}
+.pages-input {
+  flex: 0 0 88px;
 }
 .install-row {
   gap: 12px;

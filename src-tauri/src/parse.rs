@@ -44,6 +44,10 @@ pub struct ParsePageInput {
 pub struct ParseOutcome {
     pub book_status: PDFStatus,
     pub updated_pages: Vec<PageInfo>,
+    /// Pages OCR answered but the client could not place (a page box the service rendered differently,
+    /// no geometry at all). They are *not* written, so the book stays unfinished and the progress strip
+    /// keeps showing the shortfall; the scheduler skips them for the rest of the session.
+    pub refused_pages: Vec<u32>,
 }
 
 // ---- pyserver /ocr/pages response (only the needed fields) ----
@@ -119,7 +123,7 @@ pub(crate) fn backfill_table_grids(doc: &mut BindDoc) -> bool {
             if block.kind != TABLE || block.grid.is_some() {
                 continue;
             }
-            if let Some(grid) = crate::table::parse_markup(&block.content) {
+            if let Some(grid) = crate::table::parse_any(&block.content) {
                 block.grid = Some(grid);
                 changed = true;
             }
@@ -151,10 +155,11 @@ fn pages_by_index(doc: &BindDoc, indices: &[u32]) -> Vec<PageInfo> {
         .collect()
 }
 
-fn outcome(doc: &BindDoc, updated: Vec<PageInfo>) -> ParseOutcome {
+fn outcome(doc: &BindDoc, updated: Vec<PageInfo>, refused_pages: Vec<u32>) -> ParseOutcome {
     ParseOutcome {
         book_status: doc.status,
         updated_pages: updated,
+        refused_pages,
     }
 }
 
@@ -183,8 +188,9 @@ pub async fn parse_batch(
         let _ = load_bind(root, id)?;
     }
 
-    // No total timeout: with lazy engine loading the first request can take minutes.
-    let client = reqwest::Client::new();
+    // No total timeout: with lazy engine loading the first request can take minutes (see ocr_client,
+    // which also keeps the system proxy away from a loopback service).
+    let client = crate::pyserver::ocr_client(base, None)?;
     let body = serde_json::json!({
         "pages": pages
             .iter()
@@ -217,30 +223,101 @@ pub async fn parse_batch(
     }
 
     // Persist under lock: re-read (merging concurrent translation writes) → patch → atomic write.
-    let result = {
+    let updates: Vec<(u32, Vec<Block>)> = pages
+        .iter()
+        .zip(&ocr.pages)
+        .map(|(p, r)| (p.index, map_blocks(&r.blocks, p.scale)))
+        .collect();
+    persist_batch(root, id, updates, &[])
+}
+
+/// One batch over a Mistral-shaped service (`POST /v1/ocr`): the pages travel as their own small PDF,
+/// not our renders.
+///
+/// The service answers page objects carrying their own pixel geometry, which `mistral::collect_updates`
+/// maps back onto the viewer's pages and cleans up. A page it cannot place is refused on its own and its
+/// batchmates still land — the geometry is the service's render, so one rotated page must not cost the
+/// rest of the batch. Only a defect of the whole reply (an unreconcilable count, an answer for a page
+/// nobody asked about, every page refused) fails the batch, which is what the strike counter is for.
+pub async fn parse_batch_mistral(
+    root: &str,
+    id: &str,
+    pages: Vec<crate::mistral::MistralPageInput>,
+    base: &str,
+    token: &str,
+    model: Option<&str>,
+) -> Result<ParseOutcome, String> {
+    if pages.is_empty() {
+        return Err("OCR batch is empty".into());
+    }
+    if pages.len() > MAX_BATCH_PAGES as usize {
+        return Err(format!(
+            "batch page count exceeds limit: {} > {MAX_BATCH_PAGES}",
+            pages.len()
+        ));
+    }
+    if pages.iter().any(|p| !(p.size_pt[0] > 0.0 && p.size_pt[1] > 0.0)) {
+        return Err("OCR batch has a page without a viewer size".into());
+    }
+    // Fail fast: no need to upload the PDF if the book/bound JSON is missing.
+    {
         let lock = file_lock(root, id);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let (json_path, mut doc) = load_bind(root, id)?;
+        let _ = load_bind(root, id)?;
+    }
 
-        let updates: Vec<(u32, Vec<Block>)> = pages
-            .iter()
-            .zip(&ocr.pages)
-            .map(|(p, r)| (p.index, map_blocks(&r.blocks, p.scale)))
-            .collect();
-        let total_blocks: usize = updates.iter().map(|(_, b)| b.len()).sum();
-        let touched = patch_pages(&mut doc, updates);
-        translate::log(format!(
-            "OCR done p{:?}: {total_blocks} blocks",
-            pages.iter().map(|p| p.index).collect::<Vec<_>>()
-        ));
-
-        let updated = pages_by_index(&doc, &touched);
-        finalize_status(&mut doc);
-        write_bind_atomic(&json_path, &doc)?;
-        outcome(&doc, updated)
+    let indices: Vec<u32> = pages.iter().map(|p| p.index).collect();
+    // Slicing is CPU work proportional to the book's size (and the first batch also parses it), so it runs
+    // off the async worker that the concurrent translation requests also occupy.
+    let payload = {
+        let (book_root, book_id, wanted) = (root.to_string(), id.to_string(), indices.clone());
+        tokio::task::spawn_blocking(move || crate::mistral::payload_for(&book_root, &book_id, &wanted))
+            .await
+            .map_err(|e| format!("PDF slicing failed: {e}"))??
     };
+    let client = crate::mistral::OcrClient::new(base, token, model);
+    let returned = crate::mistral::ocr_pdf(&client, &payload, &indices).await?;
+    let (updates, refused) = crate::mistral::collect_updates(&pages, returned)?;
+    if updates.is_empty() {
+        // Nothing was written, so the scheduler would pick the same pages again on the next tick and
+        // hammer the service forever without ever counting a strike.
+        let reasons: Vec<String> = refused.iter().map(|r| r.reason.clone()).collect();
+        return Err(format!("OCR refused every page of the batch: {}", reasons.join("; ")));
+    }
+    persist_batch(root, id, updates, &refused)
+}
 
-    Ok(result)
+/// Patch one batch's blocks into the bound JSON: re-read under the file lock (so a concurrent
+/// translation write is not lost), patch, transition the status and write atomically.
+///
+/// `refused` carries pages that were answered but could not be placed. They are logged and reported but
+/// deliberately not written: a page half-placed would look finished to the reader and hide the defect.
+fn persist_batch(
+    root: &str,
+    id: &str,
+    updates: Vec<(u32, Vec<Block>)>,
+    refused: &[crate::mistral::Refusal],
+) -> Result<ParseOutcome, String> {
+    for refusal in refused {
+        translate::log(format!("[ocr] refused {}", refusal.reason));
+    }
+    let lock = file_lock(root, id);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let (json_path, mut doc) = load_bind(root, id)?;
+
+    let total_blocks: usize = updates.iter().map(|(_, b)| b.len()).sum();
+    let indices: Vec<u32> = updates.iter().map(|(i, _)| *i).collect();
+    let touched = patch_pages(&mut doc, updates);
+    translate::log(format!("OCR done p{indices:?}: {total_blocks} blocks"));
+
+    let updated = pages_by_index(&doc, &touched);
+    finalize_status(&mut doc);
+    write_bind_atomic(&json_path, &doc)?;
+    Ok(outcome(
+        &doc,
+        updated,
+        refused.iter().map(|r| r.index).collect(),
+    ))
 }
 
 /// Translation phase grouping (stride-2 concurrency): positions 0,2,4… in one phase, 1,3,5… in the other.
@@ -347,7 +424,7 @@ pub async fn translate_batch(
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         load_bind(root, id)?
     };
-    Ok(outcome(&doc, pages_by_index(&doc, &touched)))
+    Ok(outcome(&doc, pages_by_index(&doc, &touched), Vec::new()))
 }
 
 /// Disabled-translation path: no network, source text copied into translation and the page marked done in one write.
@@ -380,7 +457,7 @@ fn bypass_batch(
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         load_bind(root, id)?
     };
-    Ok(outcome(&doc, pages_by_index(&doc, &touched)))
+    Ok(outcome(&doc, pages_by_index(&doc, &touched), Vec::new()))
 }
 
 /// When pages is empty (failed lopdf parse) rebuild a 1..=N skeleton from the real count; never touches existing pages.

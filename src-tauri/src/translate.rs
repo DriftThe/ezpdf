@@ -301,7 +301,7 @@ fn grid_for(block: &crate::Block) -> Option<crate::table::TableGrid> {
     if block.kind != crate::table::TABLE {
         return None;
     }
-    block.grid.clone().or_else(|| crate::table::parse_markup(&block.content))
+    block.grid.clone().or_else(|| crate::table::parse_any(&block.content))
 }
 
 /// Whether the page has a parsable, untranslated table (only if table is a translate type) — the backfill gate.

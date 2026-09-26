@@ -7,4 +7,10 @@ export type ParseServiceHealth = {
 /**
  * u32 not u64: ts-rs maps u64 to bigint, and the frontend only displays this.
  */
-pid: number | null, maxBatchPages: number, elapsedMs: number, };
+pid: number | null, maxBatchPages: number, elapsedMs: number, 
+/**
+ * True when this is not a real handshake but the tolerated "the endpoint does not speak `/health`"
+ * answer, whose figures are made up. The UI must not present them as the service's own — and for a
+ * Mistral-shaped endpoint the batch size is a local setting, not something anyone advertised.
+ */
+synthetic: boolean, };

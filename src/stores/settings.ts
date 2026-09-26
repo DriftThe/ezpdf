@@ -83,12 +83,31 @@ interface GeneralSettings {
 /** local needs deps + models; online is a remote URL over the same protocol. */
 type OcrMode = "local" | "online";
 
+/**
+ * Which wire contract the parse service speaks. `ezpdf` is the client's own (/ocr/pages, this app's
+ * renders); `mistral-ocr` is POST /v1/ocr, the shape other OCR services use — the PDF travels and the
+ * service renders, so its boxes come back in its own pixels and are mapped by page size.
+ */
+type OcrApi = "ezpdf" | "mistral-ocr";
+
 interface OcrSettings {
   installMirror: boolean;
   mode: OcrMode;
+  api: OcrApi;
   url: string;
   token: string;
+  /** Model field of the Mistral request: a LiteLLM/gateway deployment picks the upstream from it. */
+  model: string;
+  /** Pages per request on the Mistral route (the protocol has no batch size to negotiate). */
+  pagesPerRequest: number;
 }
+
+/** Model name a genuine Mistral endpoint expects; ours ignores the field. */
+export const DEFAULT_OCR_MODEL = "mistral-ocr-latest";
+/** Pages per Mistral request: with the PDF sliced, bandwidth no longer argues for a small batch, only
+ * how much work one transport failure throws away. Rust rejects anything over 32. */
+export const DEFAULT_OCR_PAGES = 16;
+export const MAX_OCR_PAGES = 32;
 
 /** Registering a new section in SettingsPage.vue SECTIONS is mandatory (build error otherwise). */
 export type SettingsSection = "llm" | "ocr" | "common";
@@ -223,9 +242,24 @@ export const useSettingsStore = defineStore("settings", () => {
   const ocr = ref<OcrSettings>({
     installMirror: true,
     mode: "local",
+    api: "ezpdf",
     url: "",
     token: "",
+    model: DEFAULT_OCR_MODEL,
+    pagesPerRequest: DEFAULT_OCR_PAGES,
   });
+
+  /** Pages per Mistral request as the scheduler uses it: a stored value outside 1..=32 is clamped. */
+  function mistralPages(): number {
+    const value = Math.floor(Number(ocr.value.pagesPerRequest));
+    if (!Number.isFinite(value)) return DEFAULT_OCR_PAGES;
+    return Math.min(MAX_OCR_PAGES, Math.max(1, value));
+  }
+
+  /** Model name for the Mistral request, defaulting when the user cleared it. */
+  function mistralModel(): string {
+    return ocr.value.model.trim() || DEFAULT_OCR_MODEL;
+  }
 
   const repoPath = ref<string | null>(null);
 
@@ -528,6 +562,8 @@ export const useSettingsStore = defineStore("settings", () => {
     llm,
     general,
     ocr,
+    mistralPages,
+    mistralModel,
     repoPath,
     verifying,
     modelsFetching,
