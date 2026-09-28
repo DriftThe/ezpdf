@@ -24,3 +24,19 @@ export async function renderPageToDataUrl(
     canvas.height = 0;
   }
 }
+
+/**
+ * The page's size in pt at scale 1 — the space `Block.loc` is written in and the covers divide by.
+ *
+ * With the Mistral-shaped service the render happens server-side, so Rust places boxes by the ratio
+ * between the service's raster and this size; it is the same viewport the reader itself measures
+ * (stores/reader.ts pageSizeFor), which is what keeps the two panes aligned.
+ */
+export async function pageSizePt(
+  doc: PDFDocumentProxy,
+  pageNumber: number,
+): Promise<[number, number]> {
+  const page = await doc.getPage(pageNumber);
+  const viewport = page.getViewport({ scale: 1 });
+  return [viewport.width, viewport.height];
+}

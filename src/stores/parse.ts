@@ -3,6 +3,7 @@ import { ref, watch } from "vue";
 import { toast } from "../composables/toast";
 import type {
   InstallProgress,
+  MistralPageInput,
   ParseServiceHealth,
   OcrEnvReport,
   PageInfo,
@@ -14,7 +15,7 @@ import type {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { loadPdfDoc } from "../composables/usePdfDoc";
-import { renderPageToDataUrl, RENDER_SCALE } from "../lib/pageCapture";
+import { pageSizePt, renderPageToDataUrl, RENDER_SCALE } from "../lib/pageCapture";
 import { t } from "../lib/i18n";
 import { isTauri } from "../lib/env";
 import { DEFAULT_TRANSLATED_TYPES } from "../lib/blocks";
@@ -141,12 +142,15 @@ export const useParseStore = defineStore("parse", () => {
     const health = await invoke<ParseServiceHealth>("ocr_health", {
       url: ocr.url,
       token: ocr.token.trim(),
+      tolerant: ocr.api === "mistral-ocr",
     });
     onlineHealth.value = health;
     return health;
   }
 
   function healthDetail(h: ParseServiceHealth): string {
+    // A synthetic handshake has no pid and no advertised size: it only means "no /health to probe".
+    if (h.synthetic) return t("ocr.healthNoHealth");
     return t("ocr.healthDetail", {
       pid: h.pid ?? "?",
       ms: h.elapsedMs,
@@ -155,13 +159,16 @@ export const useParseStore = defineStore("parse", () => {
   }
 
   function healthLine(h: ParseServiceHealth): string {
+    if (h.synthetic) return `no /health ${h.elapsedMs}ms`;
     return `pid ${h.pid ?? "-"} ${h.elapsedMs}ms max_batch_pages=${h.maxBatchPages}`;
   }
 
   async function connectOnline(url: string): Promise<ParseServiceHealth> {
+    const ocr = useSettingsStore().ocr;
     const health = await invoke<ParseServiceHealth>("ocr_start_remote", {
       url,
-      token: useSettingsStore().ocr.token.trim(),
+      token: ocr.token.trim(),
+      tolerant: ocr.api === "mistral-ocr",
     });
     onlineHealth.value = health;
     return health;
@@ -225,13 +232,28 @@ export const useParseStore = defineStore("parse", () => {
   const onlineHealth = ref<ParseServiceHealth | null>(null);
   function currentBatchSize(): number {
     if (useSettingsStore().ocr.mode !== "online") return LOCAL_BATCH_SIZE;
+    // A service that does not speak /health advertises nothing, so the local setting decides.
+    if (onlineHealth.value?.synthetic) return useSettingsStore().mistralPages();
     return onlineHealth.value?.maxBatchPages ?? LOCAL_BATCH_SIZE;
   }
   /** First + 2 retries = 3 strikes. */
   const MAX_ATTEMPTS = 3;
+  /** Mirrors `mistral::RATE_LIMITED`: the Rust client tags an exhausted 429 with it. */
+  const RATE_LIMITED = "rate-limited: ";
+  const RATE_LIMIT_COOLDOWN_MS = 15_000;
+  const EMPTY_PAGES: ReadonlySet<number> = new Set<number>();
   /** Per-book strikes, OCR and translation separate; an external wake clears them. */
   const ocrStrikes = new Map<string, number>();
   const translateStrikes = new Map<string, number>();
+  /**
+   * Pages the service answered but the client could not place (a page box it rendered differently, no
+   * geometry at all). Retrying them within a session is pointless — the cause is the page itself — but
+   * they are reported instead of disappearing, and an external wake re-arms them.
+   */
+  const ocrRefused = new Map<string, Set<number>>();
+  /** Rate-limit cooldown: over quota means the whole client waits, not just this batch. */
+  let cooldownUntil = 0;
+  let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 
   function canOcr(): boolean {
     return serviceStatus.value === "connected";
@@ -247,6 +269,7 @@ export const useParseStore = defineStore("parse", () => {
       isTauri &&
       !paused.value &&
       !standing.value &&
+      Date.now() >= cooldownUntil &&
       !!useLibraryStore().repoRoot &&
       (canOcr() || canTranslate())
     );
@@ -257,7 +280,36 @@ export const useParseStore = defineStore("parse", () => {
     translateStrikes.clear();
   }
 
-  /** Kick the loop; external events (open/import/connect/resume) reset strikes, self-continuation keeps them. */
+  /**
+   * Forgotten refusals, so the pages get another chance (the page box may be readable now). Deliberately
+   * not part of `clearStrikes`: the sweep calls that when it drains, and dropping the refusals there
+   * would make the loop pick the same pages again on every wake — the busy loop the refusals exist to
+   * prevent. Only a real user action (opening the book, connecting a service, resuming) re-arms them.
+   */
+  function clearRefusals(): void {
+    ocrRefused.clear();
+  }
+
+  /** Refused pages of one book, for the pick filters. */
+  function refusedPages(bookId: string): ReadonlySet<number> {
+    return ocrRefused.get(bookId) ?? EMPTY_PAGES;
+  }
+
+  /** Wait out a rate limit globally; deliberately not a strike, and the timer is the only wake. */
+  function startCooldown(error: string): void {
+    const seconds = Math.round(RATE_LIMIT_COOLDOWN_MS / 1000);
+    cooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+    pushLlmLog(`[ui] ${error} → waiting ${seconds}s before the next OCR request`);
+    toast(t("toast.ocrRateLimited", { seconds }), "warn");
+    if (cooldownTimer) clearTimeout(cooldownTimer);
+    cooldownTimer = setTimeout(() => {
+      cooldownTimer = null;
+      cooldownUntil = 0;
+      wake(false);
+    }, RATE_LIMIT_COOLDOWN_MS + 50);
+  }
+
+  /** Kick the loop; external events (open/import/connect/resume) reset strikes and refusals, self-continuation keeps them. */
   function wake(external = true): void {
     if (!isTauri || paused.value) return;
     if (parsing.value) {
@@ -266,7 +318,10 @@ export const useParseStore = defineStore("parse", () => {
       return;
     }
     standing.value = false;
-    if (external) clearStrikes();
+    if (external) {
+      clearStrikes();
+      clearRefusals();
+    }
     queueMicrotask(() => void tick());
   }
 
@@ -294,20 +349,28 @@ export const useParseStore = defineStore("parse", () => {
         await processBatch(book);
         (book.kind === "translate" ? translateStrikes : ocrStrikes).delete(book.id);
       } catch (err) {
-        const kind = book.kind === "translate" ? "translation" : "OCR";
-        const map = book.kind === "translate" ? translateStrikes : ocrStrikes;
-        const n = (map.get(book.id) ?? 0) + 1;
-        map.set(book.id, n);
-        pushLlmLog(`[ui] ${kind} batch failed (${n}/${MAX_ATTEMPTS}) ${book.name}: ${String(err)}`);
-        if (n >= MAX_ATTEMPTS) {
-          toast(
-            book.kind === "translate"
-              ? t("toast.translateStrikes", { name: book.name })
-              : t("toast.ocrStrikes", { name: book.name }),
-            "warn",
-          );
+        const message = String(err);
+        // Over quota is not this book's fault: wait it out instead of spending a strike on it, and let the
+        // tick run to its tail so a wake that arrived meanwhile is not dropped. It then finds the loop not
+        // runnable and parks — the cooldown timer is what starts it again.
+        if (book.kind === "ocr" && message.includes(RATE_LIMITED)) {
+          startCooldown(message);
         } else {
-          console.warn(`[parse] batch failed (${n}/${MAX_ATTEMPTS}) ${book.name}:`, err);
+          const kind = book.kind === "translate" ? "translation" : "OCR";
+          const map = book.kind === "translate" ? translateStrikes : ocrStrikes;
+          const n = (map.get(book.id) ?? 0) + 1;
+          map.set(book.id, n);
+          pushLlmLog(`[ui] ${kind} batch failed (${n}/${MAX_ATTEMPTS}) ${book.name}: ${message}`);
+          if (n >= MAX_ATTEMPTS) {
+            toast(
+              book.kind === "translate"
+                ? t("toast.translateStrikes", { name: book.name })
+                : t("toast.ocrStrikes", { name: book.name }),
+              "warn",
+            );
+          } else {
+            console.warn(`[parse] batch failed (${n}/${MAX_ATTEMPTS}) ${book.name}:`, err);
+          }
         }
       }
     } finally {
@@ -316,7 +379,10 @@ export const useParseStore = defineStore("parse", () => {
     if (wakePending) {
       wakePending = false;
       standing.value = false;
-      if (wakePendingExternal) clearStrikes();
+      if (wakePendingExternal) {
+        clearStrikes();
+        clearRefusals();
+      }
       wakePendingExternal = false;
     }
     if (!standing.value) queueMicrotask(() => void tick());
@@ -358,7 +424,7 @@ export const useParseStore = defineStore("parse", () => {
       if (
         canOcr() &&
         (ocrStrikes.get(entry.id) ?? 0) < MAX_ATTEMPTS &&
-        state.pages.some(needsOcr)
+        state.pages.some((p) => needsOcr(p) && !refusedPages(entry.id).has(p.index))
       ) {
         return { id: entry.id, name: entry.name, state, focused: focusedBook, kind: "ocr" };
       }
@@ -438,31 +504,70 @@ export const useParseStore = defineStore("parse", () => {
   /** A failed online handshake counts as a batch failure. */
   async function processOcrBatch(book: PickTarget): Promise<void> {
     const lib = useLibraryStore();
-    if (useSettingsStore().ocr.mode === "online") await handshakeOnline();
-    const limit = currentBatchSize();
-    const take = ringCollect(book, (page) => (needsOcr(page) ? page : null), limit);
+    const settings = useSettingsStore();
+    const mistral = settings.ocr.api === "mistral-ocr";
+    // The Mistral shape has no /health and no batch size to negotiate, so only the native route
+    // re-handshakes here (a remote one, whose advertised size can change between batches).
+    if (!mistral && settings.ocr.mode === "online") await handshakeOnline();
+    const limit = mistral ? settings.mistralPages() : currentBatchSize();
+    const refused = refusedPages(book.id);
+    const take = ringCollect(book, (page) => (needsOcr(page) && !refused.has(page.index) ? page : null), limit);
     if (take.length === 0) return;
     pushLlmLog(`[ui] OCR batch p${take.map((p) => p.index).join(",")} (${book.name})`);
 
     // offscreen render uses the Rust-resolved path; never build name-id
     const pdfPath = book.state.pdfPath;
     const doc = await loadPdfDoc(book.id, pdfPath);
-    const pages: ParsePageInput[] = [];
-    for (const page of take) {
-      pages.push({
-        index: page.index,
-        imageB64: await renderPageToDataUrl(doc, page.index),
-        scale: RENDER_SCALE,
+    let outcome: ParseOutcome;
+    if (mistral) {
+      // The service renders the pages itself: we send which pages we want and how big each one is in
+      // the viewer, which is what its boxes are mapped back onto. The model name selects the upstream
+      // on a LiteLLM/gateway deployment and is ignored by our own service.
+      const pages: MistralPageInput[] = [];
+      for (const page of take) {
+        pages.push({ index: page.index, sizePt: await pageSizePt(doc, page.index) });
+      }
+      outcome = await invoke<ParseOutcome>("parse_pdf_mistral", {
+        root: lib.repoRoot,
+        id: book.id,
+        pages,
+        model: settings.mistralModel(),
+      });
+    } else {
+      const pages: ParsePageInput[] = [];
+      for (const page of take) {
+        pages.push({
+          index: page.index,
+          imageB64: await renderPageToDataUrl(doc, page.index),
+          scale: RENDER_SCALE,
+        });
+      }
+      outcome = await invoke<ParseOutcome>("parse_pdf", {
+        root: lib.repoRoot,
+        id: book.id,
+        pages,
       });
     }
-    const outcome = await invoke<ParseOutcome>("parse_pdf", {
-      root: lib.repoRoot,
-      id: book.id,
-      pages,
-    });
     applyOutcome(book.id, outcome);
+    noteRefused(book, outcome.refusedPages);
     // decoupled: queue translation as soon as the batch returns, then start the next OCR batch
     queueTranslate(book.id, take.map((p) => p.index));
+  }
+
+  /**
+   * Remember the pages the client could not place and say so once per book per attempt at it. They stay
+   * unfinished, so the progress strip keeps showing the shortfall; skipping them silently is the one
+   * thing this loop must not do, and retrying them every batch would only hammer the service with pages
+   * it cannot answer.
+   */
+  function noteRefused(book: PickTarget, pages: number[]): void {
+    if (pages.length === 0) return;
+    const known = ocrRefused.get(book.id) ?? new Set<number>();
+    const first = known.size === 0;
+    for (const page of pages) known.add(page);
+    ocrRefused.set(book.id, known);
+    pushLlmLog(`[ui] ${pages.length} page(s) of ${book.name} could not be placed: p${pages.join(",")}`);
+    if (first) toast(t("toast.ocrSkippedPages", { name: book.name, count: known.size }), "warn");
   }
 
   /** Per-book serial chain; failures don't block later batches, in-flight books are skipped. */

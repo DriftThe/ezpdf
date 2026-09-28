@@ -126,9 +126,192 @@ pub fn parse_markup(content: &str) -> Option<TableGrid> {
     Some(TableGrid { cols: cols as u32, rows })
 }
 
+/// HTML table → grid. Other Mistral-shaped OCR services (DeepSeek-OCR behind such a gateway, for one)
+/// answer tables as HTML, our own pipeline answers with the markup above; both feed the same grid.
+///
+/// `colspan` maps straight onto `TableCell::colspan`. `rowspan` has no place in the grid model, so the
+/// slots it spans in the rows below are emitted blank — the convention `<xcel>` already uses for a
+/// vertically merged cell — which keeps the grid rectangular for the LLM round trip.
+pub fn parse_html(content: &str) -> Option<TableGrid> {
+    let lower = content.to_ascii_lowercase();
+    let start = lower.find("<table")?;
+    let body = &content[start..];
+
+    let mut rows: Vec<TableRow> = Vec::new();
+    let mut slots: Vec<usize> = Vec::new();
+    let mut spanned: Vec<u32> = Vec::new(); // slots a rowspan still covers (decremented once per row)
+    let mut row = RowBuilder::default();
+    let mut cell_text: Option<String> = None;
+    let mut cell_colspan = 1u32;
+    let mut cell_rowspan = 1u32;
+    let mut in_row = false;
+
+    // A tiny scanner is enough: we only care about table structure, everything else is cell text.
+    let mut rest = body;
+    while let Some(open) = rest.find('<') {
+        if let Some(buffer) = cell_text.as_mut() {
+            buffer.push_str(&rest[..open]);
+        }
+        rest = &rest[open..];
+        let Some(close) = rest.find('>') else { break };
+        let tag = &rest[1..close];
+        rest = &rest[close + 1..];
+
+        let name: String = tag
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        let closing = tag.starts_with('/');
+        match name.as_str() {
+            "table" if closing => break, // only the first table in the block
+            "tr" | "td" | "th" => {
+                // A cell ends at its closing tag or at the next cell/row start (implicit close, common
+                // in HTML produced by a model): flush whatever is pending before deciding what this is.
+                if let Some(buffer) = cell_text.take() {
+                    row.push(&mut spanned, buffer, cell_colspan, cell_rowspan);
+                }
+                if name == "tr" {
+                    if in_row {
+                        let (built, count) = row.finish(&mut spanned);
+                        rows.push(built);
+                        slots.push(count);
+                        if rows.len() > MAX_ROWS {
+                            return None;
+                        }
+                    }
+                    in_row = !closing;
+                } else if !closing {
+                    cell_colspan = attribute(tag, "colspan").unwrap_or(1).max(1);
+                    cell_rowspan = attribute(tag, "rowspan").unwrap_or(1).max(1);
+                    cell_text = Some(String::new());
+                }
+            }
+            "br" => {
+                if let Some(buffer) = cell_text.as_mut() {
+                    buffer.push('\n');
+                }
+            }
+            _ => {}
+        }
+        if rows.len() > MAX_ROWS {
+            return None;
+        }
+    }
+    if let Some(buffer) = cell_text.take() {
+        row.push(&mut spanned, buffer, cell_colspan, cell_rowspan);
+    }
+    if in_row {
+        let (built, count) = row.finish(&mut spanned);
+        rows.push(built);
+        slots.push(count);
+    }
+    if rows.is_empty() || rows.len() > MAX_ROWS {
+        return None;
+    }
+
+    let cols = slots.iter().copied().max().unwrap_or(0);
+    let total: usize = rows.iter().map(|r| r.cells.len()).sum();
+    if cols == 0 || cols > MAX_SLOTS || total > MAX_CELLS {
+        return None;
+    }
+    for (row, n) in rows.iter_mut().zip(slots.iter()) {
+        if *n < cols {
+            row.cells.push(TableCell { text: String::new(), colspan: (cols - n) as u32 });
+        }
+    }
+    Some(TableGrid { cols: cols as u32, rows })
+}
+
+/// Grid from either dialect: our pipeline's `<fcel>` markup first, HTML tables second.
+pub fn parse_any(content: &str) -> Option<TableGrid> {
+    parse_markup(content).or_else(|| parse_html(content))
+}
+
+/// One `<tr>` under construction: cells plus the slot the next cell lands on.
+#[derive(Default)]
+struct RowBuilder {
+    cells: Vec<TableCell>,
+    slot: usize,
+}
+
+impl RowBuilder {
+    /// Cells are placed left to right; every slot an earlier rowspan still covers is emitted blank.
+    fn take_spanned(&mut self, spanned: &mut [u32]) {
+        while let Some(counter) = spanned.get_mut(self.slot) {
+            if *counter == 0 {
+                break;
+            }
+            *counter -= 1;
+            self.cells.push(TableCell { text: String::new(), colspan: 1 });
+            self.slot += 1;
+        }
+    }
+
+    fn push(&mut self, spanned: &mut Vec<u32>, text: String, colspan: u32, rowspan: u32) {
+        self.take_spanned(spanned);
+        let colspan = colspan.min(MAX_SLOTS as u32);
+        self.slot += colspan as usize;
+        if rowspan > 1 {
+            spanned.resize(self.slot.max(spanned.len()), 0);
+            let start = self.slot - colspan as usize;
+            for counter in spanned[start..self.slot].iter_mut() {
+                *counter = (rowspan - 1).min(MAX_ROWS as u32);
+            }
+        }
+        self.cells.push(TableCell { text: clean_cell_text(&text), colspan });
+    }
+
+    fn finish(&mut self, spanned: &mut [u32]) -> (TableRow, usize) {
+        self.take_spanned(spanned); // trailing slots a rowspan covers still belong to this row
+        let count = self.slot;
+        self.slot = 0;
+        (TableRow { cells: std::mem::take(&mut self.cells) }, count)
+    }
+}
+
+/// One numeric attribute of a tag (`colspan="2"`, `rowspan='3'`, unquoted) — `None` when absent/invalid.
+fn attribute(tag: &str, name: &str) -> Option<u32> {
+    let lower = tag.to_ascii_lowercase();
+    let at = lower.find(name)?;
+    let rest = tag[at + name.len()..].trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    let digits: String = rest
+        .trim_start_matches(['"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+/// Cell text: nested tags dropped, entities decoded, whitespace collapsed.
+fn clean_cell_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        match rest[open..].find('>') {
+            Some(close) => rest = &rest[open + close + 1..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    let decoded = out
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Real cell count per row (for shape validation; includes padded/merged cells).
-pub fn row_lengths(grid: &TableGrid) -> Vec<usize> {
-    grid.rows.iter().map(|r| r.cells.len()).collect()
+pub fn row_lengths(grid: &TableGrid) -> Vec<usize> {    grid.rows.iter().map(|r| r.cells.len()).collect()
 }
 
 /// Translation payload: `{"table": [[cell text, ...], ...]}` (real cells only, in grid order).

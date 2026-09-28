@@ -77,6 +77,9 @@ class PageResult:
     height: int
     elapsed_seconds: float
     regions: list[RegionResult]
+    # A VL forward stopped at max_new_tokens on this page: the block text is cut mid-way and the page
+    # is not trustworthy (the caller decides whether to fail the page or only log it).
+    truncated: bool = False
 
 
 def iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:

@@ -413,7 +413,8 @@ class VLPredictor:
             for img in images
         ]
 
-    def _forward_once(self, images: Sequence[Image.Image], label: str) -> list[str]:
+    def _forward_once(self, images: Sequence[Image.Image], label: str) -> list[tuple[str, bool]]:
+        """One VL forward → [(text, truncated)]; truncated = the row ran into max_new_tokens with no EOS."""
         """One VL forward; the caller must ensure ``len(images) <= self.max_forward_batch``."""
         if not images:
             return []
@@ -454,19 +455,29 @@ class VLPredictor:
             repetition_penalty=self.repetition_penalty,
         )
         gen = out[:, inputs["input_ids"].shape[1]:]
-        return self.processor.batch_decode(gen, skip_special_tokens=True)
+        texts = self.processor.batch_decode(gen, skip_special_tokens=True)
+        # Padding makes every row the batch's longest length, so "the row is full" is not enough: a row
+        # is truncated only when it reaches the cap without ever emitting EOS.
+        eos = self.eos_token_id
+        flags = [eos not in row and len(row) >= self.max_new_tokens for row in gen.tolist()]
+        if any(flags):
+            logger.warning(
+                "  [VL] %d/%d %s crop(s) hit max_new_tokens=%d without EOS — text is cut mid-way",
+                sum(flags), len(flags), label, self.max_new_tokens,
+            )
+        return [(text, flag) for text, flag in zip(texts, flags)]
 
     @torch.no_grad()
     def recognize_batch(
             self, images: Sequence[Image.Image], label: str
-    ) -> list[str]:
+    ) -> list[tuple[str, bool]]:
         """Batch inference with one prompt per label; splits into sub-batches above max_forward_batch."""
         if not images:
             return []
         cap = self.max_forward_batch
         if len(images) <= cap:
             return self._forward_once(images, label)
-        out: list[str] = []
+        out: list[tuple[str, bool]] = []
         for start in range(0, len(images), cap):
             chunk = list(images[start:start + cap])
             out.extend(self._forward_once(chunk, label))
@@ -475,20 +486,20 @@ class VLPredictor:
     @torch.no_grad()
     def recognize_grouped(
             self, items: list[tuple[Image.Image, str]]
-    ) -> list[str]:
+    ) -> list[tuple[str, bool]]:
         """Bucket by label → one batch inference per bucket → restore the original order."""
         buckets: dict[str, list[tuple[int, Image.Image]]] = {}
         for idx, (img, lab) in enumerate(items):
             buckets.setdefault(lab, []).append((idx, img))
 
-        results: list[Optional[str]] = [None] * len(items)
+        results: list[Optional[tuple[str, bool]]] = [None] * len(items)
         for label, bucket in buckets.items():
             indices = [i for i, _ in bucket]
             imgs = [im for _, im in bucket]
             texts = self.recognize_batch(imgs, label)
             for i, t in zip(indices, texts):
                 results[i] = t
-        return [r or "" for r in results]  # type: ignore[arg-type]
+        return [r or ("", False) for r in results]  # type: ignore[arg-type]
 
 
 class OCRPipeline:
@@ -802,8 +813,11 @@ class OCRPipeline:
         # zero or one page per batch, so it costs one small extra forward)
         cursor = 0
         pages_markdowns: list[list[str]] = []
+        pages_truncated: list[bool] = []
         for page_crops in pages_crops:
-            pages_markdowns.append(markdowns[cursor:cursor + len(page_crops)])
+            took = markdowns[cursor:cursor + len(page_crops)]
+            pages_markdowns.append([text for text, _ in took])
+            pages_truncated.append(any(flag for _, flag in took))
             cursor += len(page_crops)
         figure_items = [
             self._figure_regions(image, page_crops, page_markdowns, ink)
@@ -815,15 +829,20 @@ class OCRPipeline:
             [(img, box.label_name) for page_items in figure_items for img, box in page_items]
         )
         cursor = 0
-        for page_items, page_crops, page_markdowns in zip(figure_items, pages_crops, pages_markdowns):
-            took = len(page_items)
-            page_markdowns.extend(figure_markdowns[cursor:cursor + took])
+        for page_items, page_crops, page_markdowns, index in zip(
+            figure_items, pages_crops, pages_markdowns, range(len(pages_crops))
+        ):
+            took = figure_markdowns[cursor:cursor + len(page_items)]
+            page_markdowns.extend(text for text, _ in took)
+            pages_truncated[index] = pages_truncated[index] or any(flag for _, flag in took)
             page_crops.extend(page_items)
-            cursor += took
+            cursor += len(page_items)
 
         elapsed = time.perf_counter() - st
         results: list[PageResult] = []
-        for image, page_crops, page_markdowns in zip(images, pages_crops, pages_markdowns):
+        for image, page_crops, page_markdowns, truncated in zip(
+            images, pages_crops, pages_markdowns, pages_truncated
+        ):
             items = [(box, md) for (_, box), md in zip(page_crops, page_markdowns)]
             resolved = self._resolve_page_text(items)
             if resolved.merged or resolved.junk:
@@ -854,6 +873,7 @@ class OCRPipeline:
                     width=image.width,
                     height=image.height,
                     elapsed_seconds=elapsed,
+                    truncated=truncated,
                     regions=[
                         RegionResult(
                             label=box.label_name,

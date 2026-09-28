@@ -2,4 +2,10 @@
 import type { PDFStatus } from "./PDFStatus";
 import type { PageInfo } from "./PageInfo";
 
-export type ParseOutcome = { bookStatus: PDFStatus, updatedPages: Array<PageInfo>, };
+export type ParseOutcome = { bookStatus: PDFStatus, updatedPages: Array<PageInfo>, 
+/**
+ * Pages OCR answered but the client could not place (a page box the service rendered differently,
+ * no geometry at all). They are *not* written, so the book stays unfinished and the progress strip
+ * keeps showing the shortfall; the scheduler skips them for the rest of the session.
+ */
+refusedPages: Array<number>, };

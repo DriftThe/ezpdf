@@ -332,7 +332,7 @@ pub fn normalize_base(url: &str) -> Result<String, String> {
 }
 
 /// Loopback detection: the system proxy shouldn't touch local services (matches local direct connect).
-fn is_loopback(base: &str) -> bool {
+pub(crate) fn is_loopback(base: &str) -> bool {
     let authority = base.split("://").nth(1).unwrap_or(base);
     let authority = authority.split(['/', '?']).next().unwrap_or("");
     let hostport = authority.rsplit('@').next().unwrap_or(authority);
@@ -341,6 +341,26 @@ fn is_loopback(base: &str) -> bool {
         None => hostport.split(':').next().unwrap_or(""),
     };
     matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
+}
+
+/// HTTP client for a parse service, both routes.
+///
+/// reqwest carries `system-proxy` because region-restricted LLM endpoints need it, but a *loopback*
+/// service must never go through that proxy: the service answers and the proxy's own loopback fails,
+/// which the client sees as a bodiless 502.
+///
+/// `timeout` is `None` for the native route, whose first request may be loading a model (minutes), and a
+/// finite budget for the Mistral-shaped one, which talks to a service that is already running and whose
+/// batches the scheduler would otherwise wait on forever.
+pub(crate) fn ocr_client(base: &str, timeout: Option<Duration>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder();
+    if is_loopback(base) {
+        builder = builder.no_proxy();
+    }
+    if let Some(timeout) = timeout {
+        builder = builder.timeout(timeout);
+    }
+    builder.build().map_err(|e| format!("failed to create HTTP client: {e}"))
 }
 
 /// Remote handshake result; `max_batch_pages` comes from the server (PROTOCOL.md §4), clamped to 1..=32.
@@ -352,13 +372,24 @@ pub struct ParseServiceHealth {
     pub pid: Option<u32>,
     pub max_batch_pages: u32,
     pub elapsed_ms: u32,
+    /// True when this is not a real handshake but the tolerated "the endpoint does not speak `/health`"
+    /// answer, whose figures are made up. The UI must not present them as the service's own — and for a
+    /// Mistral-shaped endpoint the batch size is a local setting, not something anyone advertised.
+    pub synthetic: bool,
 }
 
 /// Batch size when the server doesn't advertise a usable value (matches local hosting's size).
 const FALLBACK_BATCH_PAGES: u32 = 4;
 
 /// GET {base}/health → (pid, elapsed, batch size); shared by Test, pre-connect confirmation and per-request negotiation.
-pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth, String> {
+///
+/// `tolerant` is for the Mistral-shaped route: a service speaking that protocol need not implement
+/// `/health` at all (Mistral's own API has no such route, and a cloud one answers an unknown path with
+/// whatever its gateway prefers — 401 for the missing key, 403, 404…). Any refusal there means "no
+/// handshake to be had", not "unreachable", so the endpoint is registered with a synthetic health and the
+/// first real request is what proves the credentials. Only a transport failure (no answer at all) is
+/// fatal, because that one really does mean a wrong address.
+pub async fn probe_health(base: &str, token: &str, tolerant: bool) -> Result<ParseServiceHealth, String> {
     let base = normalize_base(base)?;
     let url = format!("{base}/health");
     let mut builder = reqwest::Client::builder().timeout(HEALTH_TIMEOUT);
@@ -369,7 +400,8 @@ pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth,
     let started = std::time::Instant::now();
     let mut req = client.get(&url);
     if !token.is_empty() {
-        req = req.header("x-ezpdf-token", token);
+        // Both spellings: our own service reads the header, a Mistral-compatible one only knows Bearer.
+        req = req.header("x-ezpdf-token", token).header("Authorization", format!("Bearer {token}"));
     }
     let resp = req
         .send()
@@ -377,6 +409,15 @@ pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth,
         .map_err(|e| format!("cannot reach {url}: {e}"))?;
     let status = resp.status();
     if !status.is_success() {
+        let elapsed_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
+        if tolerant {
+            return Ok(ParseServiceHealth {
+                pid: None,
+                max_batch_pages: FALLBACK_BATCH_PAGES,
+                elapsed_ms,
+                synthetic: true,
+            });
+        }
         // 403 almost always means a wrong/missing token: give an actionable hint.
         if status.as_u16() == 403 {
             return Err(format!("{url} answered HTTP 403: service token rejected"));
@@ -388,6 +429,7 @@ pub async fn probe_health(base: &str, token: &str) -> Result<ParseServiceHealth,
         pid: body["pid"].as_u64().map(|p| p.min(u32::MAX as u64) as u32),
         max_batch_pages: advertised_batch_pages(&body),
         elapsed_ms: started.elapsed().as_millis().min(u32::MAX as u128) as u32,
+        synthetic: false,
     })
 }
 

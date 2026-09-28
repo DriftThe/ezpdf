@@ -25,12 +25,14 @@ pnpm only — no lint or test scripts.
 
 - `src/` — Vue frontend. Shell `components/shell/AppShell.vue`, entry `main.ts` (installs Pinia). Pinia stores
   `library`/`reader`/`parse`/`settings`; domain types are ts-rs bindings re-exported by `types/domain.ts`.
-- `src-tauri/src/` — `lib.rs` (commands/DTOs), `parse.rs` (repo, bound JSON, OCR batches, file locks), `translate.rs`
-  (LLM client + agent loop), `table.rs` (table markup → grid), `pyenv.rs` (path resolution, env install), `pyserver.rs`
-  (service lifecycle).
-- `pyserver/` — the FastAPI OCR service (`app/`), wire protocol in `PROTOCOL.md`. Layout/merge tuning is
-  `app/config.py`; `app/services/` is `pipeline.py` (models), `boxes.py` (geometry + merge), `textlines.py` (figure
-  text lines), `engine.py` (lazy singleton).
+- `src-tauri/src/` — `lib.rs` (commands/DTOs), `parse.rs` (repo, bound JSON, OCR batches, file locks), `mistral.rs`
+  (the Mistral-shaped OCR route: request, response→`Block`, label map, dedup), `translate.rs` (LLM client + agent
+  loop), `table.rs` (table markup/HTML → grid), `pyenv.rs` (path resolution, env install), `pyserver.rs` (service
+  lifecycle + the shared OCR HTTP client).
+- `pyserver/` — the FastAPI OCR service (`app/`), wire protocol in `PROTOCOL.md` (two routes: native `/ocr/pages`,
+  Mistral-shaped `/v1/ocr`). Layout/merge tuning is `app/config.py`; `app/services/` is `pipeline.py` (models),
+  `boxes.py` (geometry + merge), `textlines.py` (figure text lines), `pdf_pages.py` (PDF → page rasters for
+  `/v1/ocr`), `labels.py` (PP-DocLayout → Mistral block types), `engine.py` (lazy singleton).
 - `.github/workflows/` — `release.yml` (app releases), `pyserver-images.yml` (manual docker snapshots).
 
 ## Data model
@@ -158,6 +160,38 @@ pnpm only — no lint or test scripts.
   registers it, `ocr_health` is the read-only 测试 button). That token is the server-side shared secret (`EZPDF_TOKEN` env >
   `EZPDF_TOKEN_FILE` > generated and persisted; enforced on every route including `/health`). A compatible server must
   implement `pyserver/PROTOCOL.md`; `pyserver/server_test.py` fakes one locally on 9055 (`--max-batch`, `--token`).
+  All OCR HTTP goes through `ocr_client(base, timeout)`, which keeps the **system proxy away from a loopback service**:
+  with it the service answers and the proxy's own loopback fails, which the client sees as a bodiless 502. The timeout is
+  `None` on the native route (the first request may load a model for minutes) and finite on the Mistral one.
+- **Two OCR protocols** (设置→OCR 服务→协议, `ocr.api`): the native `/ocr/pages` (the client renders page PNGs, Rust
+  divides by `scale`) and **Mistral-shaped** `/v1/ocr` (`mistral.rs`), where the PDF and the page numbers travel and the
+  service renders. The Mistral route is what other services speak (LiteLLM fronts mistral/azure_ai/vertex_ai/cohere),
+  so it is the integration path — at a price: the service's `dimensions` are the only geometry reference left, so boxes
+  are placed by the **width/height ratio, never `dpi`** (null for image documents, and a deployment may render at any
+  scale), the frontend must send each page's pt size from its own pdfjs viewport (`MistralPageInput.size_pt`), and a page
+  whose aspect disagrees with the viewer is refused rather than getting misplaced covers. Block `type` is Mistral's
+  13-class vocabulary; our own service also sends its PP-DocLayout label in an extra `label` field, which wins when
+  present, so the 21 client classes survive our own backend; foreign labels go through `map_mistral_type` (title family
+  stays in the title family, `equation`→`formula`, `image_caption`/`table_caption`→`figure_title`, unknown→`text`). A
+  cloud service merges nothing, so the near-duplicate/junk rules from `boxes.py` are **ported into `mistral.rs`** (same
+  thresholds, bigram Dice in place of difflib); tables are requested as HTML (`table_format: "html"` — markdown pipes
+  cannot express `rowspan`) and `table.rs::parse_html` feeds the same grid. `include_blocks` must be sent explicitly
+  (the spec defaults it to false) and `include_image_base64: false` keeps crops off the wire the reader never uses; a
+  formula the service sends as bare LaTeX is wrapped in `$$…$$` by `clean_content`.
+  - **The pages travel, not the document**: `payload_for` slices the requested pages out with lopdf (`delete_pages` →
+    `prune_objects` → `renumber_objects` → `compress`), off file bytes cached per (root, id, size, mtime), and verifies
+    the result (page count + every `PageFrame`, i.e. inherited MediaBox/CropBox and `/Rotate`) before sending it; an
+    encrypted file or any failed check falls back to the whole document plus a `pages` filter. A slice is a document of
+    its own, so `collect_updates` resolves the answer's numbering from the reply itself (0..n-1 = slice-local, otherwise
+    absolute) rather than assuming either.
+  - **A page that cannot be placed is refused, not fatal**: `collect_updates` separates per-page geometry refusals from
+    batch-level errors, `ParseOutcome.refusedPages` reports them and the scheduler skips those pages for the session (an
+    external wake re-arms them). Only an unreconcilable reply — or a batch where *every* page was refused — is an error;
+    the latter because writing nothing would re-pick the same pages forever without a strike.
+  - `ocr_pdf` retries in place (429 honours `Retry-After`, 5xx/timeout back off, other 4xx fail at once) and tags an
+    exhausted 429 with `RATE_LIMITED` so the frontend cools down globally instead of counting a strike;
+    `pyserver::ocr_client(base, timeout)` gives this route a finite budget where the native one has none. Model name and
+    pages per request are settings (`ocr.model`, `ocr.pagesPerRequest`), sent per invoke.
 - IPC: `invoke("cmd", {…})` — args are camelCase in JS and snake_case in Rust, and serde structs serialize **camelCase**.
   Events: `ocr://status` (a `ServiceStatus` string), `ocr://log`, `ocr://install` (`InstallProgress`), `llm://log`. The
   current command list lives in `generate_handler![]` (`lib.rs`).
@@ -168,14 +202,22 @@ pnpm only — no lint or test scripts.
   `load_pdf` reads the JSON flags) → ring-collect ≤batch unfinished pages (the focused book starts at `reader.currentPage`)
   → offscreen render (`lib/pageCapture.ts`, PNG b64, scale 2.0) → `parse_pdf` (OCR only) → fire-and-forget `translate_pdf`
   for those pages, so the next OCR batch starts immediately. Batch size is 4 locally, or whatever the remote advertises
-  as `max_batch_pages` (re-read with a `/health` handshake before every online batch). Results patch
+  as `max_batch_pages` (re-read with a `/health` handshake before every online batch) — under the Mistral protocol
+  there is no handshake and no advertised size (a `synthetic` health is what the tolerated refusal comes back as), so
+  it is `ocr.pagesPerRequest` (default 16, clamped to 1..=32), and instead of rendering the batch sends
+  `parse_pdf_mistral` with each page's index and pt size (`pageSizePt`, the same pdfjs viewport the reader measures,
+  because the service's boxes are mapped by that ratio) plus the model name. Results patch
   `library.pdfs[id].pages` for the focused book; for background books Rust's atomic tmp+rename write is the truth and the
   next round re-reads it. The chain self-continues via `queueMicrotask`; with nothing to do it goes `standing` and waits
   for a wake (open book, import, repo load, service connect, unpause, prefill, drained chain). Per book, a translation
   retry outranks new OCR (a `finished && !translated` page with an idle chain is translated first), and table backfill
   rides the same chain (`load_pdf` persists a missing `block.grid`; `needsWork = needsTranslation || needsTableBackfill`;
   Rust then sends only that page's tables). OCR and translation keep separate 3-strike budgets per book, so one failing
-  kind suspends only itself, and only external wakes reset them. `parse.paused` (toolbar 暂停翻译/启动翻译) gates
+  kind suspends only itself, and only external wakes reset them. Pages OCR refused stay in a per-book `ocrRefused` set
+  that the same wakes clear: they are skipped for the session (once per book a warn toast says how many), and since
+  `finalize_status` needs *every* page finished the book keeps showing the shortfall instead of looking done. A
+  `RATE_LIMITED` failure takes neither path: it parks the loop (`cooldownUntil`, 15 s) without counting a strike.
+  `parse.paused` (toolbar 暂停翻译/启动翻译) gates
   everything: `isRunnable()` = `canOcr() || canTranslate()` (translation needs no OCR service) and `pickBook` only offers
   OCR targets while the service is connected. Books with empty pages are skipped until opened, where the geometry watch
   backfills via `prefill_pages`. In plain browser mode the whole loop is silently inert.
@@ -216,6 +258,16 @@ pnpm only — no lint or test scripts.
 - A ported Wise-Paddle OCR host: single-instance pipeline (`PP-DocLayoutV3` + `PaddleOCR-VL-1.6` in
   `app/services/pipeline.py`, lazy-loaded behind a `threading.Lock`). The upstream concurrency containers (Pool/
   Scheduler/vouchers) were intentionally removed — don't reintroduce them.
+- **Two routes, one pipeline**: `/ocr/pages` (the client's renders) and the Mistral-shaped `/v1/ocr` +
+  `/ocr` (`app/routers/ocr_mistral.py`), which takes a base64 PDF, renders the wanted pages itself
+  (`app/services/pdf_pages.py`, pypdfium2 — imported lazily so an older install still serves the legacy routes) at
+  `EZPDF_OCR_RENDER_DPI` (144 = the scale 2.0 the pixel thresholds are calibrated for) and answers
+  `pages[]{index, markdown, dimensions, images, blocks}`. `blocks[].type` goes through
+  `app/services/labels.py` (PP-DocLayout → Mistral's 13 types) while the raw label rides in an extra `label` field.
+  Auth accepts `x-ezpdf-token` **or** `Authorization: Bearer` (one secret, two spellings: Mistral clients only know
+  the latter). A VL forward that stops at `max_new_tokens` (no EOS) marks the page `truncated`, which `/v1/ocr` turns
+  into a 502 — half a page is a silent miss, and the block-level protocol has no way to say it; the legacy route only
+  logs it and sets a flag, keeping its old answer.
 - `models/` (1.9 GB, gitignored) is not a hard prerequisite: `app/fetch.py` (`python -m app.fetch`, invoked by
   `ocr_download_models`) snapshot-downloads what is missing, resumable. Completeness = config.json +
   preprocessor_config.json + any weight file, defined once in `app/model_contract.py` and used by both `bootstrap.py` and
@@ -224,7 +276,8 @@ pnpm only — no lint or test scripts.
   40 MP per image, decoding on the threadpool, `DecompressionBombError` caught.
 - `requirements.txt` is deliberately minimal, but four pins are load-path requirements rather than preferences:
   `protobuf` (SentencePieceExtractor — without it the VL tokenizer is misread as a tiktoken file), `sentencepiece` +
-  `tiktoken` (the tokenizer), `opencv-contrib-python` (PP-DocLayoutV3 post-processing). The VL tokenizer loads without
+  `tiktoken` (the tokenizer), `opencv-contrib-python` (PP-DocLayoutV3 post-processing). `pypdfium2` is the fifth, and
+  only the Mistral route needs it (Apache-2.0; **not** PyMuPDF, which is AGPL). The VL tokenizer loads without
   `trust_remote_code` thanks to the rope patch in `pipeline.py` (module-level, must stay). `requirements-download.txt` is
   just huggingface_hub.
 - Layout detection is multi-pass and add-only (`LayoutDetector.detect`): the 0.5 main pass, then a sharpened 0.45 pass

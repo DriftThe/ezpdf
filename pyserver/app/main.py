@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from .config import TOKEN
-from .routers import health, ocr
+from .routers import health, ocr, ocr_mistral
 
 logger = logging.getLogger("ezpdf.pyserver")
 
@@ -34,12 +34,20 @@ def create_app(token: str | None = None) -> FastAPI:
     app = FastAPI(title="ezpdf-pyserver")
     app.include_router(health.router)
     app.include_router(ocr.router)
+    app.include_router(ocr_mistral.router)
 
     if expected:
         @app.middleware("http")
         async def _token_guard(request, call_next):
             # Constant-time compare: a local process could otherwise byte-probe via response timing
             supplied = (request.headers.get("x-ezpdf-token") or "").encode("utf-8", "ignore")
+            if not supplied:
+                # The Mistral-shaped route is called by Mistral-compatible clients, which only know
+                # `Authorization: Bearer`; both spellings of the same secret are accepted.
+                authorization = request.headers.get("authorization") or ""
+                scheme, _, credentials = authorization.partition(" ")
+                if scheme.lower() == "bearer":
+                    supplied = credentials.strip().encode("utf-8", "ignore")
             if not hmac.compare_digest(supplied, expected.encode()):
                 return JSONResponse(status_code=403, content={"detail": "forbidden"})
             return await call_next(request)

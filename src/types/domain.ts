@@ -13,6 +13,7 @@ export type { ServiceStatus } from "../../src-tauri/bindings/ServiceStatus";
 export type { OcrEnvReport } from "../../src-tauri/bindings/OcrEnvReport";
 export type { ParseOutcome } from "../../src-tauri/bindings/ParseOutcome";
 export type { ParsePageInput } from "../../src-tauri/bindings/ParsePageInput";
+export type { MistralPageInput } from "../../src-tauri/bindings/MistralPageInput";
 export type { InstallProgress } from "../../src-tauri/bindings/InstallProgress";
 export type { ParseServiceHealth } from "../../src-tauri/bindings/ParseServiceHealth";
 export type { TableGrid } from "../../src-tauri/bindings/TableGrid";

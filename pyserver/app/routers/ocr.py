@@ -11,17 +11,19 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
-from ..config import MAX_BATCH_PAGES
+from ..config import DOC_MAX_PIXELS, DOC_MAX_SIDE_PX, MAX_BATCH_PAGES
 from ..services.engine import engine
 from ..services.pipeline import RegionResult
 
 router = APIRouter()
+logger = logging.getLogger("ezpdf.ocr")
 
 
 class PageRequest(BaseModel):
@@ -33,11 +35,6 @@ class PagesBatchRequest(BaseModel):
     pages: list[PageRequest] = Field(min_length=1, max_length=MAX_BATCH_PAGES)
 
 
-# Decompression-bomb / oversized-render guard: limits on both side length and total pixels (a normal scale-2.0 page is far below these)
-MAX_SIDE_PX = 12_000
-MAX_PIXELS = 40_000_000
-
-
 def _decode_image(payload: str) -> Image.Image:
     if payload.startswith("data:"):
         # partition, not split[1]: a malformed data: string cannot raise IndexError
@@ -47,7 +44,7 @@ def _decode_image(payload: str) -> Image.Image:
         raw = base64.b64decode(payload)
         with Image.open(io.BytesIO(raw)) as image:
             width, height = image.size
-            if max(width, height) > MAX_SIDE_PX or width * height > MAX_PIXELS:
+            if max(width, height) > DOC_MAX_SIDE_PX or width * height > DOC_MAX_PIXELS:
                 raise HTTPException(
                     status_code=413,
                     detail=f"image too large: {width}x{height}",
@@ -96,6 +93,11 @@ async def ocr_pages(req: PagesBatchRequest) -> dict:
         results = await run_in_threadpool(engine.recognize_batch, images)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"OCR batch inference failed: {exc}") from exc
+    for index, r in enumerate(results, 1):
+        if r.truncated:
+            # Text cut at max_new_tokens is a partial reading of that page; /v1/ocr fails such a page
+            # outright, but this route keeps its answer and only says so (the client ignores the flag).
+            logger.warning("page %d of %d hit max_new_tokens — its text is incomplete", index, len(results))
     return {
         "elapsed": round(results[0].elapsed_seconds, 3),
         "pages": [
@@ -103,6 +105,7 @@ async def ocr_pages(req: PagesBatchRequest) -> dict:
                 "width": r.width,
                 "height": r.height,
                 "elapsed": round(r.elapsed_seconds, 3),
+                "truncated": r.truncated,
                 "blocks": [_region_json(b) for b in r.regions],
             }
             for r in results
